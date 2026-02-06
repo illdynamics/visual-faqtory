@@ -68,15 +68,15 @@ comfyui:
 # GENERATION SETTINGS (Stable Diffusion / SVD defaults)
 # ═══════════════════════════════════════════════════════════════════════════════
 generation:
-  clip_seconds: 8.0     # Raw video duration
+  clip_seconds: 4.0     # Raw video duration
   width: 1024
   height: 576           # 16:9 aspect
-  cfg_scale: 7.0
+  cfg_scale: 6.0
   steps: 30
   sampler: euler_ancestral
   
   # Video settings (SVD)
-  video_frames: 25
+  video_frames: 24
   video_fps: 8
   motion_bucket_id: 127
   noise_aug_strength: 0.02
@@ -95,7 +95,7 @@ looping:
   enabled: true
   method: pingpong        # pingpong (forward+reverse) or crossfade
   crossfade_frames: 8     # For crossfade method only
-  output_fps: 24          # Output video framerate
+  output_fps: 8          # Output video framerate
   output_codec: h264_nvenc
   output_quality: 16      # CRF (lower = better quality, bigger files)
 
@@ -122,3 +122,12 @@ cycle:
   auto_save_interval: 3           # Save state every N cycles
   max_retries: 3                  # Retries on failure per cycle
   continue_on_error: true         # Continue to next cycle on error
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LLM CONFIGURATION (OPTIONAL)
+# ═══════════════════════════════════════════════════════════════════════════════
+#llm:
+#  provider: openai
+#  model: gpt-4.1-mini
+#  api_key_env: OPENAI_API_KEY
+

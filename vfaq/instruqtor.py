@@ -125,7 +125,11 @@ class InstruQtor:
         self.config = config
         self.worqspace_dir = Path(worqspace_dir)
         self.qodeyard_dir = Path(qodeyard_dir)
-        self.llm = llm_provider
+        self.llm = None
+        if llm_provider:
+            from .llm_utils import create_llm_client
+            # visual_faqtory passes a dict; turn it into a real client
+            self.llm = create_llm_client(llm_provider) if isinstance(llm_provider, dict) else llm_provider
 
         # Load generation config from config.yaml ONLY
         gen_config = config.get('generation', {})
