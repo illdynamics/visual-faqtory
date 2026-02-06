@@ -1,0 +1,39 @@
+{
+  "briq_id": "briq_0005_fb4f9c85",
+  "cycle_index": 5,
+  "created_at": "2026-02-06T05:53:17.949491",
+  "mode": "video",
+  "prompt": "A lone traveler wandering through a vast post-apocalyptic industrial wasteland, cinematic wide shot. Rusted megastructures, collapsed factories, broken cranes and hanging chains stretch into the distance. The air is thick with smoke, ash, sparks, and drifting embers. In the foreground and midground: massive biomechanical squid creatures inspired by the QonQrete logo \u2014 industrial cephalopods with segmented metal tentacles, glowing reactor cores, exposed pistons, cables, hydraulic joints, and molten orange energy pulsing through cracks in their armor. One colossal squid-entity emerges from the ruins, towering over the environment like an ancient machine god. Its central eye glows intensely, scanning the traveler. Explosions erupt in the background \u2014 fireballs, shockwaves, collapsing steel beams, sparks flying. Flames reflect off oily metal surfaces and wet concrete. Color palette: burnt orange, toxic green, radioactive yellow, deep industrial blacks, smoky grays. High contrast lighting, volumetric god rays cutting through smoke and dust. Ultra-detailed, hyper-cinematic, concept art quality, AAA game intro scene, Unreal Engine realism, sharp focus, dramatic depth of field. Sense of motion even in stillness \u2014 drifting smoke, moving tentacles, falling debris, heat distortion. Epic scale, dark sci-fi apocalypse, brutal, mechanical, ominous, awe-inspiring., purple haze, calmer atmosphere, neon pink accents, increased energy, electric cyan, ethereal feeling, golden hour light, grittier texture, crimson highlights, slightly more intense",
+  "negative_prompt": "blurry, low quality, watermark, deformed, ugly, duplicate, out of frame, disfigured\n",
+  "style_tags": [],
+  "quality_tags": [
+    "masterpiece",
+    "best quality",
+    "highly detailed"
+  ],
+  "seed": 47,
+  "base_image_path": null,
+  "base_video_path": "/x/visual-faqtory/qodeyard/videos/cycle0004_video.mp4",
+  "spec": {
+    "width": 1024,
+    "height": 576,
+    "cfg_scale": 6.0,
+    "steps": 30,
+    "sampler": "euler_ancestral",
+    "video_frames": 24,
+    "video_fps": 8,
+    "clip_seconds": 4.0,
+    "motion_bucket_id": 127,
+    "noise_aug_strength": 0.02,
+    "denoise_strength": 0.4
+  },
+  "status": "complete",
+  "raw_video_path": "/x/visual-faqtory/qodeyard/images/cycle0005_raw.mp4",
+  "looped_video_path": "/x/visual-faqtory/qodeyard/videos/cycle0005_video.mp4",
+  "source_image_path": "/x/visual-faqtory/qodeyard/images/briq_0005_fb4f9c85_image.png",
+  "generation_time": 264.597868680954,
+  "backend_used": "comfyui",
+  "error_message": null,
+  "evolution_suggestion": "add geometric pattern overlays",
+  "suggested_prompt_delta": "add geometric pattern overlays"
+}

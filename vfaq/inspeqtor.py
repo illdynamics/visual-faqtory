@@ -14,13 +14,12 @@ Responsibilities:
 
 Part of QonQrete Visual FaQtory v0.0.5-alpha
 """
-import os
-import time
+
 import json
 import logging
 import subprocess
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any
 
 from .visual_briq import VisualBriq, BriqStatus
 from .llm_utils import create_llm_client, call_llm
@@ -49,6 +48,7 @@ Output format (JSON):
     "innovative_idea": "one creative but subtle idea",
     "reasoning": "why this evolution works"
 }"""
+
 
 INSPEQTOR_EVOLVE_PROMPT = """Analyze this visual generation cycle and suggest the next evolution:
 
@@ -79,7 +79,7 @@ class InspeQtor:
         config: Dict[str, Any],
         qodeyard_dir: Path,
         llm_provider: Optional[Any] = None,
-        mode: str = "innovative"
+        mode: str = "innovative",
     ):
         self.config = config
         self.qodeyard_dir = Path(qodeyard_dir)
@@ -89,21 +89,25 @@ class InspeQtor:
         if llm_provider:
             self.llm_client = create_llm_client(llm_provider)
 
-        loop_config = config.get('looping', {})
-        self.loop_method = loop_config.get('method', 'pingpong')
-        self.output_fps = loop_config.get('output_fps', 24)
-        self.output_codec = loop_config.get('output_codec', 'h264_nvenc')
-        self.output_quality = loop_config.get('output_quality', 18)
-        self.crossfade_frames = loop_config.get('crossfade_frames', 8)
+        loop_config = config.get("looping", {})
+        self.loop_method = loop_config.get("method", "pingpong")
+        self.output_fps = loop_config.get("output_fps", 24)
+        self.output_codec = loop_config.get("output_codec", "h264_nvenc")
+        self.output_quality = loop_config.get("output_quality", 18)
+        self.crossfade_frames = loop_config.get("crossfade_frames", 8)
 
         self.suggestion_history: list = []
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Public API
+    # ──────────────────────────────────────────────────────────────────────────
 
     def inspect(self, briq: VisualBriq) -> VisualBriq:
         """
         Inspect and finalize a constructed briq.
 
         Pipeline:
-          1. Create loopable video (forward + reverse)
+          1. Create loopable video (forward + reverse) or crossfade
           2. Save as cycleN_video.mp4
           3. Generate evolution suggestion for next cycle
         """
@@ -119,10 +123,7 @@ class InspeQtor:
             briq.evolution_suggestion = suggestion
             briq.suggested_prompt_delta = suggestion
 
-            self.suggestion_history.append({
-                'cycle': briq.cycle_index,
-                'suggestion': suggestion
-            })
+            self.suggestion_history.append({"cycle": briq.cycle_index, "suggestion": suggestion})
 
             briq.status = BriqStatus.COMPLETE
             logger.info(f"[InspeQtor] Inspection complete for cycle {briq.cycle_index}")
@@ -137,8 +138,12 @@ class InspeQtor:
 
         return briq
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Loop creation
+    # ──────────────────────────────────────────────────────────────────────────
+
     def _cleanup_temp_files(self) -> None:
-        """Remove temporary frame extraction files."""
+        """Remove temporary files created by InspeQtor."""
         try:
             for pattern in ["*_frame.png", "_temp_*"]:
                 for f in self.qodeyard_dir.glob(pattern):
@@ -154,96 +159,113 @@ class InspeQtor:
 
         input_path = briq.raw_video_path
         output_name = f"cycle{briq.cycle_index:04d}_video.mp4"
-        output_path = self.qodeyard_dir / output_name
+        output_path = (self.qodeyard_dir / output_name).resolve()
 
-        if self.loop_method == 'pingpong':
-            self._create_pingpong_loop(input_path, output_path)
-        elif self.loop_method == 'crossfade':
+        if self.loop_method == "crossfade":
             self._create_crossfade_loop(input_path, output_path)
         else:
             self._create_pingpong_loop(input_path, output_path)
 
         return output_path
 
+    def _encode_args(self, codec: str) -> list[str]:
+        """Return ffmpeg encoder args for the requested codec."""
+        if codec == "h264_nvenc":
+            return [
+                "-c:v", "h264_nvenc",
+                "-rc", "vbr",
+                "-cq", str(self.output_quality),
+                "-b:v", "0",
+                "-profile:v", "high",
+                "-preset", "p5",
+            ]
+        # Default: CRF-capable codecs (libx264, libx265, etc.)
+        return ["-c:v", codec, "-crf", str(self.output_quality)]
+
     def _create_pingpong_loop(self, input_path: Path, output_path: Path) -> None:
-        """Create ping-pong loop: forward + reverse = seamless."""
-        reversed_path = self.qodeyard_dir / f"_temp_reversed_{input_path.name}"
+        """Create ping-pong loop: forward + reverse."""
+        input_path = input_path.resolve()
+        reversed_path = (self.qodeyard_dir / f"_temp_reversed_{input_path.name}").resolve()
+        concat_list = (self.qodeyard_dir / "_temp_concat.txt").resolve()
 
         try:
+            # 1) Reverse video (re-encode to ensure consistent fps/pix_fmt)
+            reverse_codec = self.output_codec if self.output_codec else "libx264"
             reverse_cmd = [
-                'ffmpeg', '-y',
-                '-i', str(input_path),
-                '-vf', 'reverse',
-                '-an',
-                '-c:v', self.output_codec,
-                '-crf', str(self.output_quality),
-                str(reversed_path)
+                "ffmpeg", "-y",
+                "-i", str(input_path),
+                "-vf", "reverse",
+                "-an",
+                *self._encode_args(reverse_codec),
+                "-r", str(self.output_fps),
+                "-vsync", "cfr",
+                "-pix_fmt", "yuv420p",
+                str(reversed_path),
             ]
 
             result = subprocess.run(reverse_cmd, capture_output=True, text=True)
             if result.returncode != 0:
-                # Try libx264 fallback if NVENC not available
-                logger.warning(f"[InspeQtor] {self.output_codec} failed, trying libx264 fallback")
-                reverse_cmd_fallback = [
-                    'ffmpeg', '-y',
-                    '-i', str(input_path),
-                    '-vf', 'reverse',
-                    '-an',
-                    '-c:v', 'libx264',
-                    '-crf', str(self.output_quality),
-                    str(reversed_path)
-                ]
-                result = subprocess.run(reverse_cmd_fallback, capture_output=True, text=True)
-                if result.returncode != 0:
-                    logger.warning(f"Reverse failed: {result.stderr}")
-                    import shutil
-                    shutil.copy2(input_path, output_path)
-                    return
+                logger.warning(f"[InspeQtor] Reverse failed ({reverse_codec}). stderr: {result.stderr}")
+                # Fallback: copy original (non-loop) so pipeline can continue
+                import shutil
+                shutil.copy2(input_path, output_path)
+                return
 
-            concat_list = self.qodeyard_dir / "_temp_concat.txt"
+            # 2) Concat forward + reverse into looped output
             concat_list.write_text(
-                f"file '{input_path.name}'\n"
-                f"file '{reversed_path.name}'\n"
+                f"file '{input_path}'\n"
+                f"file '{reversed_path}'\n"
             )
 
-            # Try preferred codec first, fallback to libx264
-            for codec in [self.output_codec, 'libx264']:
+            for codec in [self.output_codec, "libx264"]:
+                # If the first entry equals "libx264", the list will try it twice; harmless.
+                video_args = self._encode_args(codec)
+
                 concat_cmd = [
-                    'ffmpeg', '-y',
-                    '-f', 'concat',
-                    '-safe', '0',
-                    '-i', str(concat_list),
-                    '-c:v', codec,
-                    '-crf', str(self.output_quality),
-                    '-r', str(self.output_fps),
-                    '-pix_fmt', 'yuv420p',
-                    str(output_path)
+                    "ffmpeg", "-y",
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", str(concat_list),
+                    *video_args,
+                    "-r", str(self.output_fps),
+                    "-vsync", "cfr",
+                    "-pix_fmt", "yuv420p",
+                    str(output_path),
                 ]
-                result = subprocess.run(concat_cmd, capture_output=True, text=True,
-                                       cwd=self.qodeyard_dir)
+
+                result = subprocess.run(concat_cmd, capture_output=True, text=True)
                 if result.returncode == 0:
                     break
-                logger.warning(f"[InspeQtor] Concat with {codec} failed, trying next...")
+                logger.warning(f"[InspeQtor] Concat with {codec} failed, trying next... stderr: {result.stderr}")
             else:
                 import shutil
                 shutil.copy2(input_path, output_path)
 
         finally:
-            if reversed_path.exists():
-                reversed_path.unlink()
-            concat_list = self.qodeyard_dir / "_temp_concat.txt"
-            if concat_list.exists():
-                concat_list.unlink()
+            try:
+                if reversed_path.exists():
+                    reversed_path.unlink()
+            except Exception:
+                pass
+            try:
+                if concat_list.exists():
+                    concat_list.unlink()
+            except Exception:
+                pass
 
     def _create_crossfade_loop(self, input_path: Path, output_path: Path) -> None:
-        """Create crossfade loop."""
+        """Create a loopable clip using a crossfade from end→start."""
+        input_path = input_path.resolve()
         duration = self._get_video_duration(input_path)
-        xfade_duration = self.crossfade_frames / self.output_fps
+        xfade_duration = self.crossfade_frames / float(self.output_fps)
 
         if duration <= xfade_duration * 2:
-            logger.warning("Video too short for crossfade, using pingpong")
-            return self._create_pingpong_loop(input_path, output_path)
+            logger.warning("[InspeQtor] Video too short for crossfade, using pingpong")
+            self._create_pingpong_loop(input_path, output_path)
+            return
 
+        # Build a clip where the end is crossfaded into the beginning.
+        # NOTE: This is a simple implementation; pingpong is usually more robust.
         filter_complex = (
             f"[0:v]split[main][end];"
             f"[end]trim=start={duration - xfade_duration},setpts=PTS-STARTPTS[endclip];"
@@ -251,48 +273,54 @@ class InspeQtor:
             f"[mainclip][endclip]xfade=transition=fade:duration={xfade_duration}:offset=0[out]"
         )
 
-        cmd = [
-            'ffmpeg', '-y',
-            '-i', str(input_path),
-            '-filter_complex', filter_complex,
-            '-map', '[out]',
-            '-c:v', self.output_codec,
-            '-crf', str(self.output_quality),
-            '-r', str(self.output_fps),
-            str(output_path)
-        ]
+        for codec in [self.output_codec, "libx264"]:
+            video_args = self._encode_args(codec)
 
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            logger.warning(f"Crossfade failed: {result.stderr}, falling back to pingpong")
-            self._create_pingpong_loop(input_path, output_path)
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", str(input_path),
+                "-filter_complex", filter_complex,
+                "-map", "[out]",
+                "-an",
+                *video_args,
+                "-r", str(self.output_fps),
+                "-vsync", "cfr",
+                "-pix_fmt", "yuv420p",
+                str(output_path),
+            ]
 
-    def _has_audio(self, video_path: Path) -> bool:
-        """Check if video has audio stream."""
-        cmd = [
-            'ffprobe', '-v', 'error',
-            '-select_streams', 'a',
-            '-show_entries', 'stream=codec_type',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            str(video_path)
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        return bool(result.stdout.strip())
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                return
+
+            logger.warning(f"[InspeQtor] Crossfade with {codec} failed, trying next... stderr: {result.stderr}")
+
+        # If everything fails, fall back to pingpong
+        logger.warning("[InspeQtor] Crossfade failed for all codecs, falling back to pingpong")
+        self._create_pingpong_loop(input_path, output_path)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Helpers
+    # ──────────────────────────────────────────────────────────────────────────
 
     def _get_video_duration(self, video_path: Path) -> float:
         """Get video duration in seconds."""
         cmd = [
-            'ffprobe', '-v', 'error',
-            '-select_streams', 'v:0',
-            '-show_entries', 'stream=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            str(video_path)
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(video_path),
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         try:
             return float(result.stdout.strip())
         except ValueError:
             return 8.0
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Evolution suggestion
+    # ──────────────────────────────────────────────────────────────────────────
 
     def _generate_evolution_suggestion(self, briq: VisualBriq) -> str:
         """Generate creative evolution suggestion for next cycle."""
@@ -312,7 +340,7 @@ class InspeQtor:
             "increase contrast and intensity",
             "soften edges with dreamlike blur",
             "introduce neon glow highlights",
-            "add subtle glitch artifacts"
+            "add subtle glitch artifacts",
         ]
         innovative_extras = [
             "experiment with impossible geometry",
@@ -322,7 +350,7 @@ class InspeQtor:
             "create depth through layered dimensions",
             "merge abstract with recognizable forms",
             "introduce time-distortion visual effects",
-            "blend multiple color temperatures"
+            "blend multiple color temperatures",
         ]
 
         cycle = briq.cycle_index
@@ -341,34 +369,31 @@ class InspeQtor:
 
         try:
             recent_suggestions = self.suggestion_history[-3:] if self.suggestion_history else []
-            suggestions_text = "\n".join([
-                f"Cycle {s['cycle']}: {s['suggestion']}"
-                for s in recent_suggestions
-            ]) or "None yet (first cycle)"
+            suggestions_text = "\n".join([f"Cycle {s['cycle']}: {s['suggestion']}" for s in recent_suggestions]) or "None yet (first cycle)"
 
             user_prompt = INSPEQTOR_EVOLVE_PROMPT.format(
                 current_prompt=briq.prompt,
                 cycle_index=briq.cycle_index,
-                target_cycles=self.config.get('cycle', {}).get('max_cycles', 100),
-                previous_suggestions=suggestions_text
+                target_cycles=self.config.get("cycle", {}).get("max_cycles", 100),
+                previous_suggestions=suggestions_text,
             )
 
             response = call_llm(
                 self.llm_client,
                 system_prompt=INSPEQTOR_SYSTEM_PROMPT,
                 user_prompt=user_prompt,
-                config=self.config
+                config=self.config,
             )
 
             data = json.loads(response)
 
-            suggestion = data.get('evolution_suggestion', '')
+            suggestion = data.get("evolution_suggestion", "")
             if self.mode == "innovative":
-                innovative = data.get('innovative_idea', '')
+                innovative = data.get("innovative_idea", "")
                 if innovative:
                     suggestion = f"{suggestion}; {innovative}"
 
-            return suggestion
+            return suggestion or self._basic_suggestion(briq)
 
         except Exception as e:
             logger.warning(f"LLM suggestion failed: {e}, using basic")
@@ -386,8 +411,8 @@ class InspeQtor:
             "looped_video": str(briq.looped_video_path),
             "evolution_suggestion": briq.evolution_suggestion,
             "mode": briq.mode.value,
-            "seed": briq.seed
+            "seed": briq.seed,
         }
 
 
-__all__ = ['InspeQtor', 'INSPEQTOR_SYSTEM_PROMPT']
+__all__ = ["InspeQtor", "INSPEQTOR_SYSTEM_PROMPT"]
