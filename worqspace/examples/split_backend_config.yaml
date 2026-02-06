@@ -1,0 +1,41 @@
+# Example: Split Backend Configuration
+# ═══════════════════════════════════════════════════════════════════════════════
+# Visual FaQtory v0.0.7-alpha supports split backends:
+# different engines for image generation vs video generation.
+#
+# This is useful when:
+#   - Your image model runs on a different GPU/server than video
+#   - You want ComfyUI for images but Replicate for video
+#   - You have separate workflow optimizations per stage
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Split backend: ComfyUI for both, different servers
+backends:
+  image:
+    type: comfyui
+    api_url: http://image-gpu:8188
+    timeout: 300
+  video:
+    type: comfyui
+    api_url: http://video-gpu:8188
+    timeout: 600
+
+# Split backend: ComfyUI for images, Replicate for video
+# backends:
+#   image:
+#     type: comfyui
+#     api_url: http://localhost:8188
+#   video:
+#     type: replicate
+#     api_token: ${REPLICATE_API_TOKEN}
+#     video_model: stability-ai/stable-video-diffusion
+
+# Split backend: Mock image, real video (for testing)
+# backends:
+#   image:
+#     type: mock
+#     mock_delay: 0.1
+#   video:
+#     type: comfyui
+#     api_url: http://localhost:8188

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-quick_test.py - Quick smoke test for Visual FaQtory v0.0.5-alpha
+quick_test.py - Quick smoke test for Visual FaQtory v0.0.7-alpha
 """
 import os
 import logging
@@ -25,7 +25,7 @@ def main():
 
         config_override = {'backend': {'type': 'mock'}}
 
-        logger.info("QonQrete Visual FaQtory v0.0.5-alpha - Quick Test")
+        logger.info("QonQrete Visual FaQtory v0.0.7-alpha - Quick Test")
         logger.info("=" * 50)
         logger.info("Initializing with Mock Backend...")
 

@@ -11,7 +11,7 @@ Pluggable backends for image and video generation:
 
 Each backend implements the GeneratorBackend interface.
 
-Part of QonQrete Visual FaQtory v0.0.5-alpha
+Part of QonQrete Visual FaQtory v0.0.7-alpha
 """
 import os
 import io
@@ -68,6 +68,9 @@ class GenerationRequest:
     noise_aug_strength: float = 0.02
     output_dir: Path = field(default_factory=lambda: Path("./output"))
     atom_id: str = ""
+    # Prompt Bundle extensions (v0.0.7-alpha)
+    video_prompt: Optional[str] = None       # Dedicated prompt for video stage
+    motion_prompt: Optional[str] = None      # Raw motion intent from motion_prompt.md
 
 
 @dataclass
@@ -327,7 +330,7 @@ class ComfyUIBackend(GeneratorBackend):
         if self.workflow_image:
             try:
                 workflow = json.loads(Path(self.workflow_image).read_text())
-                return self._customize_workflow(workflow, request)
+                return self._customize_workflow(workflow, request, is_video=False)
             except Exception as e:
                 logger.warning(f"Failed to load custom workflow: {e}, using default")
         
@@ -398,6 +401,7 @@ class ComfyUIBackend(GeneratorBackend):
         if self.workflow_video:
             try:
                 workflow = json.loads(Path(self.workflow_video).read_text())
+                workflow = self._customize_workflow(workflow, request, is_video=True)
                 workflow = self._inject_loaded_image(workflow, image_name)
                 return workflow
             except Exception as e:
@@ -477,8 +481,14 @@ class ComfyUIBackend(GeneratorBackend):
             }
         }
     
-    def _customize_workflow(self, workflow: Dict, request: GenerationRequest) -> Dict:
-        """Inject parameters into loaded workflow."""
+    def _customize_workflow(self, workflow: Dict, request: GenerationRequest, is_video: bool = False) -> Dict:
+        """Inject parameters into loaded workflow. For video, prefers video_prompt."""
+        # Determine which prompt to use for positive CLIP nodes
+        effective_prompt = request.prompt
+        if is_video and request.video_prompt:
+            effective_prompt = request.video_prompt
+            logger.info(f"[ComfyUI] Using video_prompt for video workflow injection")
+
         for node_id, node in workflow.items():
             inputs = node.get('inputs', {})
             class_type = node.get('class_type', '')
@@ -494,7 +504,7 @@ class ComfyUIBackend(GeneratorBackend):
             # Inject prompt into CLIP nodes
             if class_type == 'CLIPTextEncode':
                 if 'positive' in node_id.lower() or inputs.get('text', '').startswith('masterpiece'):
-                    inputs['text'] = request.prompt
+                    inputs['text'] = effective_prompt
                 elif 'negative' in node_id.lower():
                     inputs['text'] = request.negative_prompt
             
@@ -956,6 +966,105 @@ class ReplicateBackend(GeneratorBackend):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SPLIT BACKEND (v0.0.7-alpha — separate image and video backends)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class SplitBackend(GeneratorBackend):
+    """
+    Wrapper that delegates image and video generation to separate backends.
+
+    Config (v0.0.7-alpha):
+      backends:
+        image:
+          type: comfyui
+          ...
+        video:
+          type: comfyui
+          ...
+
+    Falls back to single backend if both are the same instance.
+    """
+
+    def __init__(self, image_backend: GeneratorBackend, video_backend: GeneratorBackend):
+        # No config needed at wrapper level
+        super().__init__({})
+        self.name = f"split({image_backend.name}/{video_backend.name})"
+        self.image_backend = image_backend
+        self.video_backend = video_backend
+
+    def generate_image(self, request: GenerationRequest) -> GenerationResult:
+        """Delegate image generation to image backend."""
+        return self.image_backend.generate_image(request)
+
+    def generate_video(self, request: GenerationRequest, source_image: Path) -> GenerationResult:
+        """Delegate video generation to video backend."""
+        return self.video_backend.generate_video(request, source_image)
+
+    def check_availability(self) -> tuple:
+        """Combined status of both backends."""
+        img_ok, img_msg = self.image_backend.check_availability()
+        vid_ok, vid_msg = self.video_backend.check_availability()
+
+        if img_ok and vid_ok:
+            return True, f"Image: {img_msg} | Video: {vid_msg}"
+        elif img_ok:
+            return False, f"Image OK ({img_msg}) but Video failed: {vid_msg}"
+        elif vid_ok:
+            return False, f"Video OK ({vid_msg}) but Image failed: {img_msg}"
+        else:
+            return False, f"Both failed — Image: {img_msg} | Video: {vid_msg}"
+
+    def supports_mode(self, mode: InputMode) -> bool:
+        return self.image_backend.supports_mode(mode) and self.video_backend.supports_mode(mode)
+
+
+def create_split_backend(config: Dict[str, Any]) -> GeneratorBackend:
+    """
+    Create backend(s) from config, supporting both legacy single-backend
+    and new split-backend configurations.
+
+    Legacy (v0.0.6):
+      backend:
+        type: comfyui
+
+    New (v0.0.7):
+      backends:
+        image:
+          type: comfyui
+        video:
+          type: comfyui
+
+    Falls back gracefully: if 'backends' not present, uses legacy 'backend'.
+    """
+    backends_config = config.get('backends')
+
+    if backends_config:
+        # New split-backend config
+        image_cfg = backends_config.get('image', {})
+        video_cfg = backends_config.get('video', image_cfg)  # default to image if video not set
+
+        # Merge top-level comfyui section into each backend for ckpt visibility
+        comfyui_global = config.get('comfyui', {})
+        if comfyui_global:
+            if 'comfyui' not in image_cfg:
+                image_cfg = {**image_cfg, 'comfyui': comfyui_global}
+            if 'comfyui' not in video_cfg:
+                video_cfg = {**video_cfg, 'comfyui': comfyui_global}
+
+        image_backend = create_backend(image_cfg)
+        video_backend = create_backend(video_cfg)
+
+        logger.info(
+            f"[SplitBackend] Image: {image_backend.name}, Video: {video_backend.name}"
+        )
+        return SplitBackend(image_backend, video_backend)
+
+    # Legacy single-backend config
+    backend_config = config.get('backend', {'type': 'mock'})
+    return create_backend(backend_config)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # FACTORY
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -993,5 +1102,6 @@ def list_available_backends() -> Dict[str, tuple]:
 __all__ = [
     'BackendType', 'InputMode', 'GenerationRequest', 'GenerationResult',
     'GeneratorBackend', 'MockBackend', 'ComfyUIBackend', 'DiffusersBackend',
-    'ReplicateBackend', 'create_backend', 'list_available_backends'
+    'ReplicateBackend', 'SplitBackend',
+    'create_backend', 'create_split_backend', 'list_available_backends'
 ]

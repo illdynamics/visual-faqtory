@@ -11,17 +11,22 @@ automated long-form visual generation:
 Pipeline flow:
   1. InstruQtor reads tasq.md, creates VisualBriq
   2. ConstruQtor calls backend, generates raw video
-  3. InspeQtor loops it (pingpong), suggests evolution for next cycle
+  3. InspeQtor processes it (passthrough or loop), suggests evolution for next cycle
   4. Repeat with evolved prompt until target duration reached
-  5. Finalizer stitches all per-cycle MP4s into final_output.mp4
+  5. Finalizer stitches all per-cycle MP4s into final_output.mp4 (BASE MASTER)
+  6. Post-stitch Finalizer (if enabled):
+     → Interpolate to 60fps (minterpolate)
+     → Upscale to 1920×1080 (bicubic)
+     → Encode with h264_nvenc / libx264 fallback
+     → Produce final_60fps_1080p.mp4 (FINAL DELIVERABLE)
 
-Project-based runs (v0.0.5-alpha):
+Project-based runs (v0.0.7-alpha):
   - Named projects stored in worqspace/qonstructions/<project-name>/
   - Unnamed runs use temp directory with interactive save prompt
   - Each project has: briqs/, images/, videos/, factory_state.json,
-    config_snapshot.yaml, final_output.mp4
+    config_snapshot.yaml, final_output.mp4, final_60fps_1080p.mp4
 
-Part of QonQrete Visual FaQtory v0.0.5-alpha
+Part of QonQrete Visual FaQtory v0.0.7-alpha
 """
 import os
 import sys
@@ -41,7 +46,7 @@ from .instruqtor import InstruQtor
 from .construqtor import ConstruQtor
 from .inspeqtor import InspeQtor
 from .finalizer import Finalizer, FinalizerError
-from .backends import create_backend, list_available_backends
+from .backends import create_backend, create_split_backend, list_available_backends
 
 logger = logging.getLogger(__name__)
 
@@ -145,9 +150,8 @@ class VisualFaQtory:
         """Initialize the three agents."""
         logger.info("[FaQtory] Initializing agents...")
 
-        # Create backend for ConstruQtor
-        backend_config = self.config.get('backend', {'type': 'mock'})
-        backend = create_backend(backend_config)
+        # Create backend(s) for ConstruQtor — supports split config (v0.0.7)
+        backend = create_split_backend(self.config)
 
         # LLM Provider initialization
         llm_provider_instance = None
@@ -208,7 +212,7 @@ class VisualFaQtory:
             List of completed VisualBriqs
         """
         logger.info("=" * 60)
-        logger.info("QonQrete Visual FaQtory v0.0.5-alpha")
+        logger.info("QonQrete Visual FaQtory v0.0.7-alpha")
         logger.info("=" * 60)
         if self.project_name:
             logger.info(f"[FaQtory] Project: {self.project_name}")
@@ -308,6 +312,7 @@ class VisualFaQtory:
 
         # === FINALIZATION ===
         final_path = None
+        self._deliverable_path = None
         if completed_briqs:
             final_path = self._run_finalizer()
 
@@ -317,7 +322,9 @@ class VisualFaQtory:
         logger.info(f"  → Cycles completed: {len(completed_briqs)}")
         logger.info(f"  → Total video duration: {self.state.total_video_duration:.1f}s")
         if final_path:
-            logger.info(f"  → Final output: {final_path}")
+            logger.info(f"  → Stitched master: {final_path}")
+        if self._deliverable_path:
+            logger.info(f"  → Final deliverable: {self._deliverable_path}")
         logger.info(f"  → Project directory: {self.project_dir}")
         if self.state.failed_cycles:
             logger.warning(f"  → Failed cycles: {self.state.failed_cycles}")
@@ -330,15 +337,18 @@ class VisualFaQtory:
         return completed_briqs
 
     def _run_finalizer(self) -> Optional[Path]:
-        """Run the Finalizer to stitch all videos into final_output.mp4."""
+        """Run the Finalizer to stitch all videos into final_output.mp4,
+        then optionally run post-stitch interpolation + upscale."""
         try:
             codec = self.config.get('looping', {}).get('output_codec', 'h264_nvenc')
             quality = self.config.get('looping', {}).get('output_quality', 18)
+            finalizer_config = self.config.get('finalizer', {})
 
             finalizer = Finalizer(
                 project_dir=self.project_dir,
                 preferred_codec=codec,
-                output_quality=quality
+                output_quality=quality,
+                finalizer_config=finalizer_config
             )
 
             video_paths = [Path(p) for p in self.state.cycle_video_paths] if self.state.cycle_video_paths else None
@@ -347,6 +357,11 @@ class VisualFaQtory:
                 cycle_video_paths=video_paths,
                 failed_cycles=self.state.failed_cycles if self.state.failed_cycles else None
             )
+
+            # === POST-STITCH FINALIZER (runs ONCE, after stitching) ===
+            deliverable_path = finalizer.run_post_stitch_finalizer()
+            if deliverable_path:
+                self._deliverable_path = deliverable_path
 
             return final_path
 

@@ -6,21 +6,35 @@ instruqtor.py - Visual Instruction Agent
 InstruQtor is the first agent in the Visual FaQtory pipeline.
 
 Responsibilities:
-  1. Parse tasq.md and extract CREATIVE INTENT only
+  1. Load Prompt Bundle (tasq.md + negative_prompt.md + style_hints.md
+     + motion_prompt.md) using the PromptBundle loader
   2. Analyze input mode (text/image/video)
   3. Create structured VisualBriq with refined prompt and specs
   4. For cycle N>0: Use previous cycle's video as base input
-  5. ENFORCE strict separation: tasq.md = creative, config.yaml = mechanical
+  5. ENFORCE strict separation: creative files = creative, config.yaml = mechanical
 
-STRICT SEPARATION (v0.0.5-alpha):
-  tasq.md MAY contain: title, mode, backend, input_image, descriptive prompt text
-  tasq.md MUST NOT control: fps, duration, frame counts, resolution, diffusion steps
+STRICT SEPARATION (v0.0.7-alpha):
+  tasq.md / style_hints.md / motion_prompt.md MAY contain: creative intent only
   config.yaml controls ALL mechanical/technical parameters.
 
-Part of QonQrete Visual FaQtory v0.0.5-alpha
+Prompt Bundle (v0.0.7-alpha):
+  - tasq.md                base creative prompt (required)
+  - negative_prompt.md     negative prompt source of truth (optional)
+  - style_hints.md         style + evolution constraints (optional)
+  - motion_prompt.md       video motion intent (optional)
+
+LLM output fields (v0.0.7-alpha):
+  - refined_prompt         optimized image/video prompt
+  - negative_prompt        optional LLM-refined negative
+  - style_tags             extracted style keywords
+  - motion_hint            short motion guidance for video
+  - video_prompt           optional dedicated video prompt
+
+Part of QonQrete Visual FaQtory v0.0.7-alpha
 """
 import os
 import re
+import json
 import yaml
 import logging
 from pathlib import Path
@@ -31,6 +45,7 @@ from .visual_briq import (
     VisualBriq, GenerationSpec, InputMode, BriqStatus,
     generate_briq_id, CycleState
 )
+from .prompt_bundle import PromptBundle, load_prompt_bundle
 
 logger = logging.getLogger(__name__)
 
@@ -57,12 +72,17 @@ You understand:
 - Quality tags that improve generation (masterpiece, highly detailed, etc.)
 - Style keywords that work well for video generation
 - How to balance creativity with technical effectiveness
+- Style constraints provided in STYLE_HINTS
+- Motion direction provided in MOTION_PROMPT
+- What should be excluded via NEGATIVE_PROMPT
 
-When given a raw prompt, you:
+When given a raw prompt and its supporting context, you:
 1. Keep the core creative intent
 2. Add appropriate quality boosters
 3. Structure for best SD results
-4. Suggest motion-friendly compositions for video
+4. Respect STYLE_HINTS for visual style constraints and evolution direction
+5. Incorporate MOTION_PROMPT intent into a short motion_hint
+6. Suggest a video_prompt that combines visual + motion intent
 
 For cycle N>0 (evolution mode):
 - Make SUBTLE variations, not dramatic changes
@@ -71,11 +91,12 @@ For cycle N>0 (evolution mode):
 
 Output format (JSON):
 {
-    "refined_prompt": "the optimized prompt",
+    "refined_prompt": "the optimized image prompt",
     "quality_tags": ["masterpiece", "best quality", ...],
     "style_tags": ["cinematic", "moody", ...],
-    "negative_prompt": "things to avoid",
-    "motion_hint": "suggestion for video motion",
+    "negative_prompt": "things to avoid (optional, leave empty to use user's)",
+    "motion_hint": "short motion guidance for video stage",
+    "video_prompt": "optional dedicated video prompt combining visual + motion",
     "reasoning": "brief explanation of choices"
 }"""
 
@@ -84,11 +105,21 @@ INSTRUQTOR_REFINE_PROMPT = """Refine this raw visual prompt for Stable Diffusion
 RAW PROMPT:
 {raw_prompt}
 
+STYLE_HINTS:
+{style_hints}
+
+MOTION_PROMPT:
+{motion_prompt}
+
+NEGATIVE_PROMPT_SOURCE:
+{negative_prompt}
+
 MODE: {mode}
 CYCLE: {cycle_index}
 {previous_context}
 
 Create an optimized prompt that will generate stunning visuals.
+Respect the STYLE_HINTS for visual direction and the MOTION_PROMPT for movement intent.
 Respond with JSON only."""
 
 INSTRUQTOR_EVOLVE_PROMPT = """Subtly evolve this prompt for the next visual cycle:
@@ -99,10 +130,19 @@ CURRENT PROMPT:
 EVOLUTION SUGGESTION FROM INSPECTOR:
 {evolution_suggestion}
 
+STYLE_HINTS:
+{style_hints}
+
+MOTION_PROMPT:
+{motion_prompt}
+
+NEGATIVE_PROMPT_SOURCE:
+{negative_prompt}
+
 CYCLE: {cycle_index}
 
 Make a SUBTLE variation - we want smooth visual evolution, not jarring changes.
-Keep 80% similar, evolve 20%.
+Keep 80% similar, evolve 20%. Stay within the boundaries of STYLE_HINTS.
 
 Respond with JSON only."""
 
@@ -111,7 +151,7 @@ class InstruQtor:
     """
     The instruction agent that prepares VisualBriqs for generation.
 
-    Uses LLM to refine prompts and create optimal generation specs.
+    Uses PromptBundle to load creative files, and LLM to refine prompts.
     Enforces strict config/tasq separation.
     """
 
@@ -156,117 +196,53 @@ class InstruQtor:
             'blurry, low quality, watermark, text, deformed'
         )
 
+        # Cache the prompt bundle (loaded once, reused per cycle)
+        self._bundle: Optional[PromptBundle] = None
+
+    def _load_bundle(self) -> PromptBundle:
+        """Load prompt bundle from worqspace files (cached after first load)."""
+        if self._bundle is None:
+            self._bundle = load_prompt_bundle(self.worqspace_dir, self.config)
+            logger.info(
+                f"[InstruQtor] PromptBundle loaded: "
+                f"prompt={len(self._bundle.raw_prompt)}ch, "
+                f"negative={self._bundle._negative_source}, "
+                f"style={self._bundle._style_source}, "
+                f"motion={self._bundle._motion_source}"
+            )
+        return self._bundle
+
     def parse_tasq(self) -> Tuple[str, InputMode, Optional[Path], Dict[str, Any]]:
         """
         Parse tasq.md file and extract CREATIVE INTENT only.
+        Now delegates to PromptBundle loader for unified loading.
 
         Enforces strict separation: mechanical parameters in tasq.md trigger warnings.
 
         Returns:
             (prompt, mode, input_image_path, creative_overrides)
         """
-        tasq_file = self.config.get('input', {}).get('tasq_file', 'tasq.md')
-        tasq_path = self.worqspace_dir / tasq_file
+        bundle = self._load_bundle()
 
-        if not tasq_path.exists():
-            raise FileNotFoundError(f"tasq.md not found at: {tasq_path}")
-
-        content = tasq_path.read_text(encoding='utf-8')
-
-        # Parse YAML frontmatter if present
-        frontmatter = {}
-        body = content
-
-        if content.startswith('---'):
-            parts = content.split('---', 2)
-            if len(parts) >= 3:
-                try:
-                    frontmatter = yaml.safe_load(parts[1]) or {}
-                except yaml.YAMLError as e:
-                    logger.warning(f"Failed to parse frontmatter: {e}")
-                body = parts[2]
-
-        # ENFORCE strict separation: warn about forbidden keys
-        found_forbidden = set(frontmatter.keys()) & FORBIDDEN_TASQ_KEYS
-        if found_forbidden:
-            logger.warning(
-                f"[InstruQtor] tasq.md contains mechanical parameters that belong "
-                f"in config.yaml: {found_forbidden}. These will be IGNORED. "
-                f"Move them to worqspace/config.yaml under the appropriate section."
-            )
-
-        # Extract mode (allowed in tasq.md)
-        mode_str = frontmatter.get('mode', 'text').lower()
+        # Convert mode string to InputMode
         try:
-            mode = InputMode(mode_str)
+            mode = InputMode(bundle.mode)
         except ValueError:
-            logger.warning(f"Unknown mode '{mode_str}', defaulting to text")
+            logger.warning(f"Unknown mode '{bundle.mode}', defaulting to text")
             mode = InputMode.TEXT
 
-        # Extract input_image (allowed in tasq.md for image mode)
-        input_image = None
-        if mode == InputMode.IMAGE:
-            img_path = frontmatter.get('input_image') or frontmatter.get('base_image')
-            if img_path:
-                input_image = self._resolve_path(img_path)
-
-        # Extract prompt from body
-        prompt = self._extract_prompt(body)
-
-        # Extract negative prompt if in body
-        negative = self._extract_section(body, 'negative')
-
         # Collect ONLY creative overrides (filtered)
-        creative_overrides = {
-            'seed': frontmatter.get('seed'),
-            'negative_prompt': negative or frontmatter.get('negative_prompt'),
-            'title': frontmatter.get('title'),
-            'backend': frontmatter.get('backend'),
-            'drift_preset': frontmatter.get('drift_preset'),
-        }
-        creative_overrides = {k: v for k, v in creative_overrides.items() if v is not None}
+        creative_overrides = {}
+        if bundle.seed is not None:
+            creative_overrides['seed'] = bundle.seed
+        if bundle.title:
+            creative_overrides['title'] = bundle.title
+        if bundle.backend_override:
+            creative_overrides['backend'] = bundle.backend_override
+        if bundle.drift_preset:
+            creative_overrides['drift_preset'] = bundle.drift_preset
 
-        return prompt, mode, input_image, creative_overrides
-
-    def _resolve_path(self, path_str: str) -> Path:
-        """Resolve path relative to worqspace."""
-        path = Path(path_str)
-        if path.is_absolute():
-            return path
-        return (self.worqspace_dir / path).resolve()
-
-    def _extract_prompt(self, body: str) -> str:
-        """Extract main prompt from markdown body."""
-        lines = []
-        in_code = False
-        skip_section = False
-
-        for line in body.split('\n'):
-            if line.strip().startswith('```'):
-                in_code = not in_code
-                continue
-            if in_code:
-                continue
-            if re.match(r'^#{1,2}\s*[Nn]egative', line):
-                skip_section = True
-                continue
-            if skip_section and re.match(r'^#{1,2}\s', line):
-                skip_section = False
-            if skip_section:
-                continue
-            if line.strip().startswith('#'):
-                continue
-            lines.append(line)
-
-        return '\n'.join(lines).strip()
-
-    def _extract_section(self, body: str, section_name: str) -> Optional[str]:
-        """Extract content from a named section."""
-        pattern = rf'^#{1,2}\s*{section_name}[^\n]*\n(.*?)(?=^#{1,2}\s|\Z)'
-        match = re.search(pattern, body, re.IGNORECASE | re.MULTILINE | re.DOTALL)
-        if match:
-            return match.group(1).strip()
-        return None
+        return bundle.raw_prompt, mode, bundle.input_image, creative_overrides
 
     def create_briq(
         self,
@@ -277,13 +253,18 @@ class InstruQtor:
         """
         Create a VisualBriq for the given cycle.
 
-        Mode handling (v0.0.5-alpha):
+        Mode handling (v0.0.7-alpha):
           Cycle 0:
             - text mode: text → image → video
             - image mode: requires input_image, skips image gen, feeds into video
           Cycle N (N>0):
             - video mode: video → video (variation + evolution)
             - The pipeline NEVER hard-resets visual identity unless explicitly instructed.
+
+        Prompt Bundle integration (v0.0.7-alpha):
+          - style_hints.md + motion_prompt.md + negative_prompt.md are loaded
+          - LLM receives full bundle context
+          - Briq stores all bundle fields for auditability
 
         Args:
             cycle_index: Current cycle number (0-indexed)
@@ -294,6 +275,9 @@ class InstruQtor:
             VisualBriq ready for ConstruQtor
         """
         logger.info(f"[InstruQtor] Creating briq for cycle {cycle_index}")
+
+        # Load prompt bundle
+        bundle = self._load_bundle()
 
         # Parse tasq for creative intent
         raw_prompt, mode, input_image, creative_overrides = self.parse_tasq()
@@ -324,20 +308,20 @@ class InstruQtor:
         base_video = None
 
         # Determine prompt and mode for this cycle
+        llm_result = None
+
         if cycle_index == 0:
             # === CYCLE 0 ===
             if mode == InputMode.TEXT:
-                # text → image → video
-                prompt = self._refine_prompt(raw_prompt, mode, cycle_index)
+                llm_result = self._refine_prompt_bundle(raw_prompt, mode, cycle_index, bundle)
             elif mode == InputMode.IMAGE:
-                # image → video (skip image gen)
                 if not input_image or not input_image.exists():
                     raise ValueError(
                         f"[InstruQtor] Image mode requires a valid input_image. "
                         f"Got: {input_image}. Set 'input_image' or 'base_image' in tasq.md."
                     )
                 base_image = input_image
-                prompt = self._refine_prompt(raw_prompt, mode, cycle_index)
+                llm_result = self._refine_prompt_bundle(raw_prompt, mode, cycle_index, bundle)
             elif mode == InputMode.VIDEO:
                 raise ValueError(
                     "[InstruQtor] Video mode is only valid for cycle N>0 "
@@ -352,11 +336,11 @@ class InstruQtor:
                 base_video = previous_briq.looped_video_path
                 base_image = None
 
-                # Evolve the prompt without hard-resetting visual identity
-                prompt = self._evolve_prompt(
+                llm_result = self._evolve_prompt_bundle(
                     previous_briq.prompt,
                     evolution_suggestion or "",
-                    cycle_index
+                    cycle_index,
+                    bundle
                 )
             else:
                 # Fallback: no previous briq available, re-derive from tasq
@@ -364,7 +348,6 @@ class InstruQtor:
                     f"[InstruQtor] Cycle {cycle_index} has no previous briq. "
                     f"Falling back to tasq.md prompt (this may reset visual identity)."
                 )
-                # IMAGE mode fallback: still use input_image from tasq.md
                 if mode == InputMode.IMAGE:
                     if input_image and input_image.exists():
                         base_image = input_image
@@ -378,10 +361,22 @@ class InstruQtor:
                             f"for fallback on cycle {cycle_index}. "
                             f"Got: {input_image}. Set 'input_image' in tasq.md."
                         )
-                prompt = self._refine_prompt(raw_prompt, mode, cycle_index)
+                llm_result = self._refine_prompt_bundle(raw_prompt, mode, cycle_index, bundle)
 
-        # Get negative prompt
-        negative = creative_overrides.get('negative_prompt', self.default_negative)
+        # Extract values from LLM result dict
+        prompt = llm_result.get('refined_prompt', raw_prompt)
+        style_tags = llm_result.get('style_tags', [])
+        motion_hint = llm_result.get('motion_hint', '')
+        llm_video_prompt = llm_result.get('video_prompt', '')
+        llm_negative = llm_result.get('negative_prompt', '')
+
+        # Negative prompt precedence:
+        #   1) bundle.negative_prompt (already resolved from file/frontmatter/config)
+        #   2) LLM-returned negative (only if non-empty AND source was default)
+        #   3) config default
+        negative = bundle.negative_prompt
+        if llm_negative and bundle._negative_source == "config_default":
+            negative = llm_negative
 
         # Create the briq
         briq = VisualBriq(
@@ -391,37 +386,72 @@ class InstruQtor:
             prompt=prompt,
             negative_prompt=negative,
             quality_tags=self.default_quality_tags.copy(),
-            style_tags=[],
+            style_tags=style_tags if style_tags else [],
             seed=seed,
             base_image_path=base_image,
             base_video_path=base_video,
             spec=spec,
-            status=BriqStatus.PENDING
+            status=BriqStatus.PENDING,
+            # Prompt bundle fields (v0.0.7)
+            style_hints=bundle.style_hints,
+            motion_prompt=bundle.motion_prompt,
+            motion_hint=motion_hint,
         )
 
+        # Finalize video_prompt after briq creation (so get_full_prompt() works)
+        if llm_video_prompt:
+            briq.video_prompt = llm_video_prompt
+        elif motion_hint:
+            briq.video_prompt = f"{briq.get_full_prompt()}, {motion_hint}"
+        else:
+            briq.video_prompt = briq.get_full_prompt()
+
         logger.info(f"[InstruQtor] Created briq {briq_id} mode={mode.value}")
+        logger.info(f"  → prompt: {prompt[:80]}...")
+        logger.info(f"  → style_hints: {len(bundle.style_hints)} chars loaded")
+        logger.info(f"  → motion_prompt: {len(bundle.motion_prompt)} chars loaded")
+        logger.info(f"  → motion_hint: {motion_hint[:60] if motion_hint else '(none)'}")
+        logger.info(f"  → video_prompt: {briq.video_prompt[:80]}...")
         return briq
 
-    def _refine_prompt(self, raw_prompt: str, mode: InputMode, cycle_index: int) -> str:
-        """Refine raw prompt using LLM (or basic processing if no LLM)."""
-        if self.llm:
-            return self._refine_with_llm(raw_prompt, mode, cycle_index)
-        return self._basic_refine(raw_prompt)
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Prompt refinement (with bundle context)
+    # ═══════════════════════════════════════════════════════════════════════════
 
-    def _evolve_prompt(self, current_prompt: str, suggestion: str, cycle_index: int) -> str:
-        """Evolve prompt for next cycle using LLM (or basic delta if no LLM)."""
+    def _refine_prompt_bundle(
+        self, raw_prompt: str, mode: InputMode,
+        cycle_index: int, bundle: PromptBundle
+    ) -> Dict[str, Any]:
+        """Refine raw prompt using LLM (with full bundle context).
+        Returns dict with refined_prompt, style_tags, motion_hint, video_prompt, etc."""
         if self.llm:
-            return self._evolve_with_llm(current_prompt, suggestion, cycle_index)
-        return self._basic_evolve(current_prompt, cycle_index)
+            return self._refine_with_llm_bundle(raw_prompt, mode, cycle_index, bundle)
+        return self._basic_refine_bundle(raw_prompt, bundle)
 
-    def _basic_refine(self, prompt: str) -> str:
-        """Basic prompt cleanup without LLM."""
+    def _evolve_prompt_bundle(
+        self, current_prompt: str, suggestion: str,
+        cycle_index: int, bundle: PromptBundle
+    ) -> Dict[str, Any]:
+        """Evolve prompt for next cycle using LLM (with full bundle context).
+        Returns dict with refined_prompt, style_tags, motion_hint, video_prompt, etc."""
+        if self.llm:
+            return self._evolve_with_llm_bundle(current_prompt, suggestion, cycle_index, bundle)
+        return self._basic_evolve_bundle(current_prompt, cycle_index, bundle)
+
+    def _basic_refine_bundle(self, prompt: str, bundle: PromptBundle) -> Dict[str, Any]:
+        """Basic prompt cleanup without LLM — deterministic fallback."""
         prompt = ' '.join(prompt.split())
         for tag in self.default_quality_tags:
             prompt = prompt.replace(f", {tag}", "").replace(f"{tag}, ", "")
-        return prompt.strip()
+        return {
+            'refined_prompt': prompt.strip(),
+            'style_tags': [],
+            'motion_hint': '',
+            'video_prompt': '',
+            'negative_prompt': '',
+        }
 
-    def _basic_evolve(self, prompt: str, cycle_index: int) -> str:
+    def _basic_evolve_bundle(self, prompt: str, cycle_index: int, bundle: PromptBundle) -> Dict[str, Any]:
         """Basic prompt evolution without LLM - subtle variations."""
         color_shifts = [
             "deep blue tones", "purple haze", "neon pink accents",
@@ -434,14 +464,26 @@ class InstruQtor:
         ]
         color = color_shifts[cycle_index % len(color_shifts)]
         mood = mood_shifts[cycle_index % len(mood_shifts)]
-        return f"{prompt}, {color}, {mood}"
+        return {
+            'refined_prompt': f"{prompt}, {color}, {mood}",
+            'style_tags': [],
+            'motion_hint': '',
+            'video_prompt': '',
+            'negative_prompt': '',
+        }
 
-    def _refine_with_llm(self, raw_prompt: str, mode: InputMode, cycle_index: int) -> str:
-        """Refine prompt using LLM."""
+    def _refine_with_llm_bundle(
+        self, raw_prompt: str, mode: InputMode,
+        cycle_index: int, bundle: PromptBundle
+    ) -> Dict[str, Any]:
+        """Refine prompt using LLM with full bundle context."""
         try:
             from .llm_utils import call_llm as llm_call
             user_prompt = INSTRUQTOR_REFINE_PROMPT.format(
                 raw_prompt=raw_prompt,
+                style_hints=bundle.style_hints or "(none provided)",
+                motion_prompt=bundle.motion_prompt or "(none provided)",
+                negative_prompt=bundle.negative_prompt or "(none provided)",
                 mode=mode.value,
                 cycle_index=cycle_index,
                 previous_context=""
@@ -452,20 +494,30 @@ class InstruQtor:
                 user_prompt=user_prompt,
                 config=self.config
             )
-            import json
             data = json.loads(response)
-            return data.get('refined_prompt', raw_prompt)
+            data.setdefault('refined_prompt', raw_prompt)
+            data.setdefault('style_tags', [])
+            data.setdefault('motion_hint', '')
+            data.setdefault('video_prompt', '')
+            data.setdefault('negative_prompt', '')
+            return data
         except Exception as e:
             logger.warning(f"LLM refinement failed: {e}, using basic")
-            return self._basic_refine(raw_prompt)
+            return self._basic_refine_bundle(raw_prompt, bundle)
 
-    def _evolve_with_llm(self, current_prompt: str, suggestion: str, cycle_index: int) -> str:
-        """Evolve prompt using LLM."""
+    def _evolve_with_llm_bundle(
+        self, current_prompt: str, suggestion: str,
+        cycle_index: int, bundle: PromptBundle
+    ) -> Dict[str, Any]:
+        """Evolve prompt using LLM with full bundle context."""
         try:
             from .llm_utils import call_llm as llm_call
             user_prompt = INSTRUQTOR_EVOLVE_PROMPT.format(
                 current_prompt=current_prompt,
                 evolution_suggestion=suggestion or "Continue evolving naturally",
+                style_hints=bundle.style_hints or "(none provided)",
+                motion_prompt=bundle.motion_prompt or "(none provided)",
+                negative_prompt=bundle.negative_prompt or "(none provided)",
                 cycle_index=cycle_index
             )
             response = llm_call(
@@ -474,12 +526,16 @@ class InstruQtor:
                 user_prompt=user_prompt,
                 config=self.config
             )
-            import json
             data = json.loads(response)
-            return data.get('refined_prompt', current_prompt)
+            data.setdefault('refined_prompt', current_prompt)
+            data.setdefault('style_tags', [])
+            data.setdefault('motion_hint', '')
+            data.setdefault('video_prompt', '')
+            data.setdefault('negative_prompt', '')
+            return data
         except Exception as e:
             logger.warning(f"LLM evolution failed: {e}, using basic")
-            return self._basic_evolve(current_prompt, cycle_index)
+            return self._basic_evolve_bundle(current_prompt, cycle_index, bundle)
 
 
 __all__ = ['InstruQtor', 'INSTRUQTOR_SYSTEM_PROMPT']

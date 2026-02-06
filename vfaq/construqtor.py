@@ -13,12 +13,12 @@ Responsibilities:
   5. Generate video from image (img2vid)
   6. Save raw video to project directory as cycleN_raw.mp4
 
-Mode handling (v0.0.5-alpha):
+Mode handling (v0.0.7-alpha):
   - TEXT mode: txt2img → img2vid (no base inputs required)
   - IMAGE mode: requires base_image_path, skip image gen, feed to video pipeline
   - VIDEO mode: requires base_video_path, extract frame → img2img → img2vid
 
-Part of QonQrete Visual FaQtory v0.0.5-alpha
+Part of QonQrete Visual FaQtory v0.0.7-alpha
 """
 import os
 import time
@@ -203,9 +203,12 @@ class ConstruQtor:
         return self.backend.generate_image(request)
 
     def _generate_video(self, briq: VisualBriq, source_image: Path) -> GenerationResult:
-        """Generate video from source image."""
+        """Generate video from source image. Uses briq.video_prompt if available."""
+        # For video generation, prefer video_prompt over image prompt
+        video_prompt = briq.get_video_prompt()
+
         request = GenerationRequest(
-            prompt=briq.get_full_prompt(),
+            prompt=video_prompt,
             negative_prompt=briq.negative_prompt,
             seed=briq.seed,
             mode=briq.mode,
@@ -216,7 +219,10 @@ class ConstruQtor:
             motion_bucket_id=briq.spec.motion_bucket_id,
             noise_aug_strength=briq.spec.noise_aug_strength,
             output_dir=self.qodeyard_dir,
-            atom_id=briq.briq_id
+            atom_id=briq.briq_id,
+            # Prompt Bundle extensions (v0.0.7)
+            video_prompt=getattr(briq, 'video_prompt', None) or None,
+            motion_prompt=getattr(briq, 'motion_prompt', None) or None,
         )
         return self.backend.generate_video(request, source_image)
 
