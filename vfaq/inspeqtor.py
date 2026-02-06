@@ -12,7 +12,7 @@ Responsibilities:
   4. Analyze the visual output using LLM
   5. Suggest subtle creative variations for next cycle
 
-Part of QonQrete Visual FaQtory v0.0.5-alpha
+Part of QonQrete Visual FaQtory v0.0.7-alpha
 """
 
 import json
@@ -49,11 +49,25 @@ Output format (JSON):
     "reasoning": "why this evolution works"
 }"""
 
-
 INSPEQTOR_EVOLVE_PROMPT = """Analyze this visual generation cycle and suggest the next evolution:
 
 CURRENT PROMPT:
 {current_prompt}
+
+STYLE_HINTS:
+{style_hints}
+
+MOTION_PROMPT:
+{motion_prompt}
+
+NEGATIVE_PROMPT_SOURCE:
+{negative_prompt}
+
+IMPORTANT CONSTRAINTS:
+- The negative prompt lists concepts that MUST be avoided.
+- You must NOT evolve toward anything listed there.
+- You may suggest ADDITIONS ONLY if they remain compatible with the negative prompt.
+- Never contradict or weaken the negative prompt constraints.
 
 CYCLE NUMBER: {cycle_index}
 TOTAL PLANNED: {target_cycles}
@@ -62,10 +76,12 @@ PREVIOUS SUGGESTIONS USED:
 {previous_suggestions}
 
 Generate a SUBTLE but INNOVATIVE evolution for the next cycle.
-Think drum & bass visuals - keep the energy flowing but evolve the vibe.
+Respect STYLE_HINTS boundaries — evolve WITHIN them, don't break them.
+Consider MOTION_PROMPT intent for motion continuity suggestions.
+Think drum & bass visuals — keep the energy flowing but evolve the vibe.
+Do NOT override the negative prompt — you may suggest ADDITIONS only.
 
 Respond with JSON only."""
-
 
 class InspeQtor:
     """
@@ -90,6 +106,7 @@ class InspeQtor:
             self.llm_client = create_llm_client(llm_provider)
 
         loop_config = config.get("looping", {})
+        self.looping_enabled = loop_config.get("enabled", True)
         self.loop_method = loop_config.get("method", "pingpong")
         self.output_fps = loop_config.get("output_fps", 24)
         self.output_codec = loop_config.get("output_codec", "h264_nvenc")
@@ -153,7 +170,7 @@ class InspeQtor:
             logger.warning(f"Cleanup failed: {e}")
 
     def _create_loop(self, briq: VisualBriq) -> Path:
-        """Create loopable video using FFmpeg."""
+        """Create loopable video using FFmpeg, or passthrough if looping disabled."""
         if not briq.raw_video_path or not briq.raw_video_path.exists():
             raise FileNotFoundError(f"Raw video not found: {briq.raw_video_path}")
 
@@ -161,7 +178,11 @@ class InspeQtor:
         output_name = f"cycle{briq.cycle_index:04d}_video.mp4"
         output_path = (self.qodeyard_dir / output_name).resolve()
 
-        if self.loop_method == "crossfade":
+        if not self.looping_enabled:
+            # Passthrough: re-encode raw video with consistent settings
+            # No reverse loop — keeps visuals forward-evolving
+            self._create_passthrough(input_path, output_path)
+        elif self.loop_method == "crossfade":
             self._create_crossfade_loop(input_path, output_path)
         else:
             self._create_pingpong_loop(input_path, output_path)
@@ -181,6 +202,46 @@ class InspeQtor:
             ]
         # Default: CRF-capable codecs (libx264, libx265, etc.)
         return ["-c:v", codec, "-crf", str(self.output_quality)]
+
+    def _create_passthrough(self, input_path: Path, output_path: Path) -> None:
+        """
+        Passthrough: re-encode raw video with consistent codec/fps settings.
+        No reverse loop — keeps visuals forward-evolving for the final stitch.
+        Used when looping.enabled is false.
+        """
+        input_path = input_path.resolve()
+        logger.info(
+            f"[InspeQtor] Looping DISABLED — passthrough mode "
+            f"(forward-evolving, no reverse loop)"
+        )
+
+        for codec in [self.output_codec, "libx264"]:
+            video_args = self._encode_args(codec)
+
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", str(input_path),
+                *video_args,
+                "-r", str(self.output_fps),
+                "-vsync", "cfr",
+                "-pix_fmt", "yuv420p",
+                str(output_path),
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                logger.info(f"[InspeQtor] Passthrough encode succeeded with {codec}")
+                return
+
+            logger.warning(
+                f"[InspeQtor] Passthrough with {codec} failed, "
+                f"trying next... stderr: {result.stderr[:200]}"
+            )
+
+        # Ultimate fallback: raw copy
+        import shutil
+        shutil.copy2(input_path, output_path)
+        logger.warning("[InspeQtor] All codecs failed, raw-copied input as output")
 
     def _create_pingpong_loop(self, input_path: Path, output_path: Path) -> None:
         """Create ping-pong loop: forward + reverse."""
@@ -363,40 +424,46 @@ class InspeQtor:
         return base
 
     def _suggest_with_llm(self, briq: VisualBriq) -> str:
-        """Generate evolution suggestion using LLM."""
+        """Generate evolution suggestion using LLM (with style, motion, and negative context)."""
         if not self.llm_client:
             return self._basic_suggestion(briq)
-
+    
         try:
             recent_suggestions = self.suggestion_history[-3:] if self.suggestion_history else []
-            suggestions_text = "\n".join([f"Cycle {s['cycle']}: {s['suggestion']}" for s in recent_suggestions]) or "None yet (first cycle)"
-
+            suggestions_text = (
+                "\n".join([f"Cycle {s['cycle']}: {s['suggestion']}" for s in recent_suggestions])
+                or "None yet (first cycle)"
+            )
+    
             user_prompt = INSPEQTOR_EVOLVE_PROMPT.format(
                 current_prompt=briq.prompt,
+                style_hints=getattr(briq, 'style_hints', '') or "(none provided)",
+                motion_prompt=getattr(briq, 'motion_prompt', '') or "(none provided)",
+                negative_prompt=getattr(briq, 'negative_prompt', '') or "(none provided)",
                 cycle_index=briq.cycle_index,
                 target_cycles=self.config.get("cycle", {}).get("max_cycles", 100),
                 previous_suggestions=suggestions_text,
             )
-
+    
             response = call_llm(
                 self.llm_client,
                 system_prompt=INSPEQTOR_SYSTEM_PROMPT,
                 user_prompt=user_prompt,
                 config=self.config,
             )
-
+    
             data = json.loads(response)
-
+    
             suggestion = data.get("evolution_suggestion", "")
             if self.mode == "innovative":
                 innovative = data.get("innovative_idea", "")
                 if innovative:
                     suggestion = f"{suggestion}; {innovative}"
-
+    
             return suggestion or self._basic_suggestion(briq)
-
+    
         except Exception as e:
-            logger.warning(f"LLM suggestion failed: {e}, using basic")
+            logger.warning("InspeQtor LLM evolution failed, falling back to basic suggestion: %s", e)
             return self._basic_suggestion(briq)
 
     def get_cycle_summary(self, briq: VisualBriq) -> Dict[str, Any]:

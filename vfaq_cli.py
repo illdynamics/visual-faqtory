@@ -16,7 +16,7 @@ Usage:
     python vfaq_cli.py assemble                    # Assemble videos into one
     python vfaq_cli.py assemble -n my-project      # Assemble project videos
 
-Part of QonQrete Visual FaQtory v0.0.5-alpha
+Part of QonQrete Visual FaQtory v0.0.7-alpha
 """
 import os
 import sys
@@ -40,7 +40,7 @@ BANNER = """
   ╚████╔╝ ██║███████║╚██████╔╝██║  ██║███████╗    ██║     ██║  ██║╚██████╔╝   ██║   ╚██████╔╝██║  ██║   ██║
    ╚═══╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝    ╚═╝     ╚═╝  ╚═╝ ╚══▀▀═╝    ╚═╝    ╚═════╝ ╚═╝  ╚═╝   ╚═╝
 
-  QonQrete Visual FaQtory v0.0.5-alpha
+  QonQrete Visual FaQtory v0.0.7-alpha
   ═══════════════════════════════════════
 """
 
@@ -148,7 +148,7 @@ def cmd_status(args):
 
     status = faqtory.status()
 
-    print(f"\n=== Visual FaQtory v0.0.5-alpha Status ===")
+    print(f"\n=== Visual FaQtory v0.0.7-alpha Status ===")
     for key, value in status.items():
         print(f"  {key}: {value}")
 
@@ -164,7 +164,7 @@ def cmd_backends(args):
     """List available backends."""
     from vfaq import list_available_backends
 
-    print(f"\n=== Available Backends (v0.0.5-alpha) ===\n")
+    print(f"\n=== Available Backends (v0.0.7-alpha) ===\n")
 
     results = list_available_backends()
     for name, (available, message) in results.items():
@@ -200,10 +200,33 @@ def cmd_assemble(args):
         videos = videos[:args.preview_count]
         logger.info(f"Preview mode: using first {len(videos)} videos")
 
-    finalizer = Finalizer(project_dir=project_dir)
+    # Load config for finalizer settings
+    worqspace = Path(args.worqspace).resolve()
+    config_path = worqspace / "config.yaml"
+    config = {}
+    if config_path.exists():
+        import yaml
+        config = yaml.safe_load(config_path.read_text()) or {}
+
+    finalizer_config = config.get('finalizer', {})
+    codec = config.get('looping', {}).get('output_codec', 'h264_nvenc')
+    quality = config.get('looping', {}).get('output_quality', 18)
+
+    finalizer = Finalizer(
+        project_dir=project_dir,
+        preferred_codec=codec,
+        output_quality=quality,
+        finalizer_config=finalizer_config
+    )
     try:
         final_path = finalizer.finalize(cycle_video_paths=videos)
         logger.info(f"Assembly complete: {final_path}")
+
+        # Run post-stitch finalizer if enabled
+        deliverable = finalizer.run_post_stitch_finalizer()
+        if deliverable:
+            logger.info(f"Final deliverable: {deliverable}")
+
     except Exception as e:
         logger.error(f"Assembly failed: {e}")
         sys.exit(1)
@@ -229,7 +252,7 @@ def cmd_clean(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="QonQrete Visual FaQtory v0.0.5-alpha - Automated AI Visual Generation",
+        description="QonQrete Visual FaQtory v0.0.7-alpha - Automated AI Visual Generation",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

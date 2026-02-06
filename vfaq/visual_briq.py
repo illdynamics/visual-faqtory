@@ -8,7 +8,7 @@ A VisualBriq is the standardized instruction packet passed between agents:
 
 It contains everything needed to generate one visual atom in the cycle.
 
-Part of QonQrete Visual FaQtory v0.0.5-alpha
+Part of QonQrete Visual FaQtory v0.0.7-alpha
 """
 import json
 import hashlib
@@ -82,6 +82,12 @@ class VisualBriq:
     style_tags: List[str] = field(default_factory=list)
     quality_tags: List[str] = field(default_factory=list)
 
+    # Prompt Bundle fields (v0.0.7-alpha)
+    style_hints: str = ""             # From style_hints.md (creative guidance)
+    motion_prompt: str = ""           # From motion_prompt.md (video motion intent)
+    video_prompt: str = ""            # Separate prompt for video stage (if applicable)
+    motion_hint: str = ""             # LLM-generated short motion hint
+
     # Seeds for reproducibility
     seed: int = 42
 
@@ -130,6 +136,12 @@ class VisualBriq:
             parts.append(", ".join(self.style_tags))
         return ", ".join(parts)
 
+    def get_video_prompt(self) -> str:
+        """Return dedicated video prompt, or fall back to full prompt."""
+        if self.video_prompt:
+            return self.video_prompt
+        return self.get_full_prompt()
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dictionary."""
         d = asdict(self)
@@ -145,12 +157,17 @@ class VisualBriq:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> 'VisualBriq':
-        """Deserialize from dictionary."""
+        """Deserialize from dictionary (backward-compatible with old briqs)."""
         d = d.copy()
         d['mode'] = InputMode(d['mode'])
         d['status'] = BriqStatus(d['status'])
         d['created_at'] = datetime.fromisoformat(d['created_at'])
         d['spec'] = GenerationSpec(**d['spec'])
+        # Backward compatibility: old briq JSONs won't have these fields
+        d.setdefault('style_hints', '')
+        d.setdefault('motion_prompt', '')
+        d.setdefault('video_prompt', '')
+        d.setdefault('motion_hint', '')
         return cls(**d)
 
     def save(self, path: Path) -> None:

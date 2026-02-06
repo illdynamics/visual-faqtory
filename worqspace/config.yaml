@@ -1,4 +1,4 @@
-# Visual FaQtory Configuration v0.0.5-alpha
+# Visual FaQtory Configuration v0.0.7-alpha
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # 3-Agent Pipeline: InstruQtor → ConstruQtor → InspeQtor → (loop)
@@ -25,6 +25,9 @@ paths:
 # ═══════════════════════════════════════════════════════════════════════════════
 input:
   tasq_file: tasq.md
+  negative_prompt_file: negative_prompt.md    # Optional: negative prompt source of truth
+  style_hints_file: style_hints.md            # Optional: style + evolution constraints
+  motion_prompt_file: motion_prompt.md        # Optional: video motion intent
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # BACKEND CONFIGURATION
@@ -65,6 +68,24 @@ comfyui:
   svd_ckpt: svd_xt.safetensors
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SPLIT BACKEND CONFIGURATION (v0.0.7-alpha)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Use different backends for image and video generation.
+# If 'backends:' is present, it takes priority over legacy 'backend:' above.
+# If 'backends.video' is omitted, it defaults to the same as 'backends.image'.
+#
+# backends:
+#   image:
+#     type: comfyui
+#     api_url: http://localhost:8188
+#     timeout: 600
+#   video:
+#     type: comfyui
+#     api_url: http://gpu-server:8188
+#     timeout: 900
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # GENERATION SETTINGS (Stable Diffusion / SVD defaults)
 # ═══════════════════════════════════════════════════════════════════════════════
 generation:
@@ -72,7 +93,7 @@ generation:
   width: 1024
   height: 576           # 16:9 aspect
   cfg_scale: 6.0
-  steps: 30
+  steps: 36
   sampler: euler_ancestral
   
   # Video settings (SVD)
@@ -93,11 +114,31 @@ chaining:
 # ═══════════════════════════════════════════════════════════════════════════════
 looping:
   enabled: true
-  method: pingpong        # pingpong (forward+reverse) or crossfade
-  crossfade_frames: 8     # For crossfade method only
+  method: crossfade        # pingpong (forward+reverse) or crossfade
+  crossfade_frames: 4     # For crossfade method only
   output_fps: 8          # Output video framerate
   output_codec: h264_nvenc
   output_quality: 16      # CRF (lower = better quality, bigger files)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# POST-STITCH FINALIZER (Interpolation + Upscale)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Runs ONCE after final stitching is complete. Never per-cycle.
+# Produces final_60fps_1080p.mp4 from the stitched base master.
+#
+# Pipeline: final_output.mp4 → interpolate 60fps → upscale 1920×1080 → encode
+# ═══════════════════════════════════════════════════════════════════════════════
+finalizer:
+  enabled: true
+  interpolate_fps: 60
+  upscale_resolution: 1920x1080
+  scale_algo: bicubic
+  encoder_preference:
+    - h264_nvenc
+    - libx264
+  quality:
+    crf: 16
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PROMPT DRIFT (InstruQtor quality tags)
@@ -126,8 +167,8 @@ cycle:
 # ═══════════════════════════════════════════════════════════════════════════════
 # LLM CONFIGURATION (OPTIONAL)
 # ═══════════════════════════════════════════════════════════════════════════════
-#llm:
-#  provider: openai
-#  model: gpt-4.1-mini
-#  api_key_env: OPENAI_API_KEY
+llm:
+  provider: openai
+  model: gpt-4.1-mini
+  api_key_env: OPENAI_API_KEY
 
