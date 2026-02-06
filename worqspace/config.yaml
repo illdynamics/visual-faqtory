@@ -1,0 +1,124 @@
+# Visual FaQtory Configuration v0.0.5-alpha
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# 3-Agent Pipeline: InstruQtor → ConstruQtor → InspeQtor → (loop)
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PATHS
+# ═══════════════════════════════════════════════════════════════════════════════
+paths:
+  output_dir: ./qodeyard           # All generated outputs go here
+  briqs_dir: ./qodeyard/briqs      # Briq JSON state files
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INPUT CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# 
+# Three input modes (set in tasq.md frontmatter):
+#   text  - Prompt only (txt2img → img2vid)
+#   image - Prompt + base image (img2img → img2vid)
+#   video - Prompt + base video (extract frame → img2img → img2vid)
+#
+# After cycle 0, pipeline automatically chains: previous video → next input
+# ═══════════════════════════════════════════════════════════════════════════════
+input:
+  tasq_file: tasq.md
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BACKEND CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Available backends (tested ✓ / partial ⚠):
+#   mock      ✓ Testing without GPU (always available)
+#   comfyui   ✓ ComfyUI API (recommended for production)
+#   diffusers ⚠ Local HuggingFace (requires CUDA)
+#   replicate ⚠ Cloud API (pay-per-use)
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+backend:
+  #  type: mock
+  #  mock_delay: 0.3
+
+  # ─── ComfyUI (uncomment to use) ───────────────────────────────────────────
+  type: comfyui
+  api_url: http://localhost:8188
+  # workflow_image: null           # Uses default SDXL workflow
+  # workflow_video: null           # Uses default SVD workflow
+  timeout: 600
+
+  # ─── Diffusers (uncomment to use, requires CUDA) ──────────────────────────
+  # type: diffusers
+  # model_id: stabilityai/stable-diffusion-xl-base-1.0
+  # video_model_id: stabilityai/stable-video-diffusion-img2vid
+  # device: cuda
+  # dtype: float16
+
+  # ─── Replicate (uncomment to use, requires API token) ─────────────────────
+  # type: replicate
+  # api_token: ${REPLICATE_API_TOKEN}
+  # image_model: stability-ai/sdxl
+  # video_model: stability-ai/stable-video-diffusion
+comfyui:
+  sdxl_ckpt: sd_xl_base_1.0.safetensors
+  svd_ckpt: svd_xt.safetensors
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GENERATION SETTINGS (Stable Diffusion / SVD defaults)
+# ═══════════════════════════════════════════════════════════════════════════════
+generation:
+  clip_seconds: 8.0     # Raw video duration
+  width: 1024
+  height: 576           # 16:9 aspect
+  cfg_scale: 7.0
+  steps: 30
+  sampler: euler_ancestral
+  
+  # Video settings (SVD)
+  video_frames: 25
+  video_fps: 8
+  motion_bucket_id: 127
+  noise_aug_strength: 0.02
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CHAINING (Video Evolution between cycles)
+# ═══════════════════════════════════════════════════════════════════════════════
+chaining:
+  denoise_strength: 0.4   # Lower = more continuity (0.3-0.5 recommended)
+  seed_step: 1            # Increment seed by this each cycle
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LOOPING (InspeQtor FFmpeg Processing)
+# ═══════════════════════════════════════════════════════════════════════════════
+looping:
+  enabled: true
+  method: pingpong        # pingpong (forward+reverse) or crossfade
+  crossfade_frames: 8     # For crossfade method only
+  output_fps: 24          # Output video framerate
+  output_codec: h264_nvenc
+  output_quality: 16      # CRF (lower = better quality, bigger files)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PROMPT DRIFT (InstruQtor quality tags)
+# ═══════════════════════════════════════════════════════════════════════════════
+prompt_drift:
+  quality_tags:
+    - masterpiece
+    - best quality
+    - highly detailed
+  
+  negative_prompt: >
+    blurry, low quality, watermark, deformed, ugly,
+    duplicate, out of frame, disfigured
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CYCLE CONTROL
+# ═══════════════════════════════════════════════════════════════════════════════
+cycle:
+  max_cycles: 0                   # 0 = unlimited (stop with Ctrl+C)
+  target_duration_hours: 2.0      # Target total video length
+  delay_seconds: 2.0              # Pause between cycles (lower for testing)
+  auto_save_interval: 3           # Save state every N cycles
+  max_retries: 3                  # Retries on failure per cycle
+  continue_on_error: true         # Continue to next cycle on error

@@ -1,0 +1,21 @@
+# QonQrete Visual FaQtory v0.0.5-alpha - Requirements
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Core (always needed)
+pyyaml>=6.0
+
+# For better mock images (optional but recommended)
+pillow>=9.0
+
+# Backend: ComfyUI
+requests>=2.28
+websocket-client>=1.4
+
+# Backend: Diffusers (uncomment if using local GPU)
+# torch>=2.0
+# diffusers>=0.24
+# transformers>=4.30
+# accelerate>=0.20
+
+# Backend: Replicate (uncomment if using cloud API)
+# replicate>=0.15
