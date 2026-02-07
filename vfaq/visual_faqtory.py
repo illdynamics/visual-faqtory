@@ -26,7 +26,7 @@ Project-based runs (v0.0.7-alpha):
   - Each project has: briqs/, images/, videos/, factory_state.json,
     config_snapshot.yaml, final_output.mp4, final_60fps_1080p.mp4
 
-Part of QonQrete Visual FaQtory v0.0.7-alpha
+Part of QonQrete Visual FaQtory v0.3.5-beta
 """
 import os
 import sys
@@ -47,6 +47,9 @@ from .construqtor import ConstruQtor
 from .inspeqtor import InspeQtor
 from .finalizer import Finalizer, FinalizerError
 from .backends import create_backend, create_split_backend, list_available_backends
+from .base_folders import select_base_files
+from .duration_planner import plan_duration, post_finalize_trim_and_mux
+from .stream_engine import get_stream_config, prepare_stream_cycle
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +109,14 @@ class VisualFaQtory:
 
         # Save config snapshot
         self._save_config_snapshot()
+
+        # Base folder file selection (v0.1.0)
+        self.base_files = {"base_image": None, "base_audio": None, "base_video": None}
+        self._audio_controller = None
+        self._audio_analysis = None
+        self._beat_grid = None
+        self._cycle_timing = None
+        self._init_base_folders()
 
     def _setup_project_dirs(self) -> None:
         """Create the project directory structure."""
@@ -185,6 +196,50 @@ class VisualFaQtory:
 
         logger.info("[FaQtory] Agents initialized: InstruQtor, ConstruQtor, InspeQtor")
 
+    def _init_base_folders(self) -> None:
+        """Initialize base folder selection and audio reactivity (v0.1.0)."""
+        try:
+            self.base_files = select_base_files(
+                self.worqspace_dir, self.config, run_id=self.project_name or "default"
+            )
+        except Exception as e:
+            logger.warning(f"[FaQtory] Base folder selection failed: {e}")
+            self.base_files = {"base_image": None, "base_audio": None, "base_video": None}
+
+        # Audio reactivity setup
+        audio_config = self.config.get("audio_reactivity", {})
+        audio_path = self.base_files.get("base_audio")
+
+        if audio_config.get("enabled", False) and audio_path and audio_path.exists():
+            try:
+                from .audio_reactivity import run_audio_analysis, compute_cycle_timing
+                analysis, beat_grid, features, ctrl = run_audio_analysis(
+                    audio_path, self.worqspace_dir, audio_config
+                )
+                self._audio_controller = ctrl
+                self._audio_analysis = analysis
+                self._beat_grid = beat_grid
+                logger.info(
+                    f"[FaQtory] Audio reactivity active: "
+                    f"bpm={analysis.get('bpm', 0):.1f}, "
+                    f"source={analysis.get('source', 'unknown')}"
+                )
+            except ImportError:
+                logger.warning(
+                    "[FaQtory] librosa not installed, audio reactivity disabled. "
+                    "Install with: pip install librosa"
+                )
+            except Exception as e:
+                logger.warning(f"[FaQtory] Audio analysis failed: {e}")
+        elif audio_config.get("enabled", False):
+            # Clock-only mode: BPM sync without audio file
+            manual_bpm = audio_config.get("bpm_manual")
+            if manual_bpm:
+                logger.info(f"[FaQtory] Audio clock-only mode: bpm={manual_bpm}")
+                self._audio_analysis = {"bpm": manual_bpm, "source": "manual_clock"}
+            else:
+                logger.info("[FaQtory] Audio reactivity enabled but no audio file found")
+
     def _setup_signal_handlers(self) -> None:
         """Setup graceful shutdown on SIGINT/SIGTERM."""
         def handler(signum, frame):
@@ -212,7 +267,7 @@ class VisualFaQtory:
             List of completed VisualBriqs
         """
         logger.info("=" * 60)
-        logger.info("QonQrete Visual FaQtory v0.0.7-alpha")
+        logger.info("QonQrete Visual FaQtory v0.3.5-beta")
         logger.info("=" * 60)
         if self.project_name:
             logger.info(f"[FaQtory] Project: {self.project_name}")
@@ -227,6 +282,33 @@ class VisualFaQtory:
         if target_duration > 0 and max_cycles == 0:
             max_cycles = int((target_duration * 3600) / loop_duration) + 1
             logger.info(f"[FaQtory] Target {target_duration}h requires ~{max_cycles} cycles")
+
+        # ── AUTO-DURATION PLANNING (v0.1.2 feature) ─────────────────────
+        audio_path = self.base_files.get("base_audio")
+        audio_config = self.config.get('audio_reactivity', {})
+        bpm = audio_config.get('bpm_manual', 0) or getattr(self, '_detected_bpm', 0)
+        bars_per = audio_config.get('bars_per_cycle', 8)
+
+        duration_plan = plan_duration(
+            config=self.config,
+            audio_path=audio_path,
+            bpm=bpm,
+            bars_per_cycle=bars_per,
+            requested_cycles=max_cycles,
+            clip_seconds=self.config.get('generation', {}).get('clip_seconds', 8.0),
+        )
+
+        if duration_plan.get('override_reason'):
+            max_cycles = duration_plan['required_cycles']
+            logger.info(f"[FaQtory] AUTO-DURATION: {duration_plan['override_reason']}")
+            logger.info(f"[FaQtory] Cycle duration: {duration_plan['cycle_duration']:.1f}s")
+
+        # Stream mode config
+        stream_cfg = get_stream_config(self.config)
+        if stream_cfg['enabled']:
+            logger.info(f"[FaQtory] STREAM MODE: {stream_cfg['method']} "
+                       f"(ctx={stream_cfg['context_length']}f, gen={stream_cfg['generation_length']}f)")
+
 
         # Load or create state
         if resume and self.state_file.exists():
@@ -259,7 +341,73 @@ class VisualFaQtory:
                     previous_briq=previous_briq,
                     evolution_suggestion=evolution_suggestion
                 )
+
+                # === BASE FOLDERS: inject base_video for V2V if available ===
+                if cycle_index == 0 and self.base_files.get("base_video"):
+                    base_vid = self.base_files["base_video"]
+                    if base_vid.exists() and briq.mode != InputMode.IMAGE:
+                        briq.base_video_path = base_vid
+                        briq.mode = InputMode.VIDEO
+                        logger.info(f"[FaQtory] Using base_video: {base_vid.name}")
+
+                # === AUDIO REACTIVITY: inject features into briq ===
+                if self._audio_controller and self._audio_analysis:
+                    try:
+                        from .audio_reactivity import (
+                            compute_cycle_timing, apply_audio_mapping
+                        )
+                        audio_cfg = self.config.get("audio_reactivity", {})
+                        bpm = self._audio_analysis.get("bpm", 120.0)
+                        bars_per = audio_cfg.get("beat_grid", {}).get("bars_per_cycle_default", 8)
+                        beat_dur = 60.0 / bpm
+                        bar_dur = beat_dur * 4
+                        cycle_dur = bar_dur * bars_per
+
+                        briq.bpm = bpm
+                        briq.cycle_start_time = cycle_index * cycle_dur
+                        briq.cycle_end_time = (cycle_index + 1) * cycle_dur
+
+                        segment_stats = self._audio_controller.get_segment_stats(
+                            briq.cycle_start_time, briq.cycle_end_time
+                        )
+                        briq.audio_segment_stats = segment_stats
+
+                        mapping_cfg = audio_cfg.get("mapping", {})
+                        if mapping_cfg.get("enabled", True):
+                            mapped = apply_audio_mapping(
+                                segment_stats, mapping_cfg, cycle_index, self._beat_grid
+                            )
+                            briq.audio_prompt_additions = mapped.get("prompt_additions", "")
+                            briq.seed += mapped.get("seed_offset", 0)
+
+                            if briq.audio_prompt_additions:
+                                briq.prompt = f"{briq.prompt}, {briq.audio_prompt_additions}"
+                                logger.info(f"[FaQtory] Audio modifiers: {briq.audio_prompt_additions}")
+                    except Exception as e:
+                        logger.warning(f"[FaQtory] Audio injection failed: {e}")
+
                 self._save_briq(briq)
+
+                # === STREAM MODE: context extraction (v0.2.0-beta) ===
+                if stream_cfg['enabled'] and cycle_index > 0 and previous_briq:
+                    prev_video = previous_briq.looped_video_path or previous_briq.raw_video_path
+                    if prev_video and prev_video.exists():
+                        try:
+                            ctx = prepare_stream_cycle(
+                                cycle_index=cycle_index,
+                                previous_video=prev_video,
+                                output_dir=self.project_dir / "videos",
+                                stream_config=stream_cfg,
+                                fps=briq.spec.video_fps,
+                                bpm=briq.bpm or bpm,
+                            )
+                            if ctx.get('context_video_path'):
+                                briq.context_video_path = ctx['context_video_path']
+                                briq.spec.generation_frames = ctx.get('generation_frames')
+                                briq.spec.context_frames = ctx.get('context_frames')
+                                logger.info(f"[FaQtory] Stream context: {ctx['context_video_path']}")
+                        except Exception as e:
+                            logger.warning(f"[FaQtory] Stream context prep failed: {e}")
 
                 # === STAGE 2: ConstruQtor ===
                 briq = self.construqtor.construct(briq)
@@ -315,6 +463,21 @@ class VisualFaQtory:
         self._deliverable_path = None
         if completed_briqs:
             final_path = self._run_finalizer()
+
+            # ── POST-FINALIZE: TRIM + MUX (v0.1.2 feature) ─────────────
+            if final_path and duration_plan.get('trim_to'):
+                try:
+                    audio_path_for_mux = self.base_files.get("base_audio")
+                    codec = self.config.get('looping', {}).get('output_codec', 'h264_nvenc')
+                    final_path = post_finalize_trim_and_mux(
+                        final_video=final_path,
+                        audio_path=audio_path_for_mux,
+                        plan=duration_plan,
+                        preferred_codec=codec,
+                    )
+                    logger.info(f"[FaQtory] Post-finalize complete: {final_path}")
+                except Exception as e:
+                    logger.warning(f"[FaQtory] Post-finalize trim/mux failed: {e}")
 
         # Final summary
         logger.info("=" * 60)

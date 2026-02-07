@@ -30,7 +30,7 @@ LLM output fields (v0.0.7-alpha):
   - motion_hint            short motion guidance for video
   - video_prompt           optional dedicated video prompt
 
-Part of QonQrete Visual FaQtory v0.0.7-alpha
+Part of QonQrete Visual FaQtory v0.3.5-beta
 """
 import os
 import re
@@ -39,13 +39,18 @@ import yaml
 import logging
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 
 from .visual_briq import (
     VisualBriq, GenerationSpec, InputMode, BriqStatus,
     generate_briq_id, CycleState
 )
 from .prompt_bundle import PromptBundle, load_prompt_bundle
+from .prompt_synth import (
+    synthesize_prompt, synthesize_video_prompt,
+    load_evolution_lines, select_evolution_mutations,
+    map_motion_to_bucket_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +204,9 @@ class InstruQtor:
         # Cache the prompt bundle (loaded once, reused per cycle)
         self._bundle: Optional[PromptBundle] = None
 
+        # Load evolution lines for deterministic prompt synthesis (v0.1.0)
+        self._evolution_lines: Optional[List[str]] = None
+
     def _load_bundle(self) -> PromptBundle:
         """Load prompt bundle from worqspace files (cached after first load)."""
         if self._bundle is None:
@@ -211,6 +219,14 @@ class InstruQtor:
                 f"motion={self._bundle._motion_source}"
             )
         return self._bundle
+
+    def _load_evo_lines(self) -> List[str]:
+        """Load evolution lines for deterministic prompt synthesis (cached)."""
+        if self._evolution_lines is None:
+            self._evolution_lines = load_evolution_lines(
+                self.worqspace_dir, self.config
+            )
+        return self._evolution_lines
 
     def parse_tasq(self) -> Tuple[str, InputMode, Optional[Path], Dict[str, Any]]:
         """
@@ -369,6 +385,7 @@ class InstruQtor:
         motion_hint = llm_result.get('motion_hint', '')
         llm_video_prompt = llm_result.get('video_prompt', '')
         llm_negative = llm_result.get('negative_prompt', '')
+        evolution_mutations = llm_result.get('evolution_mutations', [])
 
         # Negative prompt precedence:
         #   1) bundle.negative_prompt (already resolved from file/frontmatter/config)
@@ -377,6 +394,14 @@ class InstruQtor:
         negative = bundle.negative_prompt
         if llm_negative and bundle._negative_source == "config_default":
             negative = llm_negative
+
+        # Motion bucket ID mapping (for SVD backends without text conditioning)
+        mapped_bucket_id = map_motion_to_bucket_id(
+            bundle.motion_prompt,
+            self.config.get("audio_reactivity", {}).get("motion_keyword_map"),
+            spec.motion_bucket_id,
+        )
+        spec.motion_bucket_id = mapped_bucket_id
 
         # Create the briq
         briq = VisualBriq(
@@ -396,6 +421,9 @@ class InstruQtor:
             style_hints=bundle.style_hints,
             motion_prompt=bundle.motion_prompt,
             motion_hint=motion_hint,
+            # Deterministic synth fields (v0.1.0)
+            evolution_mutations=evolution_mutations,
+            synthesized_prompt=prompt,
         )
 
         # Finalize video_prompt after briq creation (so get_full_prompt() works)
@@ -412,6 +440,9 @@ class InstruQtor:
         logger.info(f"  → motion_prompt: {len(bundle.motion_prompt)} chars loaded")
         logger.info(f"  → motion_hint: {motion_hint[:60] if motion_hint else '(none)'}")
         logger.info(f"  → video_prompt: {briq.video_prompt[:80]}...")
+        logger.info(f"  → evolution_mutations: {len(evolution_mutations)} selected")
+        logger.info(f"  → negative_prompt: {negative[:60]}...")
+        logger.info(f"  → motion_bucket_id: {spec.motion_bucket_id}")
         return briq
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -426,7 +457,7 @@ class InstruQtor:
         Returns dict with refined_prompt, style_tags, motion_hint, video_prompt, etc."""
         if self.llm:
             return self._refine_with_llm_bundle(raw_prompt, mode, cycle_index, bundle)
-        return self._basic_refine_bundle(raw_prompt, bundle)
+        return self._basic_refine_bundle(raw_prompt, bundle, cycle_index)
 
     def _evolve_prompt_bundle(
         self, current_prompt: str, suggestion: str,
@@ -438,38 +469,71 @@ class InstruQtor:
             return self._evolve_with_llm_bundle(current_prompt, suggestion, cycle_index, bundle)
         return self._basic_evolve_bundle(current_prompt, cycle_index, bundle)
 
-    def _basic_refine_bundle(self, prompt: str, bundle: PromptBundle) -> Dict[str, Any]:
-        """Basic prompt cleanup without LLM — deterministic fallback."""
-        prompt = ' '.join(prompt.split())
-        for tag in self.default_quality_tags:
-            prompt = prompt.replace(f", {tag}", "").replace(f"{tag}, ", "")
+    def _basic_refine_bundle(self, prompt: str, bundle: PromptBundle, cycle_index: int = 0) -> Dict[str, Any]:
+        """Deterministic prompt refinement using prompt_synth — NO LLM.
+        Style hints, negative prompt, and evolution lines are ALWAYS applied."""
+        evo_lines = self._load_evo_lines()
+        mutations = select_evolution_mutations(evo_lines, cycle_index, max_mutations=2)
+
+        # Synthesize full prompt with style_hints + evolution mutations
+        synth_prompt = synthesize_prompt(
+            base_prompt=prompt,
+            style_hints=bundle.style_hints,
+            evolution_lines=evo_lines,
+            cycle_index=cycle_index,
+            max_mutations=2,
+        )
+
+        # Synthesize video prompt with motion_prompt appended
+        synth_video = synthesize_video_prompt(
+            base_prompt=prompt,
+            style_hints=bundle.style_hints,
+            motion_prompt=bundle.motion_prompt,
+            evolution_lines=evo_lines,
+            cycle_index=cycle_index,
+            max_mutations=2,
+        )
+
         return {
-            'refined_prompt': prompt.strip(),
+            'refined_prompt': synth_prompt,
             'style_tags': [],
-            'motion_hint': '',
-            'video_prompt': '',
-            'negative_prompt': '',
+            'motion_hint': bundle.motion_prompt[:100] if bundle.motion_prompt else '',
+            'video_prompt': synth_video,
+            'negative_prompt': '',  # Use bundle's resolved negative (applied in create_briq)
+            'evolution_mutations': mutations,
         }
 
     def _basic_evolve_bundle(self, prompt: str, cycle_index: int, bundle: PromptBundle) -> Dict[str, Any]:
-        """Basic prompt evolution without LLM - subtle variations."""
-        color_shifts = [
-            "deep blue tones", "purple haze", "neon pink accents",
-            "electric cyan", "golden hour light", "crimson highlights",
-            "emerald glow", "amber warmth", "silver moonlight"
-        ]
-        mood_shifts = [
-            "slightly more intense", "calmer atmosphere",
-            "increased energy", "ethereal feeling", "grittier texture"
-        ]
-        color = color_shifts[cycle_index % len(color_shifts)]
-        mood = mood_shifts[cycle_index % len(mood_shifts)]
+        """Deterministic prompt evolution using prompt_synth — NO LLM.
+        Same cycle_index = same prompt. Always."""
+        evo_lines = self._load_evo_lines()
+        mutations = select_evolution_mutations(evo_lines, cycle_index, max_mutations=2)
+
+        # For evolution, use current prompt as base (not raw tasq)
+        synth_prompt = synthesize_prompt(
+            base_prompt=prompt,
+            style_hints=bundle.style_hints,
+            evolution_lines=evo_lines,
+            cycle_index=cycle_index,
+            max_mutations=2,
+        )
+
+        synth_video = synthesize_video_prompt(
+            base_prompt=prompt,
+            style_hints=bundle.style_hints,
+            motion_prompt=bundle.motion_prompt,
+            evolution_lines=evo_lines,
+            cycle_index=cycle_index,
+            max_mutations=2,
+        )
+
         return {
-            'refined_prompt': f"{prompt}, {color}, {mood}",
+            'refined_prompt': synth_prompt,
             'style_tags': [],
-            'motion_hint': '',
-            'video_prompt': '',
+            'motion_hint': bundle.motion_prompt[:100] if bundle.motion_prompt else '',
+            'video_prompt': synth_video,
             'negative_prompt': '',
+            'evolution_mutations': mutations,
         }
 
     def _refine_with_llm_bundle(
@@ -503,7 +567,7 @@ class InstruQtor:
             return data
         except Exception as e:
             logger.warning(f"LLM refinement failed: {e}, using basic")
-            return self._basic_refine_bundle(raw_prompt, bundle)
+            return self._basic_refine_bundle(raw_prompt, bundle, cycle_index)
 
     def _evolve_with_llm_bundle(
         self, current_prompt: str, suggestion: str,

@@ -1,119 +1,75 @@
 #!/usr/bin/env python3
 """
-QonQrete Visual FaQtory v0.0.7-alpha
+QonQrete Visual FaQtory v0.3.5-beta
 ═══════════════════════════════════════════════════════════════════════════════
 
 An automated, long-form AI visual generation pipeline for music, DJ sets,
 and experimental audiovisual projects.
 
 3-Agent Pipeline:
-  - InstruQtor: Creates VisualBriq from Prompt Bundle (LLM-powered)
-  - ConstruQtor: Calls backend to generate video
-  - InspeQtor: Loops video, suggests evolution (LLM-powered, innovative mode)
+  - InstruQtor: Creates VisualBriq from Prompt Bundle (LLM-powered or deterministic)
+  - ConstruQtor: Calls backend to generate video (supports V2V)
+  - InspeQtor: Loops video, suggests evolution (LLM-powered or deterministic)
 
-Prompt Bundle (v0.0.7):
-  - tasq.md, negative_prompt.md, style_hints.md, motion_prompt.md
+v0.1.0-alpha features:
+  - Deterministic Prompt Synth (NO LLM required)
+  - Audio Reactivity (BPM, beat grid, spectral features)
+  - Base Folder Ingestion (base_image, base_audio, base_video)
+  - Video2Video (safe ComfyUI workflow, video preprocessing)
+  - Evolution Lines (deterministic visual mutations)
 
-Finalizer:
-  - Stitches all per-cycle MP4s into a single final_output.mp4
-  - Post-stitch: interpolation to 60fps + upscale to 1080p
-
-Based on QonQrete's deterministic, state-driven architecture.
-
-Usage:
-    from vfaq import VisualFaQtory
-
-    faqtory = VisualFaQtory(worqspace_dir="./worqspace", output_dir="./qodeyard")
-    faqtory.run(cycles=100)
+v0.3.5-beta features:
+  - Fixed Stream/Longcat: true autoregressive continuation via SVD temporal diffusion
+  - Unified macro control semantics (file presence = state, no auto-delete)
+  - Finalised stage-safe audio reactive Turbo with explicit audio-paused state
+  - Added long-run stability controller (prevents color collapse / green blob)
+  - TouchDesigner integration contract (no .toe shipped, td_setup.py + blueprint provided)
+  - Removed fake / misleading behavior from stream mode
+  - All previous features: MIDI sidecar, crowd queue, OSC output, etc.
 
 License: AGPL-3.0 (same as QonQrete)
 """
 
-__version__ = "0.0.7-alpha"
+__version__ = "0.3.5-beta"
 __author__ = "Ill Dynamics / WoNQ"
 __license__ = "AGPL-3.0"
 
-# Core models
 from .visual_briq import (
-    VisualBriq,
-    GenerationSpec,
-    InputMode,
-    BriqStatus,
-    CycleState,
-    generate_briq_id
+    VisualBriq, GenerationSpec, InputMode, BriqStatus,
+    CycleState, generate_briq_id
 )
-
-# Prompt Bundle (v0.0.7)
 from .prompt_bundle import PromptBundle, load_prompt_bundle
-
-# Three agents
+from .prompt_synth import (
+    synthesize_prompt, synthesize_video_prompt,
+    load_evolution_lines, select_evolution_mutations, map_motion_to_bucket_id,
+)
+from .base_folders import select_base_files
 from .instruqtor import InstruQtor
 from .construqtor import ConstruQtor
 from .inspeqtor import InspeQtor
-
-# Finalizer
 from .finalizer import Finalizer
-
-# Main pipeline
 from .visual_faqtory import VisualFaQtory, quick_run
-
-# Backends
 from .backends import (
-    BackendType,
-    GenerationRequest,
-    GenerationResult,
-    GeneratorBackend,
-    MockBackend,
-    ComfyUIBackend,
-    DiffusersBackend,
-    ReplicateBackend,
-    SplitBackend,
-    create_backend,
-    create_split_backend,
-    list_available_backends
+    BackendType, GenerationRequest, GenerationResult,
+    GeneratorBackend, MockBackend, ComfyUIBackend,
+    DiffusersBackend, ReplicateBackend, SplitBackend,
+    create_backend, create_split_backend, list_available_backends
 )
+from .color_stability import StabilityController, create_stability_controller
 
 __all__ = [
-    # Version
-    "__version__",
-    "__author__",
-    "__license__",
-
-    # Core models
-    "VisualBriq",
-    "GenerationSpec",
-    "InputMode",
-    "BriqStatus",
-    "CycleState",
-    "generate_briq_id",
-
-    # Prompt Bundle
-    "PromptBundle",
-    "load_prompt_bundle",
-
-    # Agents
-    "InstruQtor",
-    "ConstruQtor",
-    "InspeQtor",
-
-    # Finalizer
-    "Finalizer",
-
-    # Pipeline
-    "VisualFaQtory",
-    "quick_run",
-
-    # Backends
-    "BackendType",
-    "GenerationRequest",
-    "GenerationResult",
-    "GeneratorBackend",
-    "MockBackend",
-    "ComfyUIBackend",
-    "DiffusersBackend",
-    "ReplicateBackend",
-    "SplitBackend",
-    "create_backend",
-    "create_split_backend",
-    "list_available_backends"
+    "__version__", "__author__", "__license__",
+    "VisualBriq", "GenerationSpec", "InputMode", "BriqStatus",
+    "CycleState", "generate_briq_id",
+    "PromptBundle", "load_prompt_bundle",
+    "synthesize_prompt", "synthesize_video_prompt",
+    "load_evolution_lines", "select_evolution_mutations", "map_motion_to_bucket_id",
+    "select_base_files",
+    "InstruQtor", "ConstruQtor", "InspeQtor", "Finalizer",
+    "VisualFaQtory", "quick_run",
+    "BackendType", "GenerationRequest", "GenerationResult",
+    "GeneratorBackend", "MockBackend", "ComfyUIBackend",
+    "DiffusersBackend", "ReplicateBackend", "SplitBackend",
+    "create_backend", "create_split_backend", "list_available_backends",
+    "StabilityController", "create_stability_controller",
 ]

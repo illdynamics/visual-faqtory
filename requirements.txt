@@ -1,15 +1,24 @@
-# QonQrete Visual FaQtory v0.0.7-alpha - Requirements
+# QonQrete Visual FaQtory v0.3.5-beta - Requirements
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Core (always needed)
 pyyaml>=6.0
 
-# For better mock images (optional but recommended)
+# For mock images + color stability controller (strongly recommended)
 pillow>=9.0
+numpy>=1.24
 
 # Backend: ComfyUI
 requests>=2.28
 websocket-client>=1.4
+
+# Audio Reactivity (optional, needed for BPM/beat features)
+# Install with: pip install librosa sounddevice
+# librosa>=0.10
+# sounddevice>=0.4
+
+# Color Stability (included above: numpy, pillow)
+# No additional dependencies needed
 
 # Backend: Diffusers (uncomment if using local GPU)
 # torch>=2.0
