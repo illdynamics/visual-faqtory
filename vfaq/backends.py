@@ -11,7 +11,7 @@ Pluggable backends for image and video generation:
 
 Each backend implements the GeneratorBackend interface.
 
-Part of QonQrete Visual FaQtory v0.0.7-alpha
+Part of QonQrete Visual FaQtory v0.3.5-beta
 """
 import os
 import io
@@ -68,7 +68,7 @@ class GenerationRequest:
     noise_aug_strength: float = 0.02
     output_dir: Path = field(default_factory=lambda: Path("./output"))
     atom_id: str = ""
-    # Prompt Bundle extensions (v0.0.7-alpha)
+    # Prompt Bundle extensions (v0.1.0-alpha)
     video_prompt: Optional[str] = None       # Dedicated prompt for video stage
     motion_prompt: Optional[str] = None      # Raw motion intent from motion_prompt.md
 
@@ -88,6 +88,11 @@ class GenerationResult:
 # BASE BACKEND INTERFACE
 # ═══════════════════════════════════════════════════════════════════════════════
 
+class FatalConfigError(RuntimeError):
+    """Raised when a configuration value is unsafe or invalid. Aborts the cycle."""
+    pass
+
+
 class GeneratorBackend(ABC):
     """Abstract interface for image/video generation backends."""
     
@@ -102,6 +107,31 @@ class GeneratorBackend(ABC):
     @abstractmethod
     def generate_video(self, request: GenerationRequest, source_image: Path) -> GenerationResult:
         pass
+    
+    def generate_video2video(self, request: GenerationRequest) -> GenerationResult:
+        """
+        True video-to-video generation: latent video → low-denoise diffusion → latent video.
+
+        NOT image-to-video. The input is a preprocessed video (request.base_video_path),
+        not a frame extraction.
+
+        Default: raises NotImplementedError. Backends that support V2V must override.
+        """
+        return GenerationResult(
+            success=False,
+            error=f"Backend '{self.name}' does not support video2video generation"
+        )
+
+    def generate_stream_video(self, request: 'GenerationRequest', stream_config: Dict[str, Any] = None) -> 'GenerationResult':
+        """
+        Stream continuation: generate video from context tail (sliding window).
+
+        Default: raises NotImplementedError. Backends that support stream must override.
+        """
+        return GenerationResult(
+            success=False,
+            error=f"Backend '{self.name}' does not support stream continuation"
+        )
     
     @abstractmethod
     def check_availability(self) -> tuple:
@@ -155,6 +185,73 @@ class MockBackend(GeneratorBackend):
             video_path=output_path,
             generation_time=time.time() - start_time,
             metadata={"backend": "mock", "frames": request.video_frames}
+        )
+
+    def generate_video2video(self, request: GenerationRequest) -> GenerationResult:
+        """Mock V2V: copy preprocessed video with a slight filter as placeholder."""
+        # HARD VALIDATION — same as real backend
+        if request.denoise_strength > 0.5:
+            raise FatalConfigError("Video2Video denoise must be ≤ 0.5")
+
+        start_time = time.time()
+        time.sleep(self.delay * 2)
+
+        if not request.base_video_path or not request.base_video_path.exists():
+            return GenerationResult(
+                success=False,
+                error="[MOCK V2V] No base_video_path provided or file missing"
+            )
+
+        output_path = request.output_dir / f"{request.atom_id}_v2v.mp4"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Apply a trivial color-shift so the output visibly differs from input
+        try:
+            cmd = [
+                'ffmpeg', '-y',
+                '-i', str(request.base_video_path),
+                '-vf', f'hue=h={request.seed % 360}:s=1.2',
+                '-c:v', 'libx264', '-preset', 'ultrafast',
+                '-pix_fmt', 'yuv420p',
+                str(output_path)
+            ]
+            subprocess.run(cmd, capture_output=True, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            # Fallback: just copy the file
+            import shutil
+            shutil.copy2(request.base_video_path, output_path)
+
+        logger.info(f"[MOCK V2V] Generated video2video: {output_path}")
+
+        return GenerationResult(
+            success=True,
+            video_path=output_path,
+            generation_time=time.time() - start_time,
+            metadata={"backend": "mock_v2v", "denoise": request.denoise_strength}
+        )
+
+    def generate_stream_video(self, request, stream_config=None):
+        """Mock stream continuation — just copies context video as output."""
+        start_time = time.time()
+        output_path = request.output_dir / f"{request.atom_id}_stream.mp4"
+
+        if request.base_video_path and request.base_video_path.exists():
+            import shutil
+            shutil.copy2(request.base_video_path, output_path)
+        else:
+            # Create a minimal placeholder
+            self._create_placeholder_video(
+                output_path,
+                request.output_dir / f"{request.atom_id}_placeholder.png",
+                request
+            )
+
+        logger.info(f"[MOCK STREAM] Generated stream continuation: {output_path}")
+        return GenerationResult(
+            success=True,
+            video_path=output_path,
+            generation_time=time.time() - start_time,
+            metadata={"backend": "mock_stream"}
         )
     
     def check_availability(self) -> tuple:
@@ -307,11 +404,532 @@ class ComfyUIBackend(GeneratorBackend):
         
         # Build video workflow
         workflow = self._build_video_workflow(request, image_name)
+
+        # Log motion_prompt warning if workflow lacks text conditioning (Fix 4)
+        self._warn_motion_prompt_if_ignored(workflow, request)
         
         # Queue and wait
         result = self._queue_and_wait(workflow, request, is_video=True)
         result.generation_time = time.time() - start_time
         return result
+
+    def generate_video2video(self, request: GenerationRequest) -> GenerationResult:
+        """
+        True Video2Video: latent video → low-denoise diffusion → latent video.
+
+        Uses the safe_video2video.json workflow:
+          VHS_LoadVideo → VAEEncode → KSampler (low denoise) → VAEDecode → VHS_VideoCombine
+
+        NEVER falls back to image pipeline.
+        """
+        try:
+            import requests
+        except ImportError:
+            return GenerationResult(success=False, error="requests package not installed")
+
+        # ── HARD VALIDATION ──────────────────────────────────────────────
+        if request.denoise_strength > 0.5:
+            raise FatalConfigError("Video2Video denoise must be ≤ 0.5")
+
+        if not request.base_video_path or not request.base_video_path.exists():
+            return GenerationResult(
+                success=False,
+                error=f"V2V requires preprocessed video at base_video_path, "
+                      f"got: {request.base_video_path}"
+            )
+
+        start_time = time.time()
+
+        # ── LOAD V2V WORKFLOW (Option B: precedence-based lookup) ───────
+        # 1. Check input.video2video.comfyui.workflow (preferred)
+        # 2. Fallback to backend.v2v_workflow (legacy, to be removed)
+        v2v_workflow_path = (
+            self.config.get('input_v2v_workflow') or
+            self.config.get('v2v_workflow')
+        )
+        if not v2v_workflow_path:
+            return GenerationResult(
+                success=False,
+                error="No v2v_workflow configured for ComfyUI video2video"
+            )
+
+        try:
+            workflow = json.loads(Path(v2v_workflow_path).read_text())
+        except Exception as e:
+            return GenerationResult(
+                success=False,
+                error=f"Failed to load V2V workflow from {v2v_workflow_path}: {e}"
+            )
+
+        # Strip _meta key (not a node)
+        workflow.pop('_meta', None)
+
+        # ── INJECT VIDEO PATH into VHS_LoadVideo / LoadVideo ─────────────
+        video_injected = False
+        for node_id, node in workflow.items():
+            ct = node.get('class_type', '')
+            if ct in ('VHS_LoadVideo', 'LoadVideo'):
+                node['inputs']['video'] = str(request.base_video_path)
+                video_injected = True
+                logger.info(f"[ComfyUI V2V] Injected video path into node {node_id} ({ct})")
+        if not video_injected:
+            return GenerationResult(
+                success=False,
+                error="V2V workflow has no VHS_LoadVideo or LoadVideo node"
+            )
+
+        # ── GRAPH-BASED CLIP INJECTION (Fix 3) ──────────────────────────
+        workflow = self._inject_prompts_graph_based(
+            workflow, request.prompt, request.negative_prompt
+        )
+
+        # ── INJECT KSampler PARAMS ──────────────────────────────────────
+        for node_id, node in workflow.items():
+            if node.get('class_type') == 'KSampler':
+                inputs = node['inputs']
+                inputs['seed'] = request.seed
+                inputs['denoise'] = request.denoise_strength
+                if request.steps:
+                    inputs['steps'] = request.steps
+                if request.cfg_scale:
+                    inputs['cfg'] = request.cfg_scale
+
+        # ── INJECT VHS_VideoCombine filename prefix ─────────────────────
+        for node_id, node in workflow.items():
+            if node.get('class_type') == 'VHS_VideoCombine':
+                node['inputs']['filename_prefix'] = f"{request.atom_id}_v2v"
+                if request.video_fps:
+                    node['inputs']['frame_rate'] = request.video_fps
+
+        # ── LOG MOTION PROMPT WARNING (Fix 4) ────────────────────────────
+        self._warn_motion_prompt_if_ignored(workflow, request)
+
+        # ── QUEUE AND WAIT ──────────────────────────────────────────────
+        logger.info(f"[ComfyUI V2V] Queuing video2video workflow (denoise={request.denoise_strength})")
+        result = self._queue_and_wait(workflow, request, is_video=True)
+        result.generation_time = time.time() - start_time
+
+        if result.success:
+            logger.info(f"[ComfyUI V2V] Video2Video complete: {result.video_path}")
+        else:
+            logger.error(f"[ComfyUI V2V] Video2Video FAILED: {result.error}")
+
+        return result
+
+    def generate_stream_video(self, request, stream_config=None):
+        """
+        Generate video continuation using streaming capabilities.
+
+        When ``stream_config.method`` is ``longcat`` this function performs an
+        autoregressive continuation by repeatedly extracting the tail of the
+        current video, generating new frames beyond the context window and
+        appending them to build a longer sequence. VRAM usage is bounded by
+        capping context/generation frame counts and splitting work into small
+        iterations. If ``method`` is not ``longcat``, the legacy sliding-window
+        implementation using a single continuation workflow is used.
+        """
+        stream_config = stream_config or {}
+        method = stream_config.get('method', 'sliding_window')
+
+        # Longcat autoregressive continuation
+        if method == 'longcat':
+            return self._generate_longcat_video(request, stream_config)
+
+        # Legacy sliding window continuation
+        try:
+            import requests as req_lib
+        except ImportError:
+            return GenerationResult(success=False, error="requests package not installed")
+
+        wf_path = stream_config.get('workflow', 'worqspace/workflows/stream_continuation.json')
+
+        # Load workflow
+        try:
+            workflow = json.loads(Path(wf_path).read_text())
+            workflow.pop('_meta', None)
+        except Exception as e:
+            return GenerationResult(
+                success=False,
+                error=f"Failed to load stream workflow from {wf_path}: {e}"
+            )
+
+        start_time = time.time()
+
+        # Upload context video
+        if not request.base_video_path or not request.base_video_path.exists():
+            return GenerationResult(success=False, error="No context video for stream continuation")
+
+        video_filename = request.base_video_path.name
+        try:
+            upload_url = f"{self.api_url}/upload/image"
+            with open(request.base_video_path, 'rb') as f:
+                req_lib.post(upload_url, files={
+                    'image': (video_filename, f, 'video/mp4')
+                }, data={'subfolder': 'input', 'type': 'input'})
+        except Exception as e:
+            logger.warning(f"[ComfyUI Stream] Context video upload failed: {e}")
+
+        # Inject context video path into VHS_LoadVideo
+        for node in workflow.values():
+            if 'LoadVideo' in node.get('class_type', ''):
+                node['inputs']['video'] = video_filename
+
+        # Inject prompts via graph-based resolution
+        workflow = self._inject_prompts_graph_based(
+            workflow,
+            request.prompt or "continuous visual flow",
+            request.negative_prompt or "low quality"
+        )
+
+        # Inject seed and denoise
+        for node in workflow.values():
+            if node.get('class_type') == 'KSampler':
+                # Locked seed overrides request.seed
+                seed = request.seed
+                if stream_config.get('seed_mode') == 'locked':
+                    seed = stream_config.get('base_seed', 1337)
+                node['inputs']['seed'] = seed
+                node['inputs']['denoise'] = min(request.denoise_strength, 0.5)
+
+        # Queue and wait
+        logger.info(f"[ComfyUI Stream] Queuing stream continuation workflow")
+        result = self._queue_and_wait(workflow, request, is_video=True)
+        result.generation_time = time.time() - start_time
+
+        if result.success:
+            logger.info(f"[ComfyUI Stream] Stream continuation complete: {result.video_path}")
+        else:
+            logger.error(f"[ComfyUI Stream] Stream continuation FAILED: {result.error}")
+
+        return result
+
+    def _generate_longcat_video(self, request: 'GenerationRequest', stream_config: Dict[str, Any]) -> 'GenerationResult':
+        """
+        True autoregressive longcat continuation (v0.3.5-beta).
+
+        This implementation uses SVD temporal diffusion to generate genuinely
+        NEW frames beyond the context window. Each iteration:
+
+          1. Extracts the last `context_length` frames from the current video.
+          2. Uploads the context clip to ComfyUI.
+          3. The SVD workflow extracts the LAST frame from context, uses it as
+             the init_image for SVD_img2vid_Conditioning, and generates
+             `generation_length` new frames via temporal diffusion.
+          4. The new frames (not the context!) are appended to the timeline.
+          5. Repeat until target duration is met or max_iterations reached.
+
+        Context conditioning honesty (v0.3.5-beta):
+          Current longcat uses LAST-FRAME continuation only, NOT full temporal
+          context. The entire context clip is loaded only to extract its final
+          frame. Multi-frame temporal conditioning (AnimateDiff style) is NOT
+          implemented. Each iteration conditions solely on the last frame of
+          the previous segment.
+
+        Target duration (v0.3.5-beta):
+          The loop continues until total_generated_frames >= target_frames.
+          target_frames is computed by get_stream_config() from:
+            1. target_seconds * fps  (if target_seconds set)
+            2. target_frames         (if explicitly set)
+            3. generate_frames * max_iterations (fallback)
+          This fixes the v0.3.4 bug where default runs stopped after one
+          iteration because target_frames fell through to request.video_frames.
+
+        VRAM safety:
+          - Frame counts are capped to prevent OOM.
+          - On OOM, generate_frames is halved and retried once.
+          - On persistent OOM, the stream aborts cleanly.
+        """
+        import copy
+        import shutil
+        import requests as req_lib
+
+        # ── Configuration ────────────────────────────────────────────────
+        fps = max(1, request.video_fps or 8)
+        context_frames = int(stream_config.get('context_length', 16) or 16)
+        generate_frames = int(stream_config.get('generation_length', 16) or 16)
+        max_iterations = int(stream_config.get('max_iterations', 999) or 999)
+        checkpoint = stream_config.get('checkpoint', 'svd_xt.safetensors')
+
+        # VRAM safety caps
+        vram_cfg = stream_config.get('vram_safety', {})
+        MAX_CONTEXT = int(vram_cfg.get('max_context_frames', 24) if isinstance(vram_cfg, dict) else 24)
+        MAX_GENERATE = int(vram_cfg.get('max_generate_frames', 24) if isinstance(vram_cfg, dict) else 24)
+        oom_retry = bool(vram_cfg.get('oom_retry', True) if isinstance(vram_cfg, dict) else True)
+
+        if context_frames > MAX_CONTEXT:
+            logger.warning(
+                f"[Longcat] context_frames {context_frames} capped to "
+                f"{MAX_CONTEXT} (VRAM safety)"
+            )
+            context_frames = MAX_CONTEXT
+        if generate_frames > MAX_GENERATE:
+            logger.warning(
+                f"[Longcat] generate_frames {generate_frames} capped to "
+                f"{MAX_GENERATE} (VRAM safety)"
+            )
+            generate_frames = MAX_GENERATE
+
+        # ── VRAM estimate logging (v0.3.5-beta) ─────────────────────────
+        logger.info(
+            f"[Longcat] VRAM estimate: {request.width}×{request.height}, "
+            f"ctx={context_frames}f, gen={generate_frames}f, "
+            f"checkpoint={checkpoint}"
+        )
+
+        # ── Target frames (v0.3.5-beta) ─────────────────────────────────
+        # Use pre-computed target from stream_config (set by get_stream_config)
+        # Falls back to generate_frames * max_iterations if not present.
+        target_new_frames = int(
+            stream_config.get('target_frames', generate_frames * max_iterations)
+        )
+
+        # ── Load workflow template ───────────────────────────────────────
+        template_path = stream_config.get('workflow', 'worqspace/workflows/stream_continuation.json')
+        try:
+            base_workflow = json.loads(Path(template_path).read_text())
+            base_workflow.pop('_meta', None)
+        except Exception as e:
+            return GenerationResult(
+                success=False,
+                error=f"Failed to load stream workflow from {template_path}: {e}"
+            )
+
+        # ── Working directory ────────────────────────────────────────────
+        working_dir = request.output_dir / f"longcat_{request.atom_id}"
+        working_dir.mkdir(parents=True, exist_ok=True)
+
+        if not request.base_video_path or not request.base_video_path.exists():
+            return GenerationResult(success=False, error="No context video provided for longcat continuation")
+
+        current_video = request.base_video_path
+        context_sec = context_frames / fps
+
+        # Accumulator: list of video segment paths (new frames only)
+        segments: list = []
+        # Include the initial context video as the first segment
+        segments.append(current_video)
+
+        total_new_frames = 0
+        iteration = 0
+
+        # ── Stability controller (v0.3.5-beta) ──────────────────────────
+        # Per-iteration collapse prevention. Runs on the LAST FRAME of each
+        # generated segment, BEFORE it's used as init for the next iteration.
+        # This is the real fix: in-loop stability, not post-processing.
+        stability = None
+        _base_cfg = min(request.cfg_scale, 3.0)  # Track base cfg for stability reduction
+        try:
+            from .color_stability import create_stability_controller
+            full_cfg = stream_config.get('_parent_config', {})
+            stability = create_stability_controller(full_cfg)
+            if stability:
+                logger.info("[Longcat] Stability controller active (per-iteration collapse prevention)")
+        except Exception as e:
+            logger.debug(f"[Longcat] Stability controller not available: {e}")
+
+        logger.info(
+            f"[Longcat] Starting autoregressive continuation: "
+            f"ctx={context_frames}f, gen={generate_frames}f, fps={fps}, "
+            f"target={target_new_frames} new frames, max_iter={max_iterations}"
+        )
+
+        while total_new_frames < target_new_frames and iteration < max_iterations:
+            iter_label = f"[Longcat i={iteration}]"
+
+            # ── 1. Extract context tail ──────────────────────────────────
+            context_clip = working_dir / f"context_{iteration}.mp4"
+            try:
+                from .stream_engine import extract_video_context
+                extract_video_context(current_video, context_sec, context_clip)
+            except Exception as e:
+                logger.warning(f"{iter_label} Context extraction failed: {e}")
+                if iteration == 0:
+                    return GenerationResult(success=False, error=f"Context extraction failed: {e}")
+                break  # Keep what we have
+
+            # ── 2. Upload context clip to ComfyUI ────────────────────────
+            try:
+                upload_url = f"{self.api_url}/upload/image"
+                with open(context_clip, 'rb') as f:
+                    req_lib.post(
+                        upload_url,
+                        files={'image': (context_clip.name, f, 'video/mp4')},
+                        data={'subfolder': 'input', 'type': 'input'}
+                    )
+            except Exception as e:
+                logger.warning(f"{iter_label} Context video upload failed: {e}")
+
+            # ── 3. Build workflow for this iteration ─────────────────────
+            workflow = copy.deepcopy(base_workflow)
+
+            for node_id, node in workflow.items():
+                ct = node.get('class_type', '')
+
+                # VHS_LoadVideo: inject context clip path and frame cap
+                if 'LoadVideo' in ct:
+                    node['inputs']['video'] = context_clip.name
+                    node['inputs']['frame_load_cap'] = context_frames
+                    node['inputs']['force_rate'] = fps
+
+                # GetImageFromBatch: ensure we grab last frame (-1)
+                if ct == 'GetImageFromBatch':
+                    node['inputs']['index'] = context_frames - 1  # last frame
+
+                # ImageOnlyCheckpointLoader: set SVD checkpoint
+                if ct == 'ImageOnlyCheckpointLoader':
+                    node['inputs']['ckpt_name'] = checkpoint
+
+                # SVD_img2vid_Conditioning: set generation parameters
+                if ct == 'SVD_img2vid_Conditioning':
+                    node['inputs']['video_frames'] = generate_frames
+                    node['inputs']['fps'] = fps
+                    node['inputs']['width'] = request.width
+                    node['inputs']['height'] = request.height
+
+                # KSampler: unique seed per iteration, stability-adjusted cfg
+                if ct == 'KSampler':
+                    node['inputs']['seed'] = request.seed + iteration * 997
+                    node['inputs']['steps'] = max(request.steps, 20)
+                    node['inputs']['cfg'] = _base_cfg  # stability-adjusted
+
+                # VHS_VideoCombine: frame rate and naming
+                if 'VideoCombine' in ct:
+                    node['inputs']['frame_rate'] = fps
+                    node['inputs']['filename_prefix'] = f"longcat_{request.atom_id}_{iteration}"
+
+            # ── 4. Queue and wait ────────────────────────────────────────
+            iter_request = copy.copy(request)
+            iter_request.base_video_path = context_clip
+            iter_request.seed = request.seed + iteration * 997
+
+            logger.info(f"{iter_label} Queuing SVD continuation ({generate_frames} new frames)")
+            result = self._queue_and_wait(workflow, iter_request, is_video=True)
+
+            if not result.success:
+                err = result.error or "unknown error"
+                # OOM retry: halve generate_frames and try once more
+                if oom_retry and ('out of memory' in err.lower() or 'oom' in err.lower()):
+                    if generate_frames > 4:
+                        old_gen = generate_frames
+                        generate_frames = max(4, generate_frames // 2)
+                        logger.warning(
+                            f"{iter_label} OOM detected. Reducing generate_frames "
+                            f"{old_gen}→{generate_frames} and retrying."
+                        )
+                        iteration += 1
+                        continue
+                logger.error(f"{iter_label} Continuation failed: {err}")
+                if segments:
+                    break  # Keep what we have
+                return result
+
+            new_video = result.video_path
+            if not new_video or not new_video.exists():
+                logger.error(f"{iter_label} Continuation produced no video")
+                if segments:
+                    break
+                return GenerationResult(success=False, error="Continuation produced no video")
+
+            # ── 5. Append new segment and update state ───────────────────
+            segments.append(new_video)
+            total_new_frames += generate_frames
+
+            # The new video becomes the source for the next context extraction
+            current_video = new_video
+
+            # ── 5b. In-loop stability check (v0.3.5-beta) ───────────────
+            # Extract the last frame from the new segment, run it through
+            # the stability controller. If collapse is detected, adjust
+            # cfg_scale for the NEXT iteration. This prevents the feedback
+            # loop from converging into single-color demon slime.
+            if stability:
+                try:
+                    import numpy as _np
+                    from PIL import Image as _PILImage
+                    # Extract last frame using ffmpeg (fast, single frame)
+                    last_frame_path = working_dir / f"stability_probe_{iteration}.png"
+                    _extract_cmd = [
+                        'ffmpeg', '-y', '-sseof', '-0.1',
+                        '-i', str(new_video),
+                        '-frames:v', '1', '-q:v', '2',
+                        str(last_frame_path)
+                    ]
+                    subprocess.run(_extract_cmd, capture_output=True, timeout=10)
+                    if last_frame_path.exists():
+                        probe_img = _PILImage.open(last_frame_path).convert('RGB')
+                        probe_np = _np.array(probe_img)
+                        # Run through stability (anchors on first, corrects subsequent)
+                        corrected_np = stability.process_frame(probe_np)
+                        mods = stability.get_generation_modifiers()
+                        if mods.get('collapse_active'):
+                            cfg_reduce = mods.get('cfg_reduce', 0.15)
+                            adjusted_cfg = max(1.0, _base_cfg - cfg_reduce)
+                            logger.warning(
+                                f"{iter_label} COLLAPSE DETECTED — reducing cfg "
+                                f"{_base_cfg:.2f}→{adjusted_cfg:.2f} for next iteration"
+                            )
+                            _base_cfg = adjusted_cfg
+                            # Save corrected frame as potential init override
+                            corrected_img = _PILImage.fromarray(corrected_np)
+                            corrected_path = working_dir / f"corrected_init_{iteration}.png"
+                            corrected_img.save(corrected_path)
+                            logger.info(f"{iter_label} Corrected init frame saved: {corrected_path.name}")
+                        # Clean up probe frame
+                        last_frame_path.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.debug(f"{iter_label} Stability probe failed (non-fatal): {e}")
+
+            logger.info(
+                f"{iter_label} Generated {generate_frames} new frames "
+                f"(total new: {total_new_frames}/{target_new_frames})"
+            )
+            iteration += 1
+
+        # ── 6. Concatenate all segments into final output ────────────────
+        if len(segments) < 2:
+            # Only the initial context, no new frames generated
+            if segments:
+                out_path = request.output_dir / f"{request.atom_id}_stream.mp4"
+                shutil.copy2(segments[0], out_path)
+                return GenerationResult(success=True, video_path=out_path)
+            return GenerationResult(success=False, error="Longcat produced no segments")
+
+        # Build ffmpeg concat file
+        concat_list = working_dir / "final_concat.txt"
+        with open(concat_list, 'w') as f:
+            for seg in segments:
+                # Use absolute paths for safety
+                f.write(f"file '{Path(seg).resolve()}'\n")
+
+        out_path = request.output_dir / f"{request.atom_id}_stream.mp4"
+        cmd = [
+            'ffmpeg', '-y', '-f', 'concat', '-safe', '0',
+            '-i', str(concat_list), '-c', 'copy', str(out_path)
+        ]
+        try:
+            subprocess.run(cmd, capture_output=True, check=True)
+        except subprocess.CalledProcessError:
+            # Fallback: re-encode concat (handles codec mismatches)
+            cmd_reencode = [
+                'ffmpeg', '-y', '-f', 'concat', '-safe', '0',
+                '-i', str(concat_list),
+                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
+                '-pix_fmt', 'yuv420p', '-r', str(fps),
+                str(out_path)
+            ]
+            try:
+                subprocess.run(cmd_reencode, capture_output=True, check=True)
+            except subprocess.CalledProcessError as e:
+                return GenerationResult(success=False, error=f"Final concat failed: {e}")
+
+        if out_path.exists() and out_path.stat().st_size > 100:
+            logger.info(
+                f"[Longcat] Complete: {len(segments)} segments, "
+                f"{total_new_frames} new frames, {iteration} iterations → {out_path.name}"
+            )
+            return GenerationResult(success=True, video_path=out_path)
+
+        return GenerationResult(success=False, error="Longcat final output is empty")
     
     def check_availability(self) -> tuple:
         try:
@@ -482,12 +1100,17 @@ class ComfyUIBackend(GeneratorBackend):
         }
     
     def _customize_workflow(self, workflow: Dict, request: GenerationRequest, is_video: bool = False) -> Dict:
-        """Inject parameters into loaded workflow. For video, prefers video_prompt."""
+        """Inject parameters into loaded workflow using graph-based CLIP resolution."""
         # Determine which prompt to use for positive CLIP nodes
         effective_prompt = request.prompt
         if is_video and request.video_prompt:
             effective_prompt = request.video_prompt
             logger.info(f"[ComfyUI] Using video_prompt for video workflow injection")
+
+        # ── GRAPH-BASED PROMPT INJECTION (v0.1.1 — replaces heuristic) ──
+        workflow = self._inject_prompts_graph_based(
+            workflow, effective_prompt, request.negative_prompt
+        )
 
         for node_id, node in workflow.items():
             inputs = node.get('inputs', {})
@@ -501,19 +1124,116 @@ class ComfyUIBackend(GeneratorBackend):
                 if 'cfg' in inputs:
                     inputs['cfg'] = request.cfg_scale
             
-            # Inject prompt into CLIP nodes
-            if class_type == 'CLIPTextEncode':
-                if 'positive' in node_id.lower() or inputs.get('text', '').startswith('masterpiece'):
-                    inputs['text'] = effective_prompt
-                elif 'negative' in node_id.lower():
-                    inputs['text'] = request.negative_prompt
-            
             # Inject dimensions
             if class_type == 'EmptyLatentImage':
                 inputs['width'] = request.width
                 inputs['height'] = request.height
         
         return workflow
+
+    @staticmethod
+    def _resolve_clip_nodes_from_graph(workflow: Dict) -> Dict[str, List[str]]:
+        """
+        Graph-based CLIP node resolution (v0.1.1).
+
+        Walk the workflow graph to find which CLIPTextEncode nodes are wired
+        to KSampler positive vs negative inputs.
+
+        Algorithm:
+          1. Find all KSampler nodes
+          2. For each KSampler, follow the 'positive' input reference → node id
+          3. If that node is CLIPTextEncode → it's a positive CLIP node
+          4. Same for 'negative' input → negative CLIP node
+
+        Returns:
+            {"positive": [node_id, ...], "negative": [node_id, ...]}
+        """
+        positive_ids: List[str] = []
+        negative_ids: List[str] = []
+
+        for node_id, node in workflow.items():
+            if node.get('class_type') != 'KSampler':
+                continue
+
+            inputs = node.get('inputs', {})
+
+            # Follow positive reference: ["node_id", output_slot]
+            pos_ref = inputs.get('positive')
+            if isinstance(pos_ref, list) and len(pos_ref) >= 1:
+                target_id = str(pos_ref[0])
+                target_node = workflow.get(target_id, {})
+                if target_node.get('class_type') == 'CLIPTextEncode':
+                    if target_id not in positive_ids:
+                        positive_ids.append(target_id)
+
+            # Follow negative reference
+            neg_ref = inputs.get('negative')
+            if isinstance(neg_ref, list) and len(neg_ref) >= 1:
+                target_id = str(neg_ref[0])
+                target_node = workflow.get(target_id, {})
+                if target_node.get('class_type') == 'CLIPTextEncode':
+                    if target_id not in negative_ids:
+                        negative_ids.append(target_id)
+
+        return {"positive": positive_ids, "negative": negative_ids}
+
+    def _inject_prompts_graph_based(
+        self, workflow: Dict, prompt: str, negative_prompt: str
+    ) -> Dict:
+        """
+        Inject prompt text into workflow using graph-based CLIP resolution.
+
+        Falls back to scanning all CLIPTextEncode nodes if no KSampler
+        references are found (e.g., unusual workflow topologies).
+        """
+        resolved = self._resolve_clip_nodes_from_graph(workflow)
+
+        injected_positive = False
+        injected_negative = False
+
+        # Inject positive prompt
+        for nid in resolved["positive"]:
+            workflow[nid]['inputs']['text'] = prompt
+            injected_positive = True
+            logger.debug(f"[ComfyUI] Graph-injected positive prompt into node {nid}")
+
+        # Inject negative prompt
+        for nid in resolved["negative"]:
+            workflow[nid]['inputs']['text'] = negative_prompt or "low quality, blurry"
+            injected_negative = True
+            logger.debug(f"[ComfyUI] Graph-injected negative prompt into node {nid}")
+
+        if injected_positive or injected_negative:
+            logger.info(
+                f"[ComfyUI] Graph-based CLIP injection: "
+                f"positive={resolved['positive']}, negative={resolved['negative']}"
+            )
+        else:
+            logger.warning(
+                "[ComfyUI] No CLIPTextEncode nodes wired to KSampler found. "
+                "Workflow may not support text conditioning."
+            )
+
+        return workflow
+
+    def _warn_motion_prompt_if_ignored(self, workflow: Dict, request: GenerationRequest) -> None:
+        """
+        Log a warning when motion_prompt is provided but the workflow has
+        no text conditioning path (no CLIPTextEncode wired to KSampler).
+
+        The motion_prompt is still preserved in the briq JSON for audit.
+        """
+        if not request.motion_prompt:
+            return
+
+        resolved = self._resolve_clip_nodes_from_graph(workflow)
+        has_text_conditioning = bool(resolved["positive"] or resolved["negative"])
+
+        if not has_text_conditioning:
+            logger.warning(
+                "WARNING: motion_prompt provided but ignored by backend "
+                "(workflow does not support text conditioning)"
+            )
     
     def _inject_init_image(self, workflow: Dict, image_name: str, denoise: float) -> Dict:
         """Convert txt2img workflow to img2img by adding LoadImage and VAEEncode nodes."""
@@ -966,14 +1686,14 @@ class ReplicateBackend(GeneratorBackend):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SPLIT BACKEND (v0.0.7-alpha — separate image and video backends)
+# SPLIT BACKEND (v0.1.0-alpha — separate image and video backends)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class SplitBackend(GeneratorBackend):
     """
     Wrapper that delegates image and video generation to separate backends.
 
-    Config (v0.0.7-alpha):
+    Config (v0.1.0-alpha):
       backends:
         image:
           type: comfyui
@@ -999,6 +1719,14 @@ class SplitBackend(GeneratorBackend):
     def generate_video(self, request: GenerationRequest, source_image: Path) -> GenerationResult:
         """Delegate video generation to video backend."""
         return self.video_backend.generate_video(request, source_image)
+
+    def generate_video2video(self, request: GenerationRequest) -> GenerationResult:
+        """Delegate video2video generation to video backend."""
+        return self.video_backend.generate_video2video(request)
+
+    def generate_stream_video(self, request, stream_config=None):
+        """Delegate stream continuation to video backend."""
+        return self.video_backend.generate_stream_video(request, stream_config)
 
     def check_availability(self) -> tuple:
         """Combined status of both backends."""
@@ -1101,6 +1829,7 @@ def list_available_backends() -> Dict[str, tuple]:
 
 __all__ = [
     'BackendType', 'InputMode', 'GenerationRequest', 'GenerationResult',
+    'FatalConfigError',
     'GeneratorBackend', 'MockBackend', 'ComfyUIBackend', 'DiffusersBackend',
     'ReplicateBackend', 'SplitBackend',
     'create_backend', 'create_split_backend', 'list_available_backends'

@@ -31,7 +31,7 @@ NON-NEGOTIABLE RULES:
 
 Supports NVENC-based encoding (h264_nvenc preferred, libx264 fallback).
 
-Part of QonQrete Visual FaQtory v0.0.7-alpha
+Part of QonQrete Visual FaQtory v0.3.5-beta
 """
 import logging
 import subprocess

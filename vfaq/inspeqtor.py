@@ -12,7 +12,7 @@ Responsibilities:
   4. Analyze the visual output using LLM
   5. Suggest subtle creative variations for next cycle
 
-Part of QonQrete Visual FaQtory v0.0.7-alpha
+Part of QonQrete Visual FaQtory v0.3.5-beta
 """
 
 import json

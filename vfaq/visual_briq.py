@@ -8,7 +8,7 @@ A VisualBriq is the standardized instruction packet passed between agents:
 
 It contains everything needed to generate one visual atom in the cycle.
 
-Part of QonQrete Visual FaQtory v0.0.7-alpha
+Part of QonQrete Visual FaQtory v0.3.5-beta
 """
 import json
 import hashlib
@@ -60,6 +60,12 @@ class GenerationSpec:
     # Chaining (for video2video / img2img)
     denoise_strength: float = 0.4
 
+    # Stream mode fields (v0.2.0-beta)
+    context_duration: float = 1.5                   # Seconds of context from previous cycle
+    context_frames: Optional[int] = None            # Context frames (computed from fps)
+    generation_frames: Optional[int] = None         # Stream generation length (overrides video_frames when stream enabled)
+    overlap_frames: int = 0                         # Blend/crossfade overlap frames
+
 
 @dataclass
 class VisualBriq:
@@ -87,6 +93,25 @@ class VisualBriq:
     motion_prompt: str = ""           # From motion_prompt.md (video motion intent)
     video_prompt: str = ""            # Separate prompt for video stage (if applicable)
     motion_hint: str = ""             # LLM-generated short motion hint
+
+    # Deterministic Prompt Synth fields (v0.1.1-alpha)
+    evolution_mutations: List[str] = field(default_factory=list)  # Selected mutations this cycle
+    synthesized_prompt: str = ""      # Full synthesized prompt (for audit)
+
+    # Audio reactivity fields (v0.1.1-alpha)
+    audio_segment_stats: Dict[str, Any] = field(default_factory=dict)  # Audio features for this cycle
+    audio_prompt_additions: str = ""  # Audio-mapped prompt modifiers
+    bpm: float = 0.0                  # BPM used for this cycle
+    cycle_start_time: float = 0.0     # Audio timeline position (seconds)
+    cycle_end_time: float = 0.0       # Audio timeline position (seconds)
+
+    # Video2Video fields (v0.1.1-alpha)
+    v2v_preprocessed_path: Optional[Path] = None  # Preprocessed video for V2V input
+
+    # Stream mode fields (v0.2.0-beta)
+    context_video_path: Optional[Path] = None     # Context tail video for stream continuation
+    flow_state: Optional[Dict[str, Any]] = None   # Flow state carrier (backend may ignore)
+    stream_video_path: Optional[Path] = None      # cycle_N_stream.mp4 output path
 
     # Seeds for reproducibility
     seed: int = 42
@@ -121,6 +146,12 @@ class VisualBriq:
             self.base_image_path = Path(self.base_image_path)
         if isinstance(self.base_video_path, str):
             self.base_video_path = Path(self.base_video_path)
+        if isinstance(self.v2v_preprocessed_path, str):
+            self.v2v_preprocessed_path = Path(self.v2v_preprocessed_path)
+        if isinstance(self.context_video_path, str):
+            self.context_video_path = Path(self.context_video_path)
+        if isinstance(self.stream_video_path, str):
+            self.stream_video_path = Path(self.stream_video_path)
         if isinstance(self.mode, str):
             self.mode = InputMode(self.mode)
         if isinstance(self.status, str):
@@ -153,6 +184,9 @@ class VisualBriq:
         d['raw_video_path'] = str(self.raw_video_path) if self.raw_video_path else None
         d['looped_video_path'] = str(self.looped_video_path) if self.looped_video_path else None
         d['source_image_path'] = str(self.source_image_path) if self.source_image_path else None
+        d['v2v_preprocessed_path'] = str(self.v2v_preprocessed_path) if self.v2v_preprocessed_path else None
+        d['context_video_path'] = str(self.context_video_path) if self.context_video_path else None
+        d['stream_video_path'] = str(self.stream_video_path) if self.stream_video_path else None
         return d
 
     @classmethod
@@ -168,6 +202,25 @@ class VisualBriq:
         d.setdefault('motion_prompt', '')
         d.setdefault('video_prompt', '')
         d.setdefault('motion_hint', '')
+        # v0.1.1-alpha fields
+        d.setdefault('evolution_mutations', [])
+        d.setdefault('synthesized_prompt', '')
+        d.setdefault('audio_segment_stats', {})
+        d.setdefault('audio_prompt_additions', '')
+        d.setdefault('bpm', 0.0)
+        d.setdefault('cycle_start_time', 0.0)
+        d.setdefault('cycle_end_time', 0.0)
+        d.setdefault('v2v_preprocessed_path', None)
+        # v0.2.0-beta stream fields
+        d.setdefault('context_video_path', None)
+        d.setdefault('flow_state', None)
+        d.setdefault('stream_video_path', None)
+        # GenerationSpec stream fields
+        if 'spec' in d and isinstance(d['spec'], dict):
+            d['spec'].setdefault('context_duration', 1.5)
+            d['spec'].setdefault('context_frames', None)
+            d['spec'].setdefault('generation_frames', None)
+            d['spec'].setdefault('overlap_frames', 0)
         return cls(**d)
 
     def save(self, path: Path) -> None:

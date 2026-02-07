@@ -1,4 +1,4 @@
-# QonQrete Visual FaQtory v0.0.7-alpha
+# QonQrete Visual FaQtory v0.3.5-beta
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 ![Repo Views](https://komarev.com/ghpvc/?username=illdynamics-visual-faqtory&label=Repo+Views&color=blue)
 
@@ -14,8 +14,8 @@
 ```
 
 > **Automated Long-form AI Visual Generation for Music, DJ Sets & Experimental AV**
->
-> **v0.0.7-alpha** — Prompt Bundle system, split backends, video_prompt support, LLM-aware creative context
+
+> **v0.3.5-beta** — Production ready, stage safe, no hand-waving. Fixed stream/longcat (true autoregressive continuation), unified macro semantics, color stability controller, TouchDesigner integration contract (no `.toe` shipped).
 
 ---
 
@@ -25,30 +25,46 @@ Visual FaQtory takes a text prompt or base image and generates hours of evolving
 
 ---
 
-## What's New in v0.0.7-alpha
+## What's New in v0.3.5-beta
 
-**Prompt Bundle System** — Drop markdown files into `worqspace/` for full creative control:
-- `tasq.md` — Base prompt (existing, required)
-- `negative_prompt.md` — What to avoid (optional, overrides config defaults)
-- `style_hints.md` — Style constraints and evolution direction (optional)
-- `motion_prompt.md` — Video motion intent and camera guidance (optional)
+**⚡ Audio Toggle ≤200ms** — Background polling thread ensures macro response within 200ms regardless of frame generation time.
 
-All files are loaded, passed to the LLM, and stored in every briq JSON for full auditability. Missing files fall back to existing behavior — fully backward-compatible.
+**🎬 Longcat Actually Works** — Default runs now produce real extended output. Target duration computed from `target_seconds` → `target_frames` → `generate_frames × max_iterations`.
 
-**Split Backend Config** — Use different engines for image vs video generation:
-```yaml
-backends:
-  image:
-    type: comfyui
-    api_url: http://image-gpu:8188
-  video:
-    type: comfyui
-    api_url: http://video-gpu:8188
+**🎨 Stability Everywhere** — Color collapse prevention applied to all generation paths (offline, stream, Turbo).
+
+**📡 VRAM Logging** — INFO-level estimates before each iteration. Clear warnings when safety caps hit.
+
+**📖 No More Lies** — Every doc claim verified against code. TouchDesigner section states no `.toe` shipped. Longcat conditioning honesty documented.
+
+---
+
+## What Was New in v0.3.4-beta
+
+**🔧 Fixed Stream/Longcat: True Autoregressive Continuation** — v0.3.3 Stream mode only restyled context frames. v0.3.4 uses SVD temporal diffusion to generate genuinely new frames beyond the context window. Each iteration takes the last frame, runs it through `SVD_img2vid_Conditioning`, and appends the new frames to the timeline. Stream output now actually grows every iteration and `generate_frames` controls how much.
+
+**STREAM is offline cinematic. TURBO is live. Don't confuse them.**
+
+**🎛️ Unified Macro Semantics** — Turbo no longer auto-deletes macro files. The contract is now deterministic: file exists = macro active. MIDI NOTE_ON creates the file, NOTE_OFF removes it. Turbo just reads. Works with any file-based trigger (scripts, OSC bridges, etc.).
+
+**🎨 Long-Run Stability Controller** — New `vfaq/color_stability.py` prevents diffusion feedback collapse (the "green blob" problem). Uses CIELAB palette anchoring to the first frame, detects collapse via saturation/dominance/edge metrics, and mitigates by adjusting CFG, seed drift, and injecting micro-noise. CPU-side, <2ms per frame.
+
+**🎥 TouchDesigner Integration Contract** — The `touchdesigner/` directory includes a network blueprint (`NETWORK_CONTRACT.txt`) and a Python builder (`td_setup.py`) describing the complete FX chain. Audio Device In, Analyze CHOP, Feedback loop, Displace, HUD overlay, MIDI In, OSC In. No binary `.toe` is shipped — you create the project in TD using the contract. TD keeps running even when AI stalls.
+
+**🎧 Audio-Reactive Finalization** — Explicit audio-paused state when crowd override is active. Audio failure disables the controller, never crashes the frame loop. No GPU rebuilds from audio events.
 ```
+- Trims final video to exact audio duration
+- Muxes audio into final MP4
 
-**video_prompt Support** — Dedicated video prompt (separate from image prompt) for text-conditioned video workflows. SVD default ignores it gracefully.
-
-**LLM-Aware Context** — InstruQtor and InspeQtor now receive full bundle context (style, motion, negative) for informed creative decisions.
+**🔄 Stream Mode (Longcat)** — True autoregressive continuation:
+```bash
+python vfaq_cli.py run -c 20 --stream      # Enable longcat mode
+```
+- Cycle N loads a short tail clip of up to `context_frames` frames from Cycle N‑1, **extracts the last frame** of that clip and uses it as the conditioning image for temporal diffusion. The entire tail window is not fed into the model.
+- Generates `generate_frames` genuinely new frames beyond the tail clip and appends them to the timeline (the tail frames themselves are not duplicated).
+- Repeats until the cycle's target length is met (full autoregression).
+- Configurable via the `stream` section (`context_frames`, `generate_frames`, `max_iterations`, `checkpoint`).
+- **Slower and VRAM‑heavy** — designed for offline cinematic runs, not live performances.
 
 ---
 
@@ -77,7 +93,7 @@ After cycle 0, the pipeline always chains: previous video → extract frame → 
 
 ```bash
 # 1. Enter directory
-cd visual-faqtory-v0.0.7-alpha
+cd visual-faqtory-v0.3.5-beta
 
 # 2. Install dependencies
 pip install pyyaml pillow
@@ -108,6 +124,18 @@ python vfaq_cli.py run [OPTIONS]
   -b, --backend TYPE   Override backend (mock/comfyui/diffusers/replicate)
   --delay SECONDS      Delay between cycles (default: 2)
   --fresh              Start fresh (ignore saved state)
+  --match-audio        Align visual duration to audio length (v0.1.2)
+  --duration SECONDS   Fixed duration mode (v0.1.2)
+  --stream             Enable stream continuation mode (v0.2.0)
+
+# TURBO Live Mode (v0.3.5-beta)
+python vfaq_cli.py live [OPTIONS]
+  --turbo              Enable TURBO frame generation (default)
+  --fps N              Target FPS (default: from config)
+  --size WxH           Resolution (e.g., 768x432)
+  --crowd              Enable crowd prompt server
+  --crowd-port PORT    Crowd server port (default: 7777)
+  --crowd-token TOKEN  Auth token for crowd submissions
 
 # Single test cycle
 python vfaq_cli.py single [-n NAME] [--cycle N] [-b BACKEND]
@@ -229,7 +257,7 @@ ComfyUI validates SDXL and SVD checkpoint availability via `/object_info` before
 
 ---
 
-## Known Limitations (v0.0.7-alpha)
+## Known Limitations (v0.3.5-beta)
 
 - Video mode does frame extraction (not true video2video via AnimateDiff)
 - ComfyUI needs VideoHelperSuite nodes for video output

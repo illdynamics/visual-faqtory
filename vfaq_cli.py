@@ -5,6 +5,8 @@ vfaq_cli.py - Visual FaQtory Command Line Interface
 
 CLI for the QonQrete Visual FaQtory - automated long-form AI visual generation.
 
+Supports real-time TURBO with audio reactivity, longcat stream mode for true autoregressive continuation, MIDI sidecar control and TouchDesigner integration via file watching and OSC.
+
 Usage:
     python vfaq_cli.py run                         # Run with config.yaml settings
     python vfaq_cli.py run -n my-project           # Run as named project
@@ -16,7 +18,7 @@ Usage:
     python vfaq_cli.py assemble                    # Assemble videos into one
     python vfaq_cli.py assemble -n my-project      # Assemble project videos
 
-Part of QonQrete Visual FaQtory v0.0.7-alpha
+Part of QonQrete Visual FaQtory v0.3.5-beta
 """
 import os
 import sys
@@ -40,7 +42,7 @@ BANNER = """
   ╚████╔╝ ██║███████║╚██████╔╝██║  ██║███████╗    ██║     ██║  ██║╚██████╔╝   ██║   ╚██████╔╝██║  ██║   ██║
    ╚═══╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝    ╚═╝     ╚═╝  ╚═╝ ╚══▀▀═╝    ╚═╝    ╚═════╝ ╚═╝  ╚═╝   ╚═╝
 
-  QonQrete Visual FaQtory v0.0.7-alpha
+  QonQrete Visual FaQtory v0.3.5-beta
   ═══════════════════════════════════════
 """
 
@@ -70,6 +72,43 @@ def cmd_run(args):
         if 'cycle' not in config_override:
             config_override['cycle'] = {}
         config_override['cycle']['delay_seconds'] = args.delay
+    # Audio reactivity CLI overrides (v0.1.0)
+    if hasattr(args, 'bpm') and args.bpm is not None:
+        if 'audio_reactivity' not in config_override:
+            config_override['audio_reactivity'] = {}
+        config_override['audio_reactivity']['bpm_manual'] = args.bpm
+        config_override['audio_reactivity']['enabled'] = True
+    if hasattr(args, 'no_audio_react') and args.no_audio_react:
+        if 'audio_reactivity' not in config_override:
+            config_override['audio_reactivity'] = {}
+        config_override['audio_reactivity']['enabled'] = False
+    if hasattr(args, 'base_pick') and args.base_pick:
+        if 'inputs' not in config_override:
+            config_override['inputs'] = {}
+        if 'base_folders' not in config_override['inputs']:
+            config_override['inputs']['base_folders'] = {}
+        config_override['inputs']['base_folders']['pick_mode'] = args.base_pick
+
+    # Auto-duration CLI overrides (v0.1.2)
+    if hasattr(args, 'match_audio') and args.match_audio:
+        if 'duration' not in config_override:
+            config_override['duration'] = {}
+        config_override['duration']['match_audio'] = True
+    if hasattr(args, 'duration') and args.duration is not None:
+        if 'duration' not in config_override:
+            config_override['duration'] = {}
+        config_override['duration']['mode'] = 'fixed'
+        config_override['duration']['seconds'] = args.duration
+    # Stream mode CLI override (v0.2.0)
+    if hasattr(args, 'stream') and args.stream:
+        # Enable both new and legacy stream configs to maximise compatibility
+        if 'stream' not in config_override:
+            config_override['stream'] = {}
+        config_override['stream']['enabled'] = True
+        # Also enable legacy stream_mode for backward compatibility
+        if 'stream_mode' not in config_override:
+            config_override['stream_mode'] = {}
+        config_override['stream_mode']['enabled'] = True
 
     print(BANNER)
 
@@ -148,7 +187,7 @@ def cmd_status(args):
 
     status = faqtory.status()
 
-    print(f"\n=== Visual FaQtory v0.0.7-alpha Status ===")
+    print(f"\n=== Visual FaQtory v0.3.5-beta Status ===")
     for key, value in status.items():
         print(f"  {key}: {value}")
 
@@ -164,7 +203,7 @@ def cmd_backends(args):
     """List available backends."""
     from vfaq import list_available_backends
 
-    print(f"\n=== Available Backends (v0.0.7-alpha) ===\n")
+    print(f"\n=== Available Backends (v0.3.5-beta) ===\n")
 
     results = list_available_backends()
     for name, (available, message) in results.items():
@@ -250,9 +289,89 @@ def cmd_clean(args):
             logger.info("Removed state file (will start fresh)")
 
 
+def cmd_live(args):
+    """Run TURBO live mode with optional crowd queue."""
+    import yaml
+
+    worqspace = Path(args.worqspace).resolve()
+
+    if not worqspace.exists():
+        logger.error(f"Worqspace not found: {worqspace}")
+        sys.exit(1)
+
+    # Load config
+    config_path = worqspace / "config.yaml"
+    config = {}
+    if config_path.exists():
+        config = yaml.safe_load(config_path.read_text()) or {}
+
+    # CLI overrides
+    if args.fps:
+        config.setdefault('turbo', {})['fps_target'] = args.fps
+    if args.size:
+        try:
+            w, h = args.size.split('x')
+            config.setdefault('turbo', {})['width'] = int(w)
+            config.setdefault('turbo', {})['height'] = int(h)
+        except ValueError:
+            logger.error(f"Invalid size format: {args.size} (use WxH)")
+            sys.exit(1)
+    if args.output:
+        config.setdefault('turbo', {})['output_path'] = args.output
+
+    # Ensure turbo enabled
+    config.setdefault('turbo', {})['enabled'] = True
+
+    # Crowd setup
+    crowd_queue = None
+    crowd_server = None
+
+    if args.crowd:
+        config.setdefault('crowd', {})['enabled'] = True
+        if args.crowd_port:
+            config.setdefault('crowd', {}).setdefault('server', {})['port'] = args.crowd_port
+        if args.crowd_public_url:
+            config.setdefault('crowd', {}).setdefault('server', {})['public_base_url'] = args.crowd_public_url
+        if args.crowd_token:
+            config.setdefault('crowd', {}).setdefault('server', {}).setdefault('auth', {})['enabled'] = True
+            config['crowd']['server']['auth']['token'] = args.crowd_token
+
+        try:
+            from vfaq.crowd_queue import PromptQueue
+            from vfaq.crowd_server import CrowdPromptServer
+
+            crowd_queue = PromptQueue(config.get('crowd', {}))
+            crowd_server = CrowdPromptServer(crowd_queue, config.get('crowd', {}))
+            url = crowd_server.start()
+            logger.info(f"Crowd server started: {url}")
+        except Exception as e:
+            logger.warning(f"Crowd server failed to start: {e}")
+            logger.warning("TURBO will continue without crowd input")
+
+    # Start TURBO
+    print(BANNER)
+    print("  🚀 TURBO LIVE MODE")
+    print()
+
+    try:
+        from vfaq.turbo_engine import TurboEngine
+
+        engine = TurboEngine(
+            config=config,
+            worqspace_dir=worqspace,
+            crowd_queue=crowd_queue,
+        )
+        engine.run_live()
+    except KeyboardInterrupt:
+        logger.info("TURBO stopped by user")
+    except Exception as e:
+        logger.error(f"TURBO failed: {e}")
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="QonQrete Visual FaQtory v0.0.7-alpha - Automated AI Visual Generation",
+        description="QonQrete Visual FaQtory v0.3.5-beta - Automated AI Visual Generation",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -287,10 +406,27 @@ Examples:
                            help='Override backend (mock/comfyui/diffusers/replicate)')
     run_parser.add_argument('-s', '--seed', type=int,
                            help='Override initial seed')
+    run_parser.add_argument('--bpm', type=int, default=None,
+                           help='Manual BPM override for audio sync')
+    run_parser.add_argument('--audio', type=str, default=None,
+                           help='Explicit audio file path (overrides base_audio)')
+    run_parser.add_argument('--base-pick', type=str, default=None,
+                           choices=['newest', 'oldest', 'random', 'alphabetical'],
+                           help='Base folder pick mode override')
+    run_parser.add_argument('--no-audio-react', action='store_true',
+                           help='Disable audio reactivity even if enabled in config')
     run_parser.add_argument('--fresh', action='store_true',
                            help='Start fresh (ignore saved state)')
     run_parser.add_argument('--delay', type=float,
                            help='Delay between cycles in seconds (default: 5)')
+    # Auto-duration flags (v0.1.2)
+    run_parser.add_argument('--match-audio', action='store_true',
+                           help='Match visual duration to audio length')
+    run_parser.add_argument('--duration', type=float, default=None,
+                           help='Fixed duration in seconds (overrides cycle count)')
+    # Stream mode flag (v0.3.0)
+    run_parser.add_argument('--stream', action='store_true',
+                           help='Enable longcat stream continuation mode (autoregressive)')
     run_parser.set_defaults(func=cmd_run)
 
     # Single command
@@ -326,6 +462,26 @@ Examples:
     clean_parser.add_argument('--all', action='store_true',
                              help='Remove everything (not just state)')
     clean_parser.set_defaults(func=cmd_clean)
+
+    # Live (TURBO) command (v0.3.5-beta)
+    live_parser = subparsers.add_parser('live', help='TURBO live mode + crowd queue')
+    live_parser.add_argument('--turbo', action='store_true', default=True,
+                            help='Enable TURBO frame generation (default)')
+    live_parser.add_argument('--fps', type=int, default=None,
+                            help='Target FPS (default: from config)')
+    live_parser.add_argument('--size', type=str, default=None,
+                            help='Resolution WxH (e.g., 768x432)')
+    live_parser.add_argument('--output', type=str, default=None,
+                            help='Output path for live frame')
+    live_parser.add_argument('--crowd', action='store_true',
+                            help='Enable crowd prompt server')
+    live_parser.add_argument('--crowd-port', type=int, default=None,
+                            help='Crowd server port (default: 7777)')
+    live_parser.add_argument('--crowd-public-url', type=str, default=None,
+                            help='Public URL for crowd QR/link')
+    live_parser.add_argument('--crowd-token', type=str, default=None,
+                            help='Auth token for crowd submissions')
+    live_parser.set_defaults(func=cmd_live)
 
     args = parser.parse_args()
 
