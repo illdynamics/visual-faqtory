@@ -18,7 +18,7 @@ Precedence for negative_prompt:
   3. Negative section inside tasq.md body (## Negative)
   4. config.yaml prompt_drift.negative_prompt
 
-Part of QonQrete Visual FaQtory v0.3.5-beta
+Part of QonQrete Visual FaQtory v0.5.6-beta
 """
 import re
 import yaml

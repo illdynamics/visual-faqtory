@@ -4,7 +4,7 @@ base_folders.py - Base Folder Ingestion & File Selection
 ═══════════════════════════════════════════════════════════════════════════════
 
 Handles automatic file selection from worqspace base folders:
-  - worqspace/base_image/   (.png, .jpg, .jpeg, .webp)
+  - worqspace/base_images/   (.png, .jpg, .jpeg, .webp)
   - worqspace/base_audio/   (.wav, .mp3, .flac, .aac, .m4a, .ogg)
   - worqspace/base_video/   (.mp4, .mov, .mkv, .webm)
 
@@ -13,7 +13,7 @@ Random mode uses deterministic seed derived from run_id.
 
 Does NOT break existing input modes — only activates if folders exist.
 
-Part of QonQrete Visual FaQtory v0.3.5-beta
+Part of QonQrete Visual FaQtory v0.5.6-beta
 """
 import hashlib
 import logging

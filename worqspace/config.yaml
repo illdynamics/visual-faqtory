@@ -1,7 +1,11 @@
-# Visual FaQtory Configuration v0.3.5-beta
+# Visual FaQtory Configuration v0.5.6-beta
 # ═══════════════════════════════════════════════════════════════════════════════
 #
-# 3-Agent Pipeline: InstruQtor → ConstruQtor → InspeQtor → (loop)
+# Clean base configuration — paragraph_story + ComfyUI + reinject default ON
+#
+# Pipeline: story.txt → sliding window → ComfyUI (txt2img/img2img/img2vid)
+#           → finalizer (stitch → 60fps → 1080p → audio mux)
+#           → save to worqspace/saved-runs/<project-name>
 #
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -9,227 +13,105 @@
 # PATHS
 # ═══════════════════════════════════════════════════════════════════════════════
 paths:
-  output_dir: ./qodeyard           # All generated outputs go here
-  briqs_dir: ./qodeyard/briqs      # Briq JSON state files
+  output_dir: ./run                 # Current run artifacts
+  briqs_dir: ./run/briqs            # Per-cycle JSON state
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # INPUT CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 #
-# Input modes (auto-detected or set in tasq.md frontmatter):
-#   text  - Prompt only (txt2img → img2vid)
-#   image - Prompt + base image (img2img → img2vid)
-#   video - Prompt + base video (video2video with preprocessing)
-#   auto  - Auto-detect based on available files
+# Input modes:
+#   text  — Prompt only (txt2img → img2vid per cycle)
+#   image — Base image from worqspace/base_images/ (img2img → img2vid)
+#   video — Extract frame from worqspace/base_video/ → treat as image mode
+#   auto  — Auto-detect: video > image > text
 #
-# After cycle 0, pipeline automatically chains: previous video → next input
+# After cycle 0, pipeline chains: last frame → reinject img2img → img2vid
 # ═══════════════════════════════════════════════════════════════════════════════
 input:
-  mode: auto                                       # auto | text | image | video
-  tasq_file: tasq.md
-  negative_prompt_file: negative_prompt.md         # Optional: negative prompt source of truth
-  style_hints_file: style_hints.md                 # Optional: style + evolution constraints
-  motion_prompt_file: motion_prompt.md             # Optional: video motion intent
-  evolution_lines_file: evolution_lines.md         # Optional: deterministic mutations
-
-  # Video2Video configuration (v0.1.0)
-  video2video:
-    enabled: true
-    preprocess:
-      width: 1024
-      height: 576
-      fps: 8
-      duration_sec: 4
-    comfyui:
-      workflow: worqspace/workflows/safe_video2video.json
-      checkpoint: sd15.safetensors
-      sampler:
-        steps: 20
-        cfg: 4.5
-        denoise: 0.35
-        seed:
-          mode: fixed_per_cycle
-          drift_per_cycle: 13
-    audio_modulation:
-      enabled: true
-      map:
-        rms_to_denoise: [0.25, 0.45]
-        centroid_to_cfg: [3.5, 6.0]
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# BASE FOLDERS (v0.1.0)
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-# Drop files into these folders and they'll be auto-selected:
-#   worqspace/base_image/   (.png, .jpg, .jpeg, .webp)
-#   worqspace/base_audio/   (.wav, .mp3, .flac, .aac, .m4a, .ogg)
-#   worqspace/base_video/   (.mp4, .mov, .mkv, .webm)
-# ═══════════════════════════════════════════════════════════════════════════════
-inputs:
-  base_folders:
-    enabled: true
-    base_image_dir: "base_image"
-    base_audio_dir: "base_audio"
-    base_video_dir: "base_video"
-    pick_mode: "newest"            # newest | oldest | random | alphabetical
-    random_seed: null              # optional int; if null, derive from run_id
-    allow_empty: true              # if no files found, continue (don't fail)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# AUDIO REACTIVITY (v0.1.0)
-# ═══════════════════════════════════════════════════════════════════════════════
-audio_reactivity:
-  enabled: false                   # Set true + drop audio in base_audio/
-  bpm_mode: "auto_then_override"   # auto | manual | auto_then_override | off
-  bpm_manual: 174                  # DnB default — adjust per track
-  bpm_doubletime_hint: true        # If auto detects ~87, prefer 174
-  analysis_backend: "librosa"
-  sample_rate: 44100
-  hop_length: 512
-  bands:
-    sub:    [20, 60]
-    bass:   [60, 180]
-    lowmid: [180, 600]
-    mid:    [600, 2000]
-    high:   [2000, 6000]
-    air:    [6000, 16000]
-  features:
-    rms: true
-    spectral_flux: true
-    centroid: true
-    rolloff: true
-    onset_strength: true
-    onsets: true
-  smoothing:
-    enabled: true
-    method: "ema"
-    ema_alpha: 0.25
-  beat_grid:
-    enabled: true
-    quantize: "1/16"
-    bars_per_cycle_default: 8
-  mapping:
-    enabled: true
-    prompt_modifiers:
-      intensity:
-        source: "bass.rms"
-        curve: "linear"
-        min: 0.0
-        max: 1.0
-        inject_as: "intensity"
-      glitch:
-        source: "high.rms"
-        curve: "exp"
-        min: 0.0
-        max: 1.0
-        inject_as: "glitchiness"
-    seed:
-      mode: "bar_step"
-      bar_step_amount: 17
-    transitions:
-      cut_on: "bar"
-      crossfade_on: "bar"
-      crossfade_ms: 250
+  mode: text                        # auto | text | image | video
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # BACKEND CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 #
-# Available backends (tested ✓ / partial ⚠):
-#   mock      ✓ Testing without GPU (always available)
-#   comfyui   ✓ ComfyUI API (recommended for production)
-#   diffusers ⚠ Local HuggingFace (requires CUDA)
-#   replicate ⚠ Cloud API (pay-per-use)
-#
+# ComfyUI is the only supported production backend.
+# Mock backend available for testing (generates placeholder files).
 # ═══════════════════════════════════════════════════════════════════════════════
 backend:
-  #  type: mock
-  #  mock_delay: 0.3
-
-  # ─── ComfyUI (uncomment to use) ───────────────────────────────────────────
   type: comfyui
   api_url: http://localhost:8188
-  # workflow_image: null           # Uses default SDXL workflow
-  # workflow_video: null           # Uses default SVD workflow
+  # workflow_image: null             # Uses default SDXL workflow
+  # workflow_video: null             # Uses default SVD workflow
+  # workflow_morph: null             # Uses default morph workflow
   timeout: 600
-
-  # ─── Diffusers (uncomment to use, requires CUDA) ──────────────────────────
-  # type: diffusers
-  # model_id: stabilityai/stable-diffusion-xl-base-1.0
-  # video_model_id: stabilityai/stable-video-diffusion-img2vid
-  # device: cuda
-  # dtype: float16
-
-  # ─── Replicate (uncomment to use, requires API token) ─────────────────────
-  # type: replicate
-  # api_token: ${REPLICATE_API_TOKEN}
-  # image_model: stability-ai/sdxl
-  # video_model: stability-ai/stable-video-diffusion
-comfyui:
-  sdxl_ckpt: sd_xl_base_1.0.safetensors
-  svd_ckpt: svd_xt.safetensors
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SPLIT BACKEND CONFIGURATION (v0.0.7-alpha)
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-# Use different backends for image and video generation.
-# If 'backends:' is present, it takes priority over legacy 'backend:' above.
-# If 'backends.video' is omitted, it defaults to the same as 'backends.image'.
-#
-# backends:
-#   image:
-#     type: comfyui
-#     api_url: http://localhost:8188
-#     timeout: 600
-#   video:
-#     type: comfyui
-#     api_url: http://gpu-server:8188
-#     timeout: 900
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# GENERATION SETTINGS (Stable Diffusion / SVD defaults)
-# ═══════════════════════════════════════════════════════════════════════════════
-generation:
-  clip_seconds: 4.0     # Raw video duration
   width: 1024
-  height: 576           # 16:9 aspect
-  cfg_scale: 6.0
-  steps: 36
-  sampler: euler_ancestral
-  
-  # Video settings (SVD)
-  video_frames: 24
-  video_fps: 8
-  motion_bucket_id: 127
-  noise_aug_strength: 0.02
+  height: 576
+
+comfyui:
+  sdxl_ckpt: juggernautXL_ragnarokBy.safetensors
+  svd_ckpt: svd_xt_1_1.safetensors
+
+# ─── LoRA Configuration ──────────────────────────────────────────────────────
+# LoRA injection for the ComfyUI backend. Enable and specify a .safetensors
+# file to apply stylistic modifiers to the base model.
+lora:
+  enabled: false
+  path: /path/to/your/lora.safetensors
+  strength: 0.6
+  backend: comfyui
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CHAINING (Video Evolution between cycles)
+# SLIDING WINDOW STORY ENGINE (paragraph_story)
 # ═══════════════════════════════════════════════════════════════════════════════
-chaining:
-  denoise_strength: 0.4   # Lower = more continuity (0.3-0.5 recommended)
-  seed_step: 1            # Increment seed by this each cycle
+#
+# Reads worqspace/story.txt, splits into paragraphs, uses a rolling window
+# to generate progressive visual cycles. Each cycle:
+#   1. Build prompt from paragraph window
+#   2. img2img keyframe from last frame (reinject mode)
+#   3. img2vid from keyframe
+#   4. Extract last frame for next cycle
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+paragraph_story:
+  max_paragraphs: 2                 # Maximum paragraphs per window
+  img2vid_duration_sec: 3           # Duration of each transition video (sec)
+  img2img_denoise_min: 0.38         # Minimum denoise for img2img evolution
+  img2img_denoise_max: 0.58         # Maximum denoise for img2img evolution
+  video_fps: 8                      # FPS for cycle videos
+  seed_base: 2222                   # Base seed for deterministic runs
+  rolling_window: true
+  require_morph: false              # Set true to use morph workflow
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# LOOPING (InspeQtor FFmpeg Processing)
+# AUDIO CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
-looping:
+#
+# Drop audio files into worqspace/base_audio/ — they will be auto-detected.
+# Audio is muxed into the final video after all processing is complete.
+#
+# sync_video_audio: when true, the number of cycles is auto-computed from
+# audio duration ÷ cycle_seconds (rounded up, max 2s overrun).
+# ═══════════════════════════════════════════════════════════════════════════════
+audio:
   enabled: true
-  method: crossfade        # pingpong (forward+reverse) or crossfade
-  crossfade_frames: 4     # For crossfade method only
-  output_fps: 8          # Output video framerate
-  output_codec: h264_nvenc
-  output_quality: 16      # CRF (lower = better quality, bigger files)
+  sync_video_audio: true           # Set true to auto-compute cycles from audio
+  cycle_seconds: 3                  # Must match img2vid_duration_sec
+  allow_ext:
+    - wav
+    - mp3
+    - flac
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# POST-STITCH FINALIZER (Interpolation + Upscale)
+# POST-STITCH FINALIZER (Interpolation + Upscale + Audio Mux)
 # ═══════════════════════════════════════════════════════════════════════════════
 #
-# Runs ONCE after final stitching is complete. Never per-cycle.
-# Produces final_60fps_1080p.mp4 from the stitched base master.
-#
-# Pipeline: final_output.mp4 → interpolate 60fps → upscale 1920×1080 → encode
+# Runs ONCE after all cycles are complete:
+#   1. Stitch all cycle videos → final_video.mp4
+#   2. Interpolate to 60fps → final_video_60fps.mp4
+#   3. Upscale to 1080p → final_video_60fps_1080p.mp4
+#   4. Audio mux (if audio present) → final_video_60fps_1080p_audio.mp4
+#   5. Save deliverable as <project-name>.mp4 in saved-runs
 # ═══════════════════════════════════════════════════════════════════════════════
 finalizer:
   enabled: true
@@ -241,286 +123,3 @@ finalizer:
     - libx264
   quality:
     crf: 16
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# PROMPT DRIFT (InstruQtor quality tags)
-# ═══════════════════════════════════════════════════════════════════════════════
-prompt_drift:
-  quality_tags:
-    - masterpiece
-    - best quality
-    - highly detailed
-  
-  negative_prompt: >
-    blurry, low quality, watermark, deformed, ugly,
-    duplicate, out of frame, disfigured
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CYCLE CONTROL
-# ═══════════════════════════════════════════════════════════════════════════════
-cycle:
-  max_cycles: 0                   # 0 = unlimited (stop with Ctrl+C)
-  target_duration_hours: 2.0      # Target total video length
-  delay_seconds: 2.0              # Pause between cycles (lower for testing)
-  auto_save_interval: 3           # Save state every N cycles
-  max_retries: 3                  # Retries on failure per cycle
-  continue_on_error: true         # Continue to next cycle on error
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# LLM CONFIGURATION (OPTIONAL — pipeline works fully without LLM)
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-# When LLM is disabled or unavailable:
-#   - Deterministic Prompt Synth handles all prompt generation
-#   - Style hints, negative prompt, motion prompt STILL applied
-#   - Evolution lines drive cycle-to-cycle variation
-#   - No API calls, no cost, fully offline
-# ═══════════════════════════════════════════════════════════════════════════════
-llm:
-  # enabled: false               # Uncomment to explicitly disable LLM
-  provider: openai
-  model: gpt-4.1-mini
-  api_key_env: OPENAI_API_KEY
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# AUTO-DURATION (v0.1.2 feature — optional, default preserves old behavior)
-# ═══════════════════════════════════════════════════════════════════════════════
-duration:
-  mode: auto                      # auto | fixed | unlimited
-  seconds: null                   # Used when mode=fixed
-  match_audio: false              # When true + base_audio: align visuals to audio length
-  trim_strategy: cut              # cut (required) | pad (future)
-  mux_audio: true                 # Mux base_audio into final video
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# STREAM MODE (v0.2.0 feature — Sliding Window Continuation)
-# ═══════════════════════════════════════════════════════════════════════════════
-stream_mode:
-  enabled: false                  # Enable autoregressive stream continuation
-  method: "sliding_window"        # sliding_window | animatediff_context | longcat
-  context_length: 24              # Frames to remember from previous cycle
-  generation_length: 72           # Frames to generate (predict future)
-  overlap: 8                      # Frames to blend/crossfade (0 = raw stitch)
-  context_duration_sec: 1.5       # Explicit override (else computed from context_length/fps)
-  workflow: "worqspace/workflows/stream_continuation.json"
-  vram_safe: true                 # Only load context window, not full history
-  seed_mode: "locked"             # locked | increment
-  base_seed: 1337
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# STREAM (Longcat) MODE (v0.3.5-beta — True Autoregressive Video Continuation)
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-# STREAM / LONGCAT is an OFFLINE cinematic mode — it is NOT real-time.
-# It generates genuinely NEW frames beyond the context window using SVD
-# temporal diffusion. Each iteration extracts the tail of the previous
-# output, uses the last frame as the SVD conditioning image, and generates
-# `generate_frames` new frames. These are appended to the timeline.
-#
-# For real-time generation, use TURBO mode instead.
-#
-# VRAM WARNING: Stream mode is VRAM-heavy. A 12GB GPU can handle 16 context
-# + 16 generate frames. Reduce these values if you hit OOM errors.
-# ═══════════════════════════════════════════════════════════════════════════════
-stream:
-  enabled: true                     # Enable longcat stream continuation
-  mode: "longcat"                   # Mode type: longcat for autoregressive
-  backend: "comfyui"                # Backend to use for stream generation
-  temporal_model: "svd"             # Temporal diffusion model: svd | animatediff
-  context_frames: 16               # Frames from end of previous video to condition on
-  generate_frames: 16              # New frames to generate per iteration
-  max_iterations: 999              # Maximum iterations (safety bound)
-  # Target duration (v0.3.5-beta): determines when longcat stops.
-  # Priority: target_seconds > target_frames > generate_frames × max_iterations
-  target_seconds: 600              # Default: 10 minutes of output
-  # target_frames: null            # Alternative: explicit frame count
-  fps: 8                           # Output framerate
-  checkpoint: "svd_xt.safetensors" # Checkpoint for video diffusion model
-  overlap_strategy: "tail"         # How to handle overlaps between segments
-  vram_safety:
-    max_context_frames: 24          # Hard cap on context frames (VRAM protection)
-    max_generate_frames: 24         # Hard cap on generation frames (VRAM protection)
-    oom_retry: true                 # On OOM, halve generate_frames and retry
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# TURBO LIVE MODE (v0.3.0 — real-time single-frame generation for OBS + Audio Reactive)
-# ═══════════════════════════════════════════════════════════════════════════════
-turbo:
-  enabled: false
-  backend: "comfyui"
-  mode: "sdxl_turbo"              # sdxl_turbo | lcm
-  steps: 2
-  cfg: 1.5
-  width: 768
-  height: 432
-  fps_target: 12
-  seed_mode: "drift"              # fixed | drift | beatjump
-  seed_drift: 3
-  negative_prompt: ""
-  prompt_source: "tasq.md"
-  output_path: "live_output/current_frame.jpg"
-  output_tmp_suffix: ".tmp"
-  timeout: 30
-  # Version string for TURBO configuration
-  version: "v0.3.5-beta"
-  # Audio reactive control (new in v0.3.0-beta)
-  audio_reactive:
-    enabled: false
-    device: null                 # audio interface or loopback name/index
-    sample_rate: 44100
-    block_size: 1024
-    rms_smooth: 0.25
-    beat_threshold: 0.6
-    mappings:
-      rms_to_cfg: [1.2, 2.0]
-      rms_to_seed_drift: [0, 6]
-      beat_macro: "DROP"
-  # File-based live toggle for audio reactivity
-  live_toggle:
-    enabled: true
-    toggle_file: "macro_AUDIO"
-  # Priority rules: crowd overrides audio if active
-  priority:
-    crowd_overrides_audio: true
-  hot_reload:
-    enabled: true
-    poll_ms: 200
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CROWD QUEUE (v0.2.5 — live audience prompt submission)
-# ═══════════════════════════════════════════════════════════════════════════════
-crowd:
-  enabled: false
-  server:
-    bind: "0.0.0.0"
-    port: 7777
-    public_base_url: null         # If set, QR uses this URL; else detected local IP
-    auth:
-      enabled: false
-      token: null                 # Simple shared token (header or query)
-  queue:
-    max_depth: 50
-    per_ip_rate_limit:
-      window_seconds: 30
-      max_requests: 3
-    per_name_rate_limit:
-      window_seconds: 60
-      max_requests: 2
-  moderation:
-    enabled: true
-    max_len: 120
-    min_len: 3
-    allow_unicode: false
-    banned_words: ["nazi", "hitler"]
-    banned_regex: []
-    allowlist_mode: false
-  integration:
-    poll_ms: 250
-    mode: "blend"                 # blend | takeover | timed_slot
-    blend:
-      weight: 0.35
-      duration_seconds: 20
-    timed_slot:
-      every_seconds: 90
-      slot_seconds: 15
-
-  overlays:
-    enabled: true
-    out_dir: "live_output"
-    now_file: "now.txt"
-    next_file: "next.txt"
-    queue_file: "queue.txt"
-    format:
-      now: "NOW: {prompt}{macro} | CROWD: {crowd_status}"
-      next: "NEXT: {next_crowd}"
-      queue: "{queue_lines}"
-    atomic: true
-  showman:
-    enabled: false                # Toast notifications for accepted prompts
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MIDI SIDECAR (v0.3.5-beta)
-# ══════════════════════════════════════════════════════════════════════════════
-# Configure external MIDI control. The sidecar process reads these settings
-# and writes macro files into the TURBO output directory. See
-# DOCUMENTATION.md §14 for details.
-#
-# v0.3.5-beta macro contract:
-#   Momentary macros (DROP, BUILD, CHILL): file exists = active. Turbo does
-#   NOT auto-delete these files. The sidecar removes them on note-off.
-#   Toggle macros (AUDIO): file exists = enabled. Sidecar flips on note-on.
-#   Value macros (INTENSITY, ENERGY): float written to file content.
-midi:
-  enabled: false
-  # Substring match for input port (case-insensitive). Used only if
-  # 'in_port' is not provided. Example: "Arduino" will match any port
-  # containing "arduino".
-  in_name: null
-  # Exact MIDI port name to use. Overrides 'in_name' if provided.
-  in_port: null
-  # Directory where macro files are written. Default live_output, relative to
-  # project root.
-  live_output_dir: "live_output"
-  # Sleep interval when no messages are pending (ms). Lower values reduce
-  # latency but increase CPU usage.
-  poll_sleep_ms: 2
-  # Logging level for the sidecar: DEBUG, INFO, WARN or ERROR.
-  log_level: "INFO"
-  # Remove momentary macro files when note-off is received (true). If false,
-  # momentary notes must be cleared manually or toggled off via the macro file.
-  note_off_cleanup: true
-  mapping:
-    notes:
-      36: { action: "DROP",  mode: "momentary" }
-      37: { action: "BUILD", mode: "momentary" }
-      38: { action: "CHILL", mode: "momentary" }
-      39: { action: "AUDIO", mode: "toggle" }
-    cc:
-      10: { action: "INTENSITY", min: 0.0, max: 1.0, smoothing: 0.0 }
-      7:  { action: "ENERGY",    min: 0.0, max: 1.0, smoothing: 0.1 }
-  # MIDI sidecar does not define timed slots or overlays; these belong under crowd
-
-# ══════════════════════════════════════════════════════════════════════════════
-# OSC OUTPUT (v0.3.5-beta)
-# ══════════════════════════════════════════════════════════════════════════════
-# Enable optional OSC output from TURBO. When enabled, Turbo sends an OSC
-# message on each frame containing the current macro, crowd activity flag, and
-# the maximum of the INTENSITY and ENERGY values. TouchDesigner can receive
-# these messages via an OSC In CHOP to drive additional effects. See
-# DOCUMENTATION.md §15 for details.
-osc:
-  enabled: false             # Set true to enable OSC broadcasting
-  host: "127.0.0.1"           # Destination host (TouchDesigner machine)
-  port: 6000                 # Destination port
-  address: "/visual_faqtory" # OSC address prefix
-  send_ms: 100               # Send interval in milliseconds (throttle rate)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# COLOR STABILITY (v0.3.5-beta — Long-Run Collapse Prevention)
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-# Prevents diffusion feedback collapse in long-running sessions. After many
-# iterations the output can drift to a single-color blob (the "green blob"
-# problem). This CPU-side controller anchors the color palette to the first
-# frame and detects/mitigates collapse without restarting or reloading.
-#
-# Works in: Normal runs, TURBO, STREAM/LONGCAT
-# Performance: CPU-only, <2ms per frame. Skips if time budget exceeded.
-# ═══════════════════════════════════════════════════════════════════════════════
-stability:
-  enabled: true
-  anchor: "first_frame"        # Anchor source: first_frame (only option currently)
-  method: "lab_palette"        # Correction method: lab_palette (CIELAB mean/std matching)
-  strength: 0.6                # Blend strength (0=none, 1=full correction)
-  every_n_frames: 1            # Apply correction every N frames (1=every frame)
-  collapse_detection:
-    enabled: true
-    sat_floor: 0.08            # Mean saturation below this → collapsed
-    hue_dom_ratio: 0.72        # Single hue sector dominance above this → collapsed
-    edge_floor: 3.0            # Mean Sobel energy below this → collapsed
-    consecutive_frames: 12     # Frames meeting ALL criteria before triggering
-  mitigation:
-    reduce_cfg: 0.15           # Reduce CFG by this amount during collapse
-    reduce_seed_drift: 0.5     # Reduce seed drift by this factor during collapse
-    micro_noise_sigma: 0.005   # Gaussian noise injection strength (0=none)
