@@ -1,654 +1,518 @@
 #!/usr/bin/env python3
 """
-visual_faqtory.py - Main Visual Generation Pipeline
+visual_faqtory.py — Main Pipeline Orchestrator
 ═══════════════════════════════════════════════════════════════════════════════
 
-The Visual FaQtory orchestrates the 3-agent pipeline + finalizer for
-automated long-form visual generation:
-
-  InstruQtor → ConstruQtor → InspeQtor → (loop) → Finalizer
+Thin orchestrator that wires config → sliding_story_engine → finalizer → save.
 
 Pipeline flow:
-  1. InstruQtor reads tasq.md, creates VisualBriq
-  2. ConstruQtor calls backend, generates raw video
-  3. InspeQtor processes it (passthrough or loop), suggests evolution for next cycle
-  4. Repeat with evolved prompt until target duration reached
-  5. Finalizer stitches all per-cycle MP4s into final_output.mp4 (BASE MASTER)
-  6. Post-stitch Finalizer (if enabled):
-     → Interpolate to 60fps (minterpolate)
-     → Upscale to 1920×1080 (bicubic)
-     → Encode with h264_nvenc / libx264 fallback
-     → Produce final_60fps_1080p.mp4 (FINAL DELIVERABLE)
+  1. Load config, detect inputs (base image/video/audio)
+  2. Run sliding_story_engine (paragraph_story with reinject default ON)
+  3. Finalizer: stitch → interpolate 60fps → upscale 1080p
+  4. Audio mux (if base audio present)
+  5. Save run to worqspace/saved-runs/<project-name>
 
-Project-based runs (v0.0.7-alpha):
-  - Named projects stored in worqspace/qonstructions/<project-name>/
-  - Unnamed runs use temp directory with interactive save prompt
-  - Each project has: briqs/, images/, videos/, factory_state.json,
-    config_snapshot.yaml, final_output.mp4, final_60fps_1080p.mp4
-
-Part of QonQrete Visual FaQtory v0.3.5-beta
+Part of QonQrete Visual FaQtory v0.5.6-beta
 """
-import os
-import sys
 import json
-import yaml
-import time
-import shutil
-import signal
 import logging
-import hashlib
-from pathlib import Path
+import os
+import shutil
+import subprocess
+import time
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
-from .visual_briq import VisualBriq, CycleState, BriqStatus, InputMode
-from .instruqtor import InstruQtor
-from .construqtor import ConstruQtor
-from .inspeqtor import InspeQtor
+import yaml
+
+from .backends import create_backend, list_available_backends
 from .finalizer import Finalizer, FinalizerError
-from .backends import create_backend, create_split_backend, list_available_backends
-from .base_folders import select_base_files
-from .duration_planner import plan_duration, post_finalize_trim_and_mux
-from .stream_engine import get_stream_config, prepare_stream_cycle
+from .sliding_story_engine import SlidingStoryConfig, run_sliding_story
 
 logger = logging.getLogger(__name__)
+
+# ── File detection extensions ─────────────────────────────────────────────────
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+_VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm"}
+_AUDIO_EXTS = {".wav", ".mp3", ".flac", ".aac", ".m4a", ".ogg"}
+
+# ── Prompt files to copy into run/meta ────────────────────────────────────────
+_PROMPT_FILES = [
+    "config.yaml",
+    "story.txt",
+    "motion_prompt.md",
+    "evolution_lines.md",
+    "style_hints.md",
+    "negative_prompt.md",
+    "transient_tasq.md",
+]
+
+
+def _detect_newest_file(directory: Path, extensions: set) -> Optional[Path]:
+    """Find the newest file matching given extensions in a directory."""
+    if not directory.exists():
+        return None
+    candidates = [
+        f for f in directory.iterdir()
+        if f.is_file() and f.suffix.lower() in extensions and f.name != ".gitkeep"
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
+def _get_audio_duration(audio_path: Path) -> float:
+    """Get audio duration in seconds using ffprobe."""
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(audio_path),
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return float(result.stdout.strip())
+    except (subprocess.CalledProcessError, ValueError) as e:
+        logger.error(f"Failed to get audio duration: {e}")
+        return 0.0
+
+
+def _extract_video_frame(video_path: Path, output_path: Path, width: int = 1024, height: int = 576) -> bool:
+    """Extract first frame from video and resize/pad to target dimensions."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-vframes", "1",
+        "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
+        "-q:v", "2",
+        str(output_path),
+    ]
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return output_path.exists() and output_path.stat().st_size > 0
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Frame extraction failed: {e.stderr[:300]}")
+        return False
+
+
+def _sanitize_project_name(name: str) -> str:
+    """Sanitize project name for safe filesystem use."""
+    import re
+    name = name.strip()
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name)
+    name = re.sub(r'_+', '_', name).strip('_. ')
+    return name or "unnamed"
+
+
+def _mux_audio(video_path: Path, audio_path: Path, output_path: Path) -> bool:
+    """Mux audio into video, trimming video to audio duration."""
+    # Get audio duration
+    dur = _get_audio_duration(audio_path)
+    if dur <= 0:
+        logger.error("[AudioMux] Could not determine audio duration; skipping mux")
+        return False
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(audio_path),
+        "-i", str(video_path),
+        "-map", "1:v:0",
+        "-map", "0:a:0",
+        "-t", str(dur),
+        "-c:v", "copy",
+        "-c:a", "aac",
+        str(output_path),
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        if result.returncode == 0 and output_path.exists():
+            logger.info(f"[AudioMux] Muxed audio successfully → {output_path}")
+            return True
+        logger.error(f"[AudioMux] ffmpeg failed: {result.stderr[:300]}")
+        return False
+    except Exception as e:
+        logger.error(f"[AudioMux] Error: {e}")
+        return False
 
 
 class VisualFaQtory:
     """
-    Main orchestrator for the Visual FaQtory pipeline.
+    Main orchestrator for the Visual FaQtory v0.5.6-beta pipeline.
 
-    Supports project-based runs with structured archival layout.
-
-    Usage:
-        faqtory = VisualFaQtory(worqspace_dir="./worqspace")
-        faqtory.run(cycles=100, project_name="my-project")
+    Wires config loading, input detection, sliding story engine,
+    finalizer, audio mux, and project saving.
     """
 
     def __init__(
         self,
         worqspace_dir: str | Path = "./worqspace",
-        output_dir: str | Path = "./qodeyard",
+        run_dir: str | Path = "./run",
         config_override: Optional[Dict[str, Any]] = None,
-        project_name: Optional[str] = None
+        project_name: Optional[str] = None,
+        reinject: bool = True,
+        mode_override: Optional[str] = None,
+        dry_run: bool = False,
     ):
         self.worqspace_dir = Path(worqspace_dir).resolve()
+        self.run_dir = Path(run_dir).resolve()
+        self.project_name = project_name
+        self.reinject = reinject
+        self.mode_override = mode_override
+        self.dry_run = dry_run
+        self.run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:6]}"
 
         # Load config
-        self.config = self._load_config(config_override)
+        self.config = self._load_config(config_override or {})
 
-        # Project-based storage
-        self.project_name = project_name
-        self.qonstructions_base = self.worqspace_dir / "qonstructions"
-        self.qonstructions_base.mkdir(parents=True, exist_ok=True)
+        # Detect inputs
+        self.base_image = None
+        self.base_video = None
+        self.base_audio = None
+        self._detect_inputs()
 
-        if project_name:
-            # Named project: store in qonstructions/<name>/
-            self.project_dir = self.qonstructions_base / project_name
-            self.output_dir = self.project_dir
-            self._is_temp = False
-        else:
-            # Temporary session: use output_dir (qodeyard by default)
-            self.output_dir = Path(output_dir).resolve()
-            self.project_dir = self.output_dir
-            self._is_temp = True
+        # Determine effective mode
+        self.mode = self._determine_mode()
 
-        # Setup project directory structure
-        self._setup_project_dirs()
-
-        # Initialize agents
-        self._init_agents()
-
-        # State management
-        self.state: Optional[CycleState] = None
-        self.state_file = self.project_dir / "factory_state.json"
-
-        # Running flag for graceful shutdown
-        self._running = False
-        self._setup_signal_handlers()
-
-        # Save config snapshot
-        self._save_config_snapshot()
-
-        # Base folder file selection (v0.1.0)
-        self.base_files = {"base_image": None, "base_audio": None, "base_video": None}
-        self._audio_controller = None
-        self._audio_analysis = None
-        self._beat_grid = None
-        self._cycle_timing = None
-        self._init_base_folders()
-
-    def _setup_project_dirs(self) -> None:
-        """Create the project directory structure."""
-        self.project_dir.mkdir(parents=True, exist_ok=True)
-        (self.project_dir / "briqs").mkdir(exist_ok=True)
-        (self.project_dir / "images").mkdir(exist_ok=True)
-        (self.project_dir / "videos").mkdir(exist_ok=True)
-
-    def _save_config_snapshot(self) -> None:
-        """Save a snapshot of the config used for this run."""
-        snapshot_path = self.project_dir / "config_snapshot.yaml"
-        if not snapshot_path.exists():
-            snapshot_path.write_text(yaml.dump(self.config, default_flow_style=False))
-
-    def _load_config(self, override: Optional[Dict] = None) -> Dict[str, Any]:
-        """Load configuration from config.yaml."""
+    def _load_config(self, override: Dict[str, Any]) -> Dict[str, Any]:
+        """Load config.yaml and apply overrides."""
         config_path = self.worqspace_dir / "config.yaml"
-
+        config = {}
         if config_path.exists():
-            config = yaml.safe_load(config_path.read_text())
-            logger.info(f"[FaQtory] Loaded config from {config_path}")
-        else:
-            logger.warning(f"[FaQtory] No config.yaml found, using defaults")
-            config = {}
-
-        if override:
-            config = self._deep_merge(config, override)
-
+            try:
+                config = yaml.safe_load(config_path.read_text()) or {}
+            except Exception as e:
+                logger.warning(f"Failed to parse config.yaml: {e}")
+        # Deep merge override
+        for key, value in override.items():
+            if isinstance(value, dict) and isinstance(config.get(key), dict):
+                config[key].update(value)
+            else:
+                config[key] = value
         return config
 
-    def _deep_merge(self, base: Dict, override: Dict) -> Dict:
-        """Deep merge two dictionaries."""
-        result = base.copy()
-        for key, value in override.items():
-            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-                result[key] = self._deep_merge(result[key], value)
-            else:
-                result[key] = value
+    def _detect_inputs(self):
+        """Auto-detect base image, video, and audio files."""
+        self.base_image = _detect_newest_file(
+            self.worqspace_dir / "base_images", _IMAGE_EXTS
+        )
+        self.base_video = _detect_newest_file(
+            self.worqspace_dir / "base_video", _VIDEO_EXTS
+        )
+        self.base_audio = _detect_newest_file(
+            self.worqspace_dir / "base_audio", _AUDIO_EXTS
+        )
+        if self.base_image:
+            logger.info(f"[Detect] Base image: {self.base_image.name}")
+        if self.base_video:
+            logger.info(f"[Detect] Base video: {self.base_video.name}")
+        if self.base_audio:
+            logger.info(f"[Detect] Base audio: {self.base_audio.name}")
+
+    def _determine_mode(self) -> str:
+        """Determine input mode: text, image, or video."""
+        if self.mode_override:
+            return self.mode_override
+        cfg_mode = self.config.get("input", {}).get("mode", "text")
+        if cfg_mode == "auto":
+            if self.base_video:
+                return "video"
+            elif self.base_image:
+                return "image"
+            return "text"
+        return cfg_mode
+
+    def _setup_run_dirs(self):
+        """Create run directory structure."""
+        for subdir in ["videos", "frames", "briqs", "meta"]:
+            (self.run_dir / subdir).mkdir(parents=True, exist_ok=True)
+
+    def _copy_inputs_to_meta(self):
+        """Copy prompt files and inputs into run/meta/ for reproducibility."""
+        meta_dir = self.run_dir / "meta"
+        meta_dir.mkdir(parents=True, exist_ok=True)
+
+        for fname in _PROMPT_FILES:
+            src = self.worqspace_dir / fname
+            if src.exists():
+                shutil.copy2(src, meta_dir / fname)
+
+        if self.base_image:
+            shutil.copy2(self.base_image, meta_dir / self.base_image.name)
+        if self.base_video:
+            shutil.copy2(self.base_video, meta_dir / self.base_video.name)
+        if self.base_audio:
+            shutil.copy2(self.base_audio, meta_dir / self.base_audio.name)
+
+    def _build_story_config(self) -> SlidingStoryConfig:
+        """Build SlidingStoryConfig from config.yaml values."""
+        ps = self.config.get("paragraph_story", {})
+        bc = dict(self.config.get("backend", {}))
+
+        # Inject LoRA config into backend config if present
+        lora_cfg = self.config.get("lora", {})
+        if lora_cfg:
+            bc["lora"] = lora_cfg
+
+        # Get comfyui section for checkpoint names
+        comfyui_section = self.config.get("comfyui", {})
+        if comfyui_section:
+            bc["comfyui"] = comfyui_section
+
+        return SlidingStoryConfig(
+            max_paragraphs=ps.get("max_paragraphs", 4),
+            img2vid_duration_sec=ps.get("img2vid_duration_sec", 3.0),
+            img2img_denoise_min=ps.get("img2img_denoise_min", 0.25),
+            img2img_denoise_max=ps.get("img2img_denoise_max", 0.45),
+            rolling_window_mode=ps.get("rolling_window", True),
+            require_morph=ps.get("require_morph", False),
+            seed_base=ps.get("seed_base", 42),
+            video_fps=ps.get("video_fps", 8),
+            backend_config=bc,
+            reinject=self.reinject,
+        )
+
+    def _compute_cycle_count(self, config: SlidingStoryConfig) -> Optional[int]:
+        """If audio sync enabled and audio exists, compute cycles from duration."""
+        audio_cfg = self.config.get("audio", {})
+        if not audio_cfg.get("sync_video_audio", False):
+            return None
+        if not self.base_audio:
+            return None
+
+        duration = _get_audio_duration(self.base_audio)
+        if duration <= 0:
+            logger.warning("[AudioSync] Could not determine audio duration")
+            return None
+
+        cycle_sec = audio_cfg.get("cycle_seconds", config.img2vid_duration_sec)
+        import math
+        cycles = math.ceil(duration / cycle_sec)
+        logger.info(
+            f"[AudioSync] Audio: {duration:.1f}s / {cycle_sec}s per cycle = {cycles} cycles"
+        )
+        return cycles
+
+    def _run_finalizer(self) -> Dict[str, Optional[str]]:
+        """Run the full finalizer pipeline: stitch → interpolate → upscale → audio mux."""
+        fc = self.config.get("finalizer", {})
+        result = {
+            "final_video": None,
+            "final_video_60fps": None,
+            "final_video_60fps_1080p": None,
+            "final_video_60fps_1080p_audio": None,
+        }
+
+        # Discover cycle videos
+        videos_dir = self.run_dir / "videos"
+        videos = sorted(videos_dir.glob("video_*.mp4"))
+        if not videos:
+            logger.warning("[Finalizer] No cycle videos found to stitch")
+            return result
+
+        # Step 1: Stitch
+        finalizer = Finalizer(
+            project_dir=self.run_dir,
+            preferred_codec=fc.get("encoder_preference", ["h264_nvenc", "libx264"])[0]
+                if isinstance(fc.get("encoder_preference"), list) else "h264_nvenc",
+            output_quality=fc.get("quality", {}).get("crf", 16)
+                if isinstance(fc.get("quality"), dict) else 16,
+            finalizer_config=fc,
+        )
+
+        try:
+            stitch_path = finalizer.finalize(cycle_video_paths=videos)
+            # Rename to spec naming
+            final_video = self.run_dir / "final_video.mp4"
+            if stitch_path != final_video:
+                shutil.move(str(stitch_path), str(final_video))
+            result["final_video"] = str(final_video)
+            logger.info(f"[Finalizer] Stitched → {final_video}")
+        except FinalizerError as e:
+            logger.error(f"[Finalizer] Stitch failed: {e}")
+            return result
+
+        # Step 2+3: Interpolate + Upscale (via post-stitch finalizer)
+        if fc.get("enabled", True):
+            # Temporarily set correct paths for the finalizer
+            finalizer.final_output_path = final_video
+            finalizer.final_deliverable_path = self.run_dir / "final_video_60fps_1080p.mp4"
+            finalizer._interpolated_temp_path = self.run_dir / "_temp_60fps.mp4"
+            finalizer.finalizer_enabled = True
+
+            deliverable = finalizer.run_post_stitch_finalizer()
+            if deliverable:
+                # Copy 60fps intermediate before it gets cleaned
+                temp_60fps = self.run_dir / "_temp_60fps.mp4"
+                final_60fps = self.run_dir / "final_video_60fps.mp4"
+                if temp_60fps.exists():
+                    shutil.copy2(str(temp_60fps), str(final_60fps))
+                    result["final_video_60fps"] = str(final_60fps)
+                result["final_video_60fps_1080p"] = str(deliverable)
+
+                # Keep the 60fps intermediate (don't clean up)
+                # Step 4: Audio mux
+                if self.base_audio and self.config.get("audio", {}).get("enabled", True):
+                    audio_output = self.run_dir / "final_video_60fps_1080p_audio.mp4"
+                    if _mux_audio(deliverable, self.base_audio, audio_output):
+                        result["final_video_60fps_1080p_audio"] = str(audio_output)
+
         return result
 
-    def _init_agents(self) -> None:
-        """Initialize the three agents."""
-        logger.info("[FaQtory] Initializing agents...")
+    def _save_run(self, finalizer_result: Dict, project_name: str):
+        """Move run/ to worqspace/saved-runs/<project-name>."""
+        saved_runs_dir = self.worqspace_dir / "saved-runs"
+        saved_runs_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create backend(s) for ConstruQtor — supports split config (v0.0.7)
-        backend = create_split_backend(self.config)
+        safe_name = _sanitize_project_name(project_name)
+        target = saved_runs_dir / safe_name
 
-        # LLM Provider initialization
-        llm_provider_instance = None
-        llm_config = self.config.get('llm', {})
-        if llm_config:
-            logger.info(f"[FaQtory] LLM configuration found. Provider: {llm_config.get('provider', 'unknown')}")
-            llm_provider_instance = llm_config
+        # Auto-suffix if exists
+        if target.exists():
+            counter = 1
+            while (saved_runs_dir / f"{safe_name}-{counter:03d}").exists():
+                counter += 1
+            target = saved_runs_dir / f"{safe_name}-{counter:03d}"
+            logger.info(f"[Save] Name exists, using: {target.name}")
 
-        # InstruQtor - instruction creator
-        self.instruqtor = InstruQtor(
-            config=self.config,
-            worqspace_dir=self.worqspace_dir,
-            qodeyard_dir=self.project_dir,
-            llm_provider=llm_provider_instance
-        )
+        # Move run dir
+        shutil.move(str(self.run_dir), str(target))
+        logger.info(f"[Save] Run saved to: {target}")
 
-        # ConstruQtor - visual builder (output goes to images/ or videos/ depending on backend)
-        self.construqtor = ConstruQtor(
-            config=self.config,
-            qodeyard_dir=self.project_dir / "images",
-            backend=backend
-        )
+        # Rename deliverable to <project-name>.mp4
+        # Priority: audio mux > 1080p > 60fps > base stitch
+        for key in ["final_video_60fps_1080p_audio", "final_video_60fps_1080p",
+                     "final_video_60fps", "final_video"]:
+            src_str = finalizer_result.get(key)
+            if src_str:
+                src = Path(src_str)
+                # Remap path to new location
+                relative = src.name
+                moved = target / relative
+                if moved.exists():
+                    final_name = target / f"{safe_name}.mp4"
+                    shutil.copy2(str(moved), str(final_name))
+                    logger.info(f"[Save] Deliverable: {final_name}")
+                    break
 
-        # InspeQtor - inspector and evolver (output goes to videos/)
-        self.inspeqtor = InspeQtor(
-            config=self.config,
-            qodeyard_dir=self.project_dir / "videos",
-            llm_provider=llm_provider_instance,
-            mode="innovative"
-        )
+        return target
 
-        logger.info("[FaQtory] Agents initialized: InstruQtor, ConstruQtor, InspeQtor")
+    def _write_state(self, start_time: datetime, end_time: datetime,
+                     cycles_planned: int, cycles_completed: int,
+                     finalizer_result: Dict, saved_to: Optional[Path] = None):
+        """Write faqtory_state.json."""
+        state = {
+            "run_id": self.run_id,
+            "version": "v0.5.6-beta",
+            "start_time": start_time.isoformat(),
+            "end_time": end_time.isoformat(),
+            "config_snapshot": "meta/config.yaml",
+            "story_snapshot": "meta/story.txt",
+            "mode": self.mode,
+            "reinject": self.reinject,
+            "base_image": self.base_image.name if self.base_image else None,
+            "base_video": self.base_video.name if self.base_video else None,
+            "base_audio": self.base_audio.name if self.base_audio else None,
+            "cycles_planned": cycles_planned,
+            "cycles_completed": cycles_completed,
+            "finalizer_outputs": finalizer_result,
+            "saved_to": str(saved_to) if saved_to else None,
+        }
+        state_path = self.run_dir / "faqtory_state.json"
+        state_path.write_text(json.dumps(state, indent=2))
 
-    def _init_base_folders(self) -> None:
-        """Initialize base folder selection and audio reactivity (v0.1.0)."""
-        try:
-            self.base_files = select_base_files(
-                self.worqspace_dir, self.config, run_id=self.project_name or "default"
-            )
-        except Exception as e:
-            logger.warning(f"[FaQtory] Base folder selection failed: {e}")
-            self.base_files = {"base_image": None, "base_audio": None, "base_video": None}
+    def run(self) -> Path:
+        """Execute the full pipeline."""
+        start_time = datetime.now()
+        logger.info(f"[FaQtory] Starting run: {self.run_id}")
+        logger.info(f"[FaQtory] Mode: {self.mode} | Reinject: {self.reinject}")
 
-        # Audio reactivity setup
-        audio_config = self.config.get("audio_reactivity", {})
-        audio_path = self.base_files.get("base_audio")
+        # Setup directories
+        self._setup_run_dirs()
+        self._copy_inputs_to_meta()
 
-        if audio_config.get("enabled", False) and audio_path and audio_path.exists():
-            try:
-                from .audio_reactivity import run_audio_analysis, compute_cycle_timing
-                analysis, beat_grid, features, ctrl = run_audio_analysis(
-                    audio_path, self.worqspace_dir, audio_config
-                )
-                self._audio_controller = ctrl
-                self._audio_analysis = analysis
-                self._beat_grid = beat_grid
-                logger.info(
-                    f"[FaQtory] Audio reactivity active: "
-                    f"bpm={analysis.get('bpm', 0):.1f}, "
-                    f"source={analysis.get('source', 'unknown')}"
-                )
-            except ImportError:
-                logger.warning(
-                    "[FaQtory] librosa not installed, audio reactivity disabled. "
-                    "Install with: pip install librosa"
-                )
-            except Exception as e:
-                logger.warning(f"[FaQtory] Audio analysis failed: {e}")
-        elif audio_config.get("enabled", False):
-            # Clock-only mode: BPM sync without audio file
-            manual_bpm = audio_config.get("bpm_manual")
-            if manual_bpm:
-                logger.info(f"[FaQtory] Audio clock-only mode: bpm={manual_bpm}")
-                self._audio_analysis = {"bpm": manual_bpm, "source": "manual_clock"}
+        # Build story config
+        story_config = self._build_story_config()
+
+        # Compute cycle count from audio if applicable
+        audio_cycles = self._compute_cycle_count(story_config)
+
+        # Resolve story file
+        story_path = self.worqspace_dir / "story.txt"
+        if not story_path.exists():
+            raise FileNotFoundError(f"Story file not found: {story_path}")
+
+        # Handle base image/video for image/video modes
+        base_image_for_run = None
+        if self.mode == "image" and self.base_image:
+            base_image_for_run = self.base_image
+        elif self.mode == "video" and self.base_video:
+            # Extract frame from video
+            extracted = self.run_dir / "meta" / "extracted_frame.png"
+            width = self.config.get("backend", {}).get("width", 1024)
+            height = self.config.get("backend", {}).get("height", 576)
+            if _extract_video_frame(self.base_video, extracted, width, height):
+                base_image_for_run = extracted
+                logger.info(f"[FaQtory] Extracted frame from video → {extracted}")
             else:
-                logger.info("[FaQtory] Audio reactivity enabled but no audio file found")
+                logger.warning("[FaQtory] Video frame extraction failed, falling back to text mode")
 
-    def _setup_signal_handlers(self) -> None:
-        """Setup graceful shutdown on SIGINT/SIGTERM."""
-        def handler(signum, frame):
-            logger.info("\n[FaQtory] Shutdown requested, completing current cycle...")
-            self._running = False
+        if self.dry_run:
+            logger.info("[FaQtory] DRY RUN — config loaded, inputs resolved, exiting before generation")
+            self._write_state(start_time, datetime.now(), 0, 0, {})
+            return self.run_dir
 
-        signal.signal(signal.SIGINT, handler)
-        signal.signal(signal.SIGTERM, handler)
+        # Run sliding story engine
+        final_video = run_sliding_story(
+            story_path=story_path,
+            qodeyard_dir=self.run_dir,
+            config=story_config,
+            max_cycles=audio_cycles,
+            base_image_path=base_image_for_run,
+        )
 
-    def run(
-        self,
-        cycles: int = 0,
-        target_hours: float = 0,
-        resume: bool = True
-    ) -> List[VisualBriq]:
-        """
-        Run the visual generation pipeline.
+        # Count completed cycles
+        cycles_completed = len(list((self.run_dir / "videos").glob("video_*.mp4")))
 
-        Args:
-            cycles: Number of cycles to run (0 = use config or unlimited)
-            target_hours: Target total duration (0 = use config)
-            resume: Whether to resume from saved state
+        # Run finalizer
+        finalizer_result = self._run_finalizer()
 
-        Returns:
-            List of completed VisualBriqs
-        """
-        logger.info("=" * 60)
-        logger.info("QonQrete Visual FaQtory v0.3.5-beta")
-        logger.info("=" * 60)
+        # Write state
+        end_time = datetime.now()
+        self._write_state(
+            start_time, end_time,
+            audio_cycles or cycles_completed,
+            cycles_completed,
+            finalizer_result,
+        )
+
+        # Save run
         if self.project_name:
-            logger.info(f"[FaQtory] Project: {self.project_name}")
-        logger.info(f"[FaQtory] Output: {self.project_dir}")
-
-        # Determine limits
-        max_cycles = cycles or self.config.get('cycle', {}).get('max_cycles', 0)
-        target_duration = target_hours or self.config.get('cycle', {}).get('target_duration_hours', 2.0)
-
-        # Calculate cycles needed for target duration
-        loop_duration = self.config.get('generation', {}).get('clip_seconds', 8.0) * 2
-        if target_duration > 0 and max_cycles == 0:
-            max_cycles = int((target_duration * 3600) / loop_duration) + 1
-            logger.info(f"[FaQtory] Target {target_duration}h requires ~{max_cycles} cycles")
-
-        # ── AUTO-DURATION PLANNING (v0.1.2 feature) ─────────────────────
-        audio_path = self.base_files.get("base_audio")
-        audio_config = self.config.get('audio_reactivity', {})
-        bpm = audio_config.get('bpm_manual', 0) or getattr(self, '_detected_bpm', 0)
-        bars_per = audio_config.get('bars_per_cycle', 8)
-
-        duration_plan = plan_duration(
-            config=self.config,
-            audio_path=audio_path,
-            bpm=bpm,
-            bars_per_cycle=bars_per,
-            requested_cycles=max_cycles,
-            clip_seconds=self.config.get('generation', {}).get('clip_seconds', 8.0),
-        )
-
-        if duration_plan.get('override_reason'):
-            max_cycles = duration_plan['required_cycles']
-            logger.info(f"[FaQtory] AUTO-DURATION: {duration_plan['override_reason']}")
-            logger.info(f"[FaQtory] Cycle duration: {duration_plan['cycle_duration']:.1f}s")
-
-        # Stream mode config
-        stream_cfg = get_stream_config(self.config)
-        if stream_cfg['enabled']:
-            logger.info(f"[FaQtory] STREAM MODE: {stream_cfg['method']} "
-                       f"(ctx={stream_cfg['context_length']}f, gen={stream_cfg['generation_length']}f)")
-
-
-        # Load or create state
-        if resume and self.state_file.exists():
-            self.state = CycleState.load(self.state_file)
-            logger.info(f"[FaQtory] Resumed from cycle {self.state.current_cycle}")
+            name = self.project_name
         else:
-            self.state = self._create_new_state(max_cycles)
-
-        self._running = True
-        completed_briqs = []
-        previous_briq = None
-        evolution_suggestion = None
-
-        # Main generation loop
-        while self._running:
-            cycle_index = self.state.current_cycle
-
-            if max_cycles > 0 and cycle_index >= max_cycles:
-                logger.info(f"[FaQtory] Reached max cycles ({max_cycles})")
-                break
-
-            logger.info("-" * 40)
-            logger.info(f"[FaQtory] CYCLE {cycle_index}")
-            logger.info("-" * 40)
-
             try:
-                # === STAGE 1: InstruQtor ===
-                briq = self.instruqtor.create_briq(
-                    cycle_index=cycle_index,
-                    previous_briq=previous_briq,
-                    evolution_suggestion=evolution_suggestion
-                )
+                name = input("\n📁 Project name to save as: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                name = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-                # === BASE FOLDERS: inject base_video for V2V if available ===
-                if cycle_index == 0 and self.base_files.get("base_video"):
-                    base_vid = self.base_files["base_video"]
-                    if base_vid.exists() and briq.mode != InputMode.IMAGE:
-                        briq.base_video_path = base_vid
-                        briq.mode = InputMode.VIDEO
-                        logger.info(f"[FaQtory] Using base_video: {base_vid.name}")
+        if name:
+            saved_to = self._save_run(finalizer_result, name)
+            # Update state in saved location
+            state_path = saved_to / "faqtory_state.json"
+            if state_path.exists():
+                state = json.loads(state_path.read_text())
+                state["saved_to"] = str(saved_to)
+                state_path.write_text(json.dumps(state, indent=2))
 
-                # === AUDIO REACTIVITY: inject features into briq ===
-                if self._audio_controller and self._audio_analysis:
-                    try:
-                        from .audio_reactivity import (
-                            compute_cycle_timing, apply_audio_mapping
-                        )
-                        audio_cfg = self.config.get("audio_reactivity", {})
-                        bpm = self._audio_analysis.get("bpm", 120.0)
-                        bars_per = audio_cfg.get("beat_grid", {}).get("bars_per_cycle_default", 8)
-                        beat_dur = 60.0 / bpm
-                        bar_dur = beat_dur * 4
-                        cycle_dur = bar_dur * bars_per
-
-                        briq.bpm = bpm
-                        briq.cycle_start_time = cycle_index * cycle_dur
-                        briq.cycle_end_time = (cycle_index + 1) * cycle_dur
-
-                        segment_stats = self._audio_controller.get_segment_stats(
-                            briq.cycle_start_time, briq.cycle_end_time
-                        )
-                        briq.audio_segment_stats = segment_stats
-
-                        mapping_cfg = audio_cfg.get("mapping", {})
-                        if mapping_cfg.get("enabled", True):
-                            mapped = apply_audio_mapping(
-                                segment_stats, mapping_cfg, cycle_index, self._beat_grid
-                            )
-                            briq.audio_prompt_additions = mapped.get("prompt_additions", "")
-                            briq.seed += mapped.get("seed_offset", 0)
-
-                            if briq.audio_prompt_additions:
-                                briq.prompt = f"{briq.prompt}, {briq.audio_prompt_additions}"
-                                logger.info(f"[FaQtory] Audio modifiers: {briq.audio_prompt_additions}")
-                    except Exception as e:
-                        logger.warning(f"[FaQtory] Audio injection failed: {e}")
-
-                self._save_briq(briq)
-
-                # === STREAM MODE: context extraction (v0.2.0-beta) ===
-                if stream_cfg['enabled'] and cycle_index > 0 and previous_briq:
-                    prev_video = previous_briq.looped_video_path or previous_briq.raw_video_path
-                    if prev_video and prev_video.exists():
-                        try:
-                            ctx = prepare_stream_cycle(
-                                cycle_index=cycle_index,
-                                previous_video=prev_video,
-                                output_dir=self.project_dir / "videos",
-                                stream_config=stream_cfg,
-                                fps=briq.spec.video_fps,
-                                bpm=briq.bpm or bpm,
-                            )
-                            if ctx.get('context_video_path'):
-                                briq.context_video_path = ctx['context_video_path']
-                                briq.spec.generation_frames = ctx.get('generation_frames')
-                                briq.spec.context_frames = ctx.get('context_frames')
-                                logger.info(f"[FaQtory] Stream context: {ctx['context_video_path']}")
-                        except Exception as e:
-                            logger.warning(f"[FaQtory] Stream context prep failed: {e}")
-
-                # === STAGE 2: ConstruQtor ===
-                briq = self.construqtor.construct(briq)
-                self._save_briq(briq)
-
-                # === STAGE 3: InspeQtor ===
-                briq = self.inspeqtor.inspect(briq)
-                self._save_briq(briq)
-
-                # Cycle complete!
-                completed_briqs.append(briq)
-                self.state.completed_briqs.append(briq.briq_id)
-                self.state.total_generation_time += briq.generation_time
-                self.state.total_video_duration += loop_duration
-                self.state.prompt_history.append(briq.prompt)
-
-                # Track video path for finalizer
-                if briq.looped_video_path:
-                    self.state.cycle_video_paths.append(str(briq.looped_video_path))
-
-                summary = self.inspeqtor.get_cycle_summary(briq)
-                logger.info(f"[FaQtory] Cycle {cycle_index} COMPLETE")
-                logger.info(f"  → Looped video: {briq.looped_video_path}")
-                logger.info(f"  → Next evolution: {briq.evolution_suggestion[:60]}...")
-
-                # Setup for next cycle
-                previous_briq = briq
-                evolution_suggestion = briq.evolution_suggestion
-                self.state.current_cycle += 1
-
-                # Save state
-                self._save_state()
-
-                # Delay between cycles
-                delay = self.config.get('cycle', {}).get('delay_seconds', 5.0)
-                if delay > 0 and self._running:
-                    logger.info(f"[FaQtory] Waiting {delay}s before next cycle...")
-                    time.sleep(delay)
-
-            except Exception as e:
-                logger.error(f"[FaQtory] Cycle {cycle_index} FAILED: {e}")
-
-                self.state.failed_cycles.append(cycle_index)
-
-                if not self.config.get('cycle', {}).get('continue_on_error', True):
-                    raise
-
-                self.state.current_cycle += 1
-                self._save_state()
-
-        # === FINALIZATION ===
-        final_path = None
-        self._deliverable_path = None
-        if completed_briqs:
-            final_path = self._run_finalizer()
-
-            # ── POST-FINALIZE: TRIM + MUX (v0.1.2 feature) ─────────────
-            if final_path and duration_plan.get('trim_to'):
-                try:
-                    audio_path_for_mux = self.base_files.get("base_audio")
-                    codec = self.config.get('looping', {}).get('output_codec', 'h264_nvenc')
-                    final_path = post_finalize_trim_and_mux(
-                        final_video=final_path,
-                        audio_path=audio_path_for_mux,
-                        plan=duration_plan,
-                        preferred_codec=codec,
-                    )
-                    logger.info(f"[FaQtory] Post-finalize complete: {final_path}")
-                except Exception as e:
-                    logger.warning(f"[FaQtory] Post-finalize trim/mux failed: {e}")
-
-        # Final summary
-        logger.info("=" * 60)
-        logger.info("[FaQtory] Pipeline Complete")
-        logger.info(f"  → Cycles completed: {len(completed_briqs)}")
-        logger.info(f"  → Total video duration: {self.state.total_video_duration:.1f}s")
-        if final_path:
-            logger.info(f"  → Stitched master: {final_path}")
-        if self._deliverable_path:
-            logger.info(f"  → Final deliverable: {self._deliverable_path}")
-        logger.info(f"  → Project directory: {self.project_dir}")
-        if self.state.failed_cycles:
-            logger.warning(f"  → Failed cycles: {self.state.failed_cycles}")
-        logger.info("=" * 60)
-
-        # Interactive save prompt for temp runs
-        if self._is_temp and completed_briqs:
-            self._prompt_save()
-
-        return completed_briqs
-
-    def _run_finalizer(self) -> Optional[Path]:
-        """Run the Finalizer to stitch all videos into final_output.mp4,
-        then optionally run post-stitch interpolation + upscale."""
-        try:
-            codec = self.config.get('looping', {}).get('output_codec', 'h264_nvenc')
-            quality = self.config.get('looping', {}).get('output_quality', 18)
-            finalizer_config = self.config.get('finalizer', {})
-
-            finalizer = Finalizer(
-                project_dir=self.project_dir,
-                preferred_codec=codec,
-                output_quality=quality,
-                finalizer_config=finalizer_config
-            )
-
-            video_paths = [Path(p) for p in self.state.cycle_video_paths] if self.state.cycle_video_paths else None
-
-            final_path = finalizer.finalize(
-                cycle_video_paths=video_paths,
-                failed_cycles=self.state.failed_cycles if self.state.failed_cycles else None
-            )
-
-            # === POST-STITCH FINALIZER (runs ONCE, after stitching) ===
-            deliverable_path = finalizer.run_post_stitch_finalizer()
-            if deliverable_path:
-                self._deliverable_path = deliverable_path
-
-            return final_path
-
-        except FinalizerError as e:
-            logger.warning(f"[FaQtory] Finalization skipped: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"[FaQtory] Finalization failed: {e}")
-            return None
-
-    def _prompt_save(self) -> None:
-        """Prompt user to save a temporary run to a named project."""
-        try:
-            if not sys.stdin.isatty():
-                return
-
-            print("\n" + "=" * 50)
-            response = input("Do you want to save this run? If yes, provide a project name: ").strip()
-
-            if response:
-                target_dir = self.qonstructions_base / response
-                if target_dir.exists():
-                    overwrite = input(f"Project '{response}' already exists. Overwrite? (y/N): ").strip().lower()
-                    if overwrite != 'y':
-                        logger.info("[FaQtory] Save cancelled.")
-                        return
-                    shutil.rmtree(target_dir)
-
-                shutil.copytree(self.project_dir, target_dir)
-                logger.info(f"[FaQtory] Saved to: {target_dir}")
-                self.project_name = response
-            else:
-                logger.info("[FaQtory] Temporary artifacts will remain in output directory.")
-
-        except (EOFError, KeyboardInterrupt):
-            logger.info("\n[FaQtory] Save prompt skipped.")
-
-    def run_single_cycle(self, cycle_index: int = 0) -> VisualBriq:
-        """Run a single generation cycle (useful for testing)."""
-        logger.info(f"[FaQtory] Running single cycle {cycle_index}")
-
-        briq = self.instruqtor.create_briq(cycle_index=cycle_index)
-        briq = self.construqtor.construct(briq)
-        briq = self.inspeqtor.inspect(briq)
-
-        self._save_briq(briq)
-        return briq
-
-    def _create_new_state(self, max_cycles: int) -> CycleState:
-        """Create new session state."""
-        session_id = hashlib.sha256(
-            f"{datetime.now().isoformat()}_{os.getpid()}".encode()
-        ).hexdigest()[:12]
-
-        return CycleState(
-            session_id=session_id,
-            started_at=datetime.now(),
-            total_cycles_requested=max_cycles,
-            qodeyard_path=self.project_dir
-        )
-
-    def _save_briq(self, briq: VisualBriq) -> None:
-        """Save briq to disk."""
-        briq_path = self.project_dir / "briqs" / f"{briq.briq_id}.json"
-        briq.save(briq_path)
-
-    def _save_state(self) -> None:
-        """Save pipeline state."""
-        self.state.save(self.state_file)
-
-    def status(self) -> Dict[str, Any]:
-        """Get current pipeline status."""
-        if not self.state_file.exists():
-            return {"status": "not_started"}
-
-        state = CycleState.load(self.state_file)
-        return {
-            "status": "in_progress" if self._running else "paused",
-            "session_id": state.session_id,
-            "current_cycle": state.current_cycle,
-            "total_requested": state.total_cycles_requested,
-            "completed_briqs": len(state.completed_briqs),
-            "total_video_duration": state.total_video_duration,
-            "total_generation_time": state.total_generation_time,
-            "failed_cycles": state.failed_cycles,
-            "output_dir": str(state.qodeyard_path)
-        }
-
-    def list_outputs(self) -> List[Path]:
-        """List all generated looped videos."""
-        videos_dir = self.project_dir / "videos"
-        if videos_dir.exists():
-            return sorted(videos_dir.glob("cycle*_video.mp4"))
-        return sorted(self.project_dir.glob("cycle*_video.mp4"))
-
-    def check_backends(self) -> Dict[str, tuple]:
-        """Check availability of all backends."""
-        return list_available_backends()
+        elapsed = (end_time - start_time).total_seconds()
+        logger.info(f"[FaQtory] Run complete in {elapsed:.1f}s — {cycles_completed} cycles")
+        return self.run_dir
 
 
-def quick_run(prompt: str, cycles: int = 5, output_dir: str = "./qodeyard") -> List[Path]:
-    """
-    Quick run helper - generate visuals from a prompt.
-
-    Creates temporary tasq.md and runs the pipeline.
-    """
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        worqspace = Path(tmpdir)
-
-        config = {
-            'backend': {'type': 'mock'},
-            'input': {'tasq_file': 'tasq.md'},
-            'generation': {'clip_seconds': 8.0},
-            'looping': {'method': 'pingpong'}
-        }
-        (worqspace / "config.yaml").write_text(yaml.dump(config))
-        (worqspace / "tasq.md").write_text(f"---\nmode: text\nseed: 42\n---\n\n{prompt}")
-
-        faqtory = VisualFaQtory(worqspace_dir=worqspace, output_dir=output_dir)
-        briqs = faqtory.run(cycles=cycles)
-
-        return [b.looped_video_path for b in briqs if b.looped_video_path]
-
-
-__all__ = ['VisualFaQtory', 'quick_run']
+def quick_run(**kwargs):
+    """Convenience function for quick pipeline runs."""
+    faqtory = VisualFaQtory(**kwargs)
+    return faqtory.run()

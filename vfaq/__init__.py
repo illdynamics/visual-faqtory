@@ -1,36 +1,26 @@
 #!/usr/bin/env python3
 """
-QonQrete Visual FaQtory v0.3.5-beta
+QonQrete Visual FaQtory v0.5.6-beta
 ═══════════════════════════════════════════════════════════════════════════════
 
 An automated, long-form AI visual generation pipeline for music, DJ sets,
 and experimental audiovisual projects.
 
-3-Agent Pipeline:
-  - InstruQtor: Creates VisualBriq from Prompt Bundle (LLM-powered or deterministic)
-  - ConstruQtor: Calls backend to generate video (supports V2V)
-  - InspeQtor: Loops video, suggests evolution (LLM-powered or deterministic)
+Pipeline: paragraph_story (sliding window) + ComfyUI backend + Finalizer
 
-v0.1.0-alpha features:
-  - Deterministic Prompt Synth (NO LLM required)
-  - Audio Reactivity (BPM, beat grid, spectral features)
-  - Base Folder Ingestion (base_image, base_audio, base_video)
-  - Video2Video (safe ComfyUI workflow, video preprocessing)
-  - Evolution Lines (deterministic visual mutations)
-
-v0.3.5-beta features:
-  - Fixed Stream/Longcat: true autoregressive continuation via SVD temporal diffusion
-  - Unified macro control semantics (file presence = state, no auto-delete)
-  - Finalised stage-safe audio reactive Turbo with explicit audio-paused state
-  - Added long-run stability controller (prevents color collapse / green blob)
-  - TouchDesigner integration contract (no .toe shipped, td_setup.py + blueprint provided)
-  - Removed fake / misleading behavior from stream mode
-  - All previous features: MIDI sidecar, crowd queue, OSC output, etc.
+v0.5.6-beta — Clean Base + Reinject Default + Run/Saved-Runs Refactor
+  - Reinject mode ON by default (img2img keyframe restoration every cycle)
+  - ComfyUI-only backend
+  - Output dir: ./run (current run), worqspace/saved-runs/<name> (archives)
+  - Working input modes: text / image / video
+  - Base audio muxing + optional auto-cycle count from audio duration
+  - Finalizer: stitch → interpolate 60fps → upscale 1080p → optional audio mux
+  - Deterministic prompt synthesis (no LLM dependency)
 
 License: AGPL-3.0 (same as QonQrete)
 """
 
-__version__ = "0.3.5-beta"
+__version__ = "0.5.6-beta"
 __author__ = "Ill Dynamics / WoNQ"
 __license__ = "AGPL-3.0"
 
@@ -48,14 +38,12 @@ from .instruqtor import InstruQtor
 from .construqtor import ConstruQtor
 from .inspeqtor import InspeQtor
 from .finalizer import Finalizer
-from .visual_faqtory import VisualFaQtory, quick_run
 from .backends import (
     BackendType, GenerationRequest, GenerationResult,
     GeneratorBackend, MockBackend, ComfyUIBackend,
-    DiffusersBackend, ReplicateBackend, SplitBackend,
-    create_backend, create_split_backend, list_available_backends
+    create_backend, list_available_backends
 )
-from .color_stability import StabilityController, create_stability_controller
+from .sliding_story_engine import SlidingStoryConfig, run_sliding_story
 
 __all__ = [
     "__version__", "__author__", "__license__",
@@ -66,10 +54,8 @@ __all__ = [
     "load_evolution_lines", "select_evolution_mutations", "map_motion_to_bucket_id",
     "select_base_files",
     "InstruQtor", "ConstruQtor", "InspeQtor", "Finalizer",
-    "VisualFaQtory", "quick_run",
     "BackendType", "GenerationRequest", "GenerationResult",
     "GeneratorBackend", "MockBackend", "ComfyUIBackend",
-    "DiffusersBackend", "ReplicateBackend", "SplitBackend",
-    "create_backend", "create_split_backend", "list_available_backends",
-    "StabilityController", "create_stability_controller",
+    "create_backend", "list_available_backends",
+    "SlidingStoryConfig", "run_sliding_story",
 ]

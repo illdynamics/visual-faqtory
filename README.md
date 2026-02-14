@@ -1,285 +1,179 @@
-# QonQrete Visual FaQtory v0.3.5-beta
+# QonQrete Visual FaQtory v0.5.6-beta
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 ![Repo Views](https://komarev.com/ghpvc/?username=illdynamics-visual-faqtory&label=Repo+Views&color=blue)
 
-![Splash](vfaq/visual-faqtory.png)
+![Splash](visual-faqtory.png)
 
-```
- ██╗   ██╗██╗███████╗██╗   ██╗ █████╗ ██╗         ███████╗ █████╗  ██████╗ ████████╗ ██████╗ ██████╗ ██╗   ██╗
- ██║   ██║██║██╔════╝██║   ██║██╔══██╗██║         ██╔════╝██╔══██╗██╔═══██╗╚══██╔══╝██╔═══██╗██╔══██╗╚██╗ ██╔╝
- ██║   ██║██║███████╗██║   ██║███████║██║         █████╗  ███████║██║   ██║   ██║   ██║   ██║██████╔╝ ╚████╔╝
- ╚██╗ ██╔╝██║╚════██║██║   ██║██╔══██║██║         ██╔══╝  ██╔══██║██║▄▄ ██║   ██║   ██║   ██║██╔══██╗  ╚██╔╝
-  ╚████╔╝ ██║███████║╚██████╔╝██║  ██║███████╗    ██║     ██║  ██║╚██████╔╝   ██║   ╚██████╔╝██║  ██║   ██║
-   ╚═══╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝    ╚═╝     ╚═╝  ╚═╝ ╚══▀▀═╝    ╚═╝    ╚═════╝ ╚═╝  ╚═╝   ╚═╝
-```
+**Automated long-form AI visual generation for music, DJ sets, and experimental audiovisual projects.**
 
-> **Automated Long-form AI Visual Generation for Music, DJ Sets & Experimental AV**
-
-> **v0.3.5-beta** — Production ready, stage safe, no hand-waving. Fixed stream/longcat (true autoregressive continuation), unified macro semantics, color stability controller, TouchDesigner integration contract (no `.toe` shipped).
+Visual FaQtory takes a written story, splits it into paragraphs, and generates a continuous visual narrative using a sliding window engine. Each cycle produces a keyframe and transition video, chaining frames across cycles for visual continuity. The final output is stitched, interpolated to 60fps, upscaled to 1080p, and optionally muxed with audio.
 
 ---
 
-## What This Does
+## Features
 
-Visual FaQtory takes a text prompt or base image and generates hours of evolving, forward-evolving visual content. Each cycle produces a video segment that morphs into the next, creating an infinite visual journey. After all cycles complete, the pipeline automatically interpolates to 60fps and upscales to 1920×1080 for cinema-smooth deliverables. Perfect for DJ sets, video installations, streams, and experimental AV.
+**Paragraph Story Engine** — Write your narrative in `worqspace/story.txt`. The sliding window engine splits paragraphs into overlapping windows, producing one visual cycle per window step (ramp-up → slide → ramp-down).
 
----
+**Reinject Mode (Default ON)** — Every cycle generates a new img2img keyframe from the previous cycle's last frame, ensuring visual evolution while maintaining continuity. Disable with `--no-reinject` for direct last-frame conditioning.
 
-## What's New in v0.3.5-beta
+**Three Input Modes** — Start from text (txt2img), a base image (img2img), or a video (frame extraction → img2img). After cycle 0, all modes chain via last-frame reinject.
 
-**⚡ Audio Toggle ≤200ms** — Background polling thread ensures macro response within 200ms regardless of frame generation time.
+**ComfyUI Backend** — Production backend using the ComfyUI API. SDXL for image generation, SVD for video generation. Mock backend available for testing.
 
-**🎬 Longcat Actually Works** — Default runs now produce real extended output. Target duration computed from `target_seconds` → `target_frames` → `generate_frames × max_iterations`.
+**LoRA Support** — Optional LoRA injection into ComfyUI workflows for stylistic control. Configure in `config.yaml` with path, strength, and automatic workflow wiring.
 
-**🎨 Stability Everywhere** — Color collapse prevention applied to all generation paths (offline, stream, Turbo).
+**Audio Sync** — Drop audio into `worqspace/base_audio/`. Optionally auto-compute cycle count from audio duration. Final video is muxed with audio after all processing.
 
-**📡 VRAM Logging** — INFO-level estimates before each iteration. Clear warnings when safety caps hit.
+**Finalizer Pipeline** — Automatic post-processing: stitch → interpolate 60fps → upscale 1920×1080 → audio mux. GPU-accelerated encoding with h264_nvenc fallback to libx264.
 
-**📖 No More Lies** — Every doc claim verified against code. TouchDesigner section states no `.toe` shipped. Longcat conditioning honesty documented.
-
----
-
-## What Was New in v0.3.4-beta
-
-**🔧 Fixed Stream/Longcat: True Autoregressive Continuation** — v0.3.3 Stream mode only restyled context frames. v0.3.4 uses SVD temporal diffusion to generate genuinely new frames beyond the context window. Each iteration takes the last frame, runs it through `SVD_img2vid_Conditioning`, and appends the new frames to the timeline. Stream output now actually grows every iteration and `generate_frames` controls how much.
-
-**STREAM is offline cinematic. TURBO is live. Don't confuse them.**
-
-**🎛️ Unified Macro Semantics** — Turbo no longer auto-deletes macro files. The contract is now deterministic: file exists = macro active. MIDI NOTE_ON creates the file, NOTE_OFF removes it. Turbo just reads. Works with any file-based trigger (scripts, OSC bridges, etc.).
-
-**🎨 Long-Run Stability Controller** — New `vfaq/color_stability.py` prevents diffusion feedback collapse (the "green blob" problem). Uses CIELAB palette anchoring to the first frame, detects collapse via saturation/dominance/edge metrics, and mitigates by adjusting CFG, seed drift, and injecting micro-noise. CPU-side, <2ms per frame.
-
-**🎥 TouchDesigner Integration Contract** — The `touchdesigner/` directory includes a network blueprint (`NETWORK_CONTRACT.txt`) and a Python builder (`td_setup.py`) describing the complete FX chain. Audio Device In, Analyze CHOP, Feedback loop, Displace, HUD overlay, MIDI In, OSC In. No binary `.toe` is shipped — you create the project in TD using the contract. TD keeps running even when AI stalls.
-
-**🎧 Audio-Reactive Finalization** — Explicit audio-paused state when crowd override is active. Audio failure disables the controller, never crashes the frame loop. No GPU rebuilds from audio events.
-```
-- Trims final video to exact audio duration
-- Muxes audio into final MP4
-
-**🔄 Stream Mode (Longcat)** — True autoregressive continuation:
-```bash
-python vfaq_cli.py run -c 20 --stream      # Enable longcat mode
-```
-- Cycle N loads a short tail clip of up to `context_frames` frames from Cycle N‑1, **extracts the last frame** of that clip and uses it as the conditioning image for temporal diffusion. The entire tail window is not fed into the model.
-- Generates `generate_frames` genuinely new frames beyond the tail clip and appends them to the timeline (the tail frames themselves are not duplicated).
-- Repeats until the cycle's target length is met (full autoregression).
-- Configurable via the `stream` section (`context_frames`, `generate_frames`, `max_iterations`, `checkpoint`).
-- **Slower and VRAM‑heavy** — designed for offline cinematic runs, not live performances.
-
----
-
-## Supported Modes
-
-| Mode | Cycle 0 | Cycle N>0 |
-|------|---------|-----------|
-| `text` | text → image → video | video → video (evolution) |
-| `image` | image → video (skip img gen) | video → video (evolution) |
-| `video` | ❌ Not valid for cycle 0 | video → video (evolution) |
-
-After cycle 0, the pipeline always chains: previous video → extract frame → img2img → img2vid. Visual identity is **never hard-reset** between cycles.
-
----
-
-## Requirements
-
-- **Python** 3.10+
-- **FFmpeg** (with h264_nvenc or libx264)
-- **GPU** (for real backends; mock requires none)
-- **pyyaml**, **pillow** (pip install)
+**Project Saving** — After completion, runs are saved to `worqspace/saved-runs/<project-name>/` with the deliverable renamed to `<project-name>.mp4`. Full reproducibility via copied config snapshots and per-cycle briq JSON.
 
 ---
 
 ## Quick Start
 
 ```bash
-# 1. Enter directory
-cd visual-faqtory-v0.3.5-beta
+# 1. Install dependencies
+pip install -r requirements.txt
 
-# 2. Install dependencies
-pip install pyyaml pillow
+# 2. Write your story
+nano worqspace/story.txt
 
-# 3. Quick smoke test (mock backend, no GPU needed)
-python quick_test.py
+# 3. Configure backend
+nano worqspace/config.yaml    # Set backend.api_url to your ComfyUI instance
 
-# 4. Run 3 cycles as a named project
-python vfaq_cli.py run -n test-run -c 3 -b mock --delay 1
+# 4. Run
+python vfaq_cli.py
+python vfaq_cli.py -n my-project          # Named project
+python vfaq_cli.py --mode image           # Use base image
+python vfaq_cli.py --no-reinject          # Disable reinject
+python vfaq_cli.py --dry-run              # Validate without generation
+python vfaq_cli.py -n test -b mock        # Mock backend test
+```
 
-# 5. Check the project output
-ls worqspace/qonstructions/test-run/videos/
+---
 
-# 6. Assemble final video
-python vfaq_cli.py assemble -n test-run
+## Directory Structure
+
+```
+visual-faqtory/
+├── vfaq_cli.py                    # CLI entrypoint
+├── vfaq/                          # Core pipeline modules
+│   ├── visual_faqtory.py          # Main orchestrator
+│   ├── sliding_story_engine.py    # Paragraph story engine
+│   ├── backends.py                # ComfyUI + Mock backends
+│   ├── construqtor.py             # Visual construction agent
+│   ├── instruqtor.py              # Instruction preparation agent
+│   ├── inspeqtor.py               # Quality inspection agent
+│   ├── finalizer.py               # Stitch + interpolate + upscale
+│   ├── prompt_synth.py            # Deterministic prompt synthesis
+│   ├── prompt_bundle.py           # Prompt file loading
+│   ├── visual_briq.py             # Instruction unit dataclass
+│   ├── base_folders.py            # Input file detection
+│   └── image_metrics.py           # Image quality metrics
+├── worqspace/                     # Operator workspace
+│   ├── config.yaml                # Pipeline configuration
+│   ├── story.txt                  # Story paragraphs
+│   ├── motion_prompt.md           # Motion/camera hints
+│   ├── style_hints.md             # Style modifiers
+│   ├── evolution_lines.md         # Per-cycle evolution guidance
+│   ├── negative_prompt.md         # Negative prompt
+│   ├── base_images/               # Base images for image mode
+│   ├── base_video/                # Base videos for video mode
+│   ├── base_audio/                # Audio files for muxing
+│   └── saved-runs/                # Archived project runs
+├── run/                           # Current run output (transient)
+│   ├── videos/                    # Per-cycle videos
+│   ├── frames/                    # Keyframes and last-frames
+│   ├── briqs/                     # Per-cycle JSON state
+│   ├── meta/                      # Config/story snapshots
+│   └── faqtory_state.json         # Run state tracking
+├── vfaq_story_setup.sh            # Interactive story setup helper
+├── requirements.txt               # Python dependencies
+└── VERSION                        # Version file
 ```
 
 ---
 
 ## CLI Reference
 
-```bash
-# Run generation
-python vfaq_cli.py run [OPTIONS]
-  -n, --name NAME      Project name (stored in worqspace/qonstructions/<n>/)
-  -c, --cycles N       Run N cycles (default: unlimited)
-  --hours H            Target H hours of content
-  -b, --backend TYPE   Override backend (mock/comfyui/diffusers/replicate)
-  --delay SECONDS      Delay between cycles (default: 2)
-  --fresh              Start fresh (ignore saved state)
-  --match-audio        Align visual duration to audio length (v0.1.2)
-  --duration SECONDS   Fixed duration mode (v0.1.2)
-  --stream             Enable stream continuation mode (v0.2.0)
+```
+python vfaq_cli.py [command] [options]
 
-# TURBO Live Mode (v0.3.5-beta)
-python vfaq_cli.py live [OPTIONS]
-  --turbo              Enable TURBO frame generation (default)
-  --fps N              Target FPS (default: from config)
-  --size WxH           Resolution (e.g., 768x432)
-  --crowd              Enable crowd prompt server
-  --crowd-port PORT    Crowd server port (default: 7777)
-  --crowd-token TOKEN  Auth token for crowd submissions
+Commands:
+  run        Run visual generation (default when no command given)
+  status     Show pipeline status and saved runs
+  backends   List available backends
 
-# Single test cycle
-python vfaq_cli.py single [-n NAME] [--cycle N] [-b BACKEND]
+Run Options:
+  -n, --name NAME         Project name for saving
+  --reinject, -r          Enable reinject mode (default: ON)
+  --no-reinject, -R       Disable reinject mode
+  --mode {text,image,video}  Override input mode
+  -b, --backend TYPE      Override backend (mock/comfyui)
+  -s, --seed SEED         Override base seed
+  --config PATH           Override config file path
+  --dry-run               Validate config without generation
+  --lora-enabled          Enable LoRA injection
+  --no-lora               Disable LoRA injection
+  --lora-path PATH        Path to LoRA safetensors file
+  --lora-strength FLOAT   LoRA weight (0.0 to 1.0)
 
-# Check status
-python vfaq_cli.py status [-n NAME]
-
-# List available backends
-python vfaq_cli.py backends
-
-# Assemble all videos into final_output.mp4
-python vfaq_cli.py assemble [-n NAME] [--preview]
-
-# Clean up
-python vfaq_cli.py clean [-n NAME] [--all]
+Global Options:
+  -w, --worqspace DIR     Worqspace directory (default: ./worqspace)
+  --run-dir DIR           Run output directory (default: ./run)
+  -V, --version           Show version
 ```
 
 ---
 
-## Worqspace Layout (Prompt Bundle)
+## Backend Support
 
-```
-worqspace/
-├── tasq.md                   # Base creative prompt (REQUIRED)
-├── negative_prompt.md        # What to avoid (optional)
-├── style_hints.md            # Style + evolution constraints (optional)
-├── motion_prompt.md          # Video motion intent (optional)
-├── config.yaml               # Mechanical parameters (REQUIRED)
-├── inputs/                   # Base images for image mode
-├── examples/                 # Example configs and templates
-└── qonstructions/            # Project output directories
-```
+| Backend | Status | Requirements |
+|---------|--------|-------------|
+| `comfyui` | ✅ Production | ComfyUI server running at `api_url` |
+| `mock` | ✅ Testing | None (generates placeholder files) |
 
 ---
 
-## Project-Based Runs
+## Prompt Files
 
-When you use `-n <project-name>`, all outputs go into a structured project directory:
-
-```
-worqspace/qonstructions/<project-name>/
-├── briqs/                    # VisualBriq JSON state files
-├── images/                   # Generated source images
-├── videos/                   # Per-cycle MP4s + raw videos
-│   ├── cycle0000_raw.mp4
-│   ├── cycle0000_video.mp4
-│   ├── cycle0001_raw.mp4
-│   └── cycle0001_video.mp4
-├── factory_state.json        # Pipeline state (resumable)
-├── config_snapshot.yaml      # Config used for this run
-├── final_output.mp4          # Stitched base master (8fps, 1024×576)
-└── final_60fps_1080p.mp4     # Final deliverable (60fps, 1920×1080)
-```
-
-If you omit `-n`, the run uses a temporary directory (`qodeyard/`). After completion, you're prompted to save it as a named project.
+| File | Purpose |
+|------|---------|
+| `story.txt` | Main narrative (paragraphs separated by blank lines) |
+| `motion_prompt.md` | Camera/motion hints appended to prompts |
+| `style_hints.md` | Style modifiers appended to prompts |
+| `evolution_lines.md` | Per-cycle evolution guidance |
+| `negative_prompt.md` | Negative prompt text |
+| `transient_tasq.md` | Optional per-run overrides |
 
 ---
 
-## Pipeline Flow
+## Finalizer Output Naming
 
-```
-cycle generation (InstruQtor → ConstruQtor → InspeQtor)
-  → per-cycle video (passthrough or loop)
-  → cycle stitching (stream-copy / re-encode)
-  → final_output.mp4 (BASE MASTER — 8fps, 1024×576)
-  → POST-STITCH FINALIZER:
-       → interpolate to 60fps (minterpolate MCI)
-       → upscale to 1920×1080 (bicubic)
-       → encode (h264_nvenc / libx264)
-  → final_60fps_1080p.mp4 (FINAL DELIVERABLE)
-  → pipeline exit
-```
+After all cycles complete, the finalizer produces:
+
+1. `run/final_video.mp4` — stitched cycle videos
+2. `run/final_video_60fps.mp4` — interpolated to 60fps
+3. `run/final_video_60fps_1080p.mp4` — upscaled to 1920×1080
+4. `run/final_video_60fps_1080p_audio.mp4` — with audio mux (if audio present)
+
+On save, the best deliverable is renamed to `<project-name>.mp4` in `worqspace/saved-runs/<project-name>/`.
 
 ---
 
-## Config vs tasq.md (Strict Separation)
+## Requirements
 
-**tasq.md** = Creative intent ONLY:
-- `title`, `mode`, `backend`, `input_image`/`base_image`
-- Descriptive prompt text
-- Negative prompt text
-
-**config.yaml** = Mechanical truth ONLY:
-- `width`, `height`, `fps`, `duration`, `steps`
-- `video_frames`, `clip_seconds`, `cfg_scale`
-- All diffusion parameters, codec settings, finalizer settings, etc.
-
-Mechanical parameters in tasq.md are **ignored with a warning**.
-
----
-
-## Post-Stitch Finalizer Config
-
-```yaml
-finalizer:
-  enabled: true                    # Set to false to skip post-stitch processing
-  interpolate_fps: 60              # Target frame rate
-  upscale_resolution: 1920x1080   # Target resolution
-  scale_algo: bicubic              # Scaling algorithm
-  encoder_preference:              # GPU-first with CPU fallback
-    - h264_nvenc
-    - libx264
-  quality:
-    crf: 16                        # CRF / NVENC CQ value (lower = better)
-```
-
----
-
-## Backend Options
-
-| Backend | Availability | Setup |
-|---------|-------------|-------|
-| `mock` | ✅ Always | None needed |
-| `comfyui` | ✅ Works | ComfyUI server + SDXL/SVD checkpoints |
-| `diffusers` | ⚠️ Needs CUDA | `pip install torch diffusers` |
-| `replicate` | ⚠️ Needs token | `REPLICATE_API_TOKEN` env var |
-
-ComfyUI validates SDXL and SVD checkpoint availability via `/object_info` before generating. NVENC encoding is preferred; libx264 is automatic fallback.
-
----
-
-## Known Limitations (v0.3.5-beta)
-
-- Video mode does frame extraction (not true video2video via AnimateDiff)
-- ComfyUI needs VideoHelperSuite nodes for video output
-- Diffusers backend requires CUDA (no CPU fallback)
-- LLM evolution is optional (basic fallback always works)
-- Post-stitch interpolation (minterpolate) is CPU-intensive and can be slow for long videos
-- Default SVD workflow ignores text prompts (motion_prompt.md stored for auditability but not used by SVD directly)
-- Split backends share the same project directory (no per-backend output isolation)
+- Python 3.10+
+- FFmpeg (with h264_nvenc for GPU encoding, or libx264 fallback)
+- ComfyUI server (for production runs)
+- SDXL checkpoint (for image generation)
+- SVD checkpoint (for video generation)
 
 ---
 
 ## License
 
-Visual FaQtory is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
-See the [LICENSE](LICENSE) file for full text.
+AGPL-3.0 — Same as QonQrete.
 
----
-
-Built by **Ill Dynamics / WoNQ** for the drum & bass massive 🎵
-
-```
-░▒▓█ ONE LOVE █▓▒░
-```
-
-![Scarf](https://static.scarf.sh/a.png?x-pxid=dc67438c-3388-46cd-baa7-7a0374420474)
+Built by **Ill Dynamics** / **WoNQ** 🎧

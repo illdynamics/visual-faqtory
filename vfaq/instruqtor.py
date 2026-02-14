@@ -30,7 +30,7 @@ LLM output fields (v0.0.7-alpha):
   - motion_hint            short motion guidance for video
   - video_prompt           optional dedicated video prompt
 
-Part of QonQrete Visual FaQtory v0.3.5-beta
+Part of QonQrete Visual FaQtory v0.5.6-beta
 """
 import os
 import re
@@ -246,6 +246,15 @@ class InstruQtor:
         except ValueError:
             logger.warning(f"Unknown mode '{bundle.mode}', defaulting to text")
             mode = InputMode.TEXT
+
+        # v0.5.6-beta: CLI/config mode override takes precedence over tasq.md
+        config_mode = self.config.get("input", {}).get("mode_override")
+        if config_mode:
+            try:
+                mode = InputMode(config_mode.lower())
+                logger.info(f"[InstruQtor] Mode override from config: {mode.value}")
+            except ValueError:
+                logger.warning(f"[InstruQtor] Invalid mode_override '{config_mode}', keeping {mode.value}")
 
         # Collect ONLY creative overrides (filtered)
         creative_overrides = {}

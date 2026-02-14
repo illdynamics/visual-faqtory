@@ -31,7 +31,7 @@ NON-NEGOTIABLE RULES:
 
 Supports NVENC-based encoding (h264_nvenc preferred, libx264 fallback).
 
-Part of QonQrete Visual FaQtory v0.3.5-beta
+Part of QonQrete Visual FaQtory v0.5.6-beta
 """
 import logging
 import subprocess
@@ -92,22 +92,29 @@ class Finalizer:
         """
         Stitch all per-cycle videos into final_output.mp4.
 
+        v0.5.6-beta: Failed cycles are SKIPPED, not fatal. The finalizer
+        stitches whatever videos exist. cycle_video_paths only contains
+        successful cycles anyway, so failed_cycles is informational.
+
         Args:
             cycle_video_paths: Explicit list of video paths (chronological order).
                                If None, auto-discovers from videos_dir.
-            failed_cycles: List of cycle indices that failed.
+            failed_cycles: List of cycle indices that failed (logged, not fatal).
 
         Returns:
             Path to final_output.mp4
 
         Raises:
-            FinalizerError: If any cycles failed or no videos found.
+            FinalizerError: If no videos found at all (zero successful cycles).
         """
-        # Check for failed cycles
+        # v0.5.6-beta: Failed cycles are SKIPPED, not fatal.
+        # The finalizer stitches whatever videos exist.
+        # cycle_video_paths only contains successful cycles anyway,
+        # so failed_cycles is just informational logging.
         if failed_cycles:
-            raise FinalizerError(
-                f"[Finalizer] Cannot finalize: cycles {failed_cycles} failed. "
-                f"Fix or re-run failed cycles before finalizing."
+            logger.warning(
+                f"[Finalizer] {len(failed_cycles)} cycle(s) failed: {failed_cycles}. "
+                f"Skipping them — stitching remaining videos."
             )
 
         # Collect videos

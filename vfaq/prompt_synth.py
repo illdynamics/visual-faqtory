@@ -15,7 +15,7 @@ Rules:
   4. negative_prompt.md is applied verbatim to generation requests
   5. motion_prompt.md is stored and injected into video workflows
 
-Part of QonQrete Visual FaQtory v0.3.5-beta
+Part of QonQrete Visual FaQtory v0.5.6-beta
 """
 import logging
 from pathlib import Path

@@ -8,7 +8,7 @@ A VisualBriq is the standardized instruction packet passed between agents:
 
 It contains everything needed to generate one visual atom in the cycle.
 
-Part of QonQrete Visual FaQtory v0.3.5-beta
+Part of QonQrete Visual FaQtory v0.5.6-beta
 """
 import json
 import hashlib
@@ -57,14 +57,8 @@ class GenerationSpec:
     motion_bucket_id: int = 127
     noise_aug_strength: float = 0.02
 
-    # Chaining (for video2video / img2img)
+    # Chaining (for img2img reinject)
     denoise_strength: float = 0.4
-
-    # Stream mode fields (v0.2.0-beta)
-    context_duration: float = 1.5                   # Seconds of context from previous cycle
-    context_frames: Optional[int] = None            # Context frames (computed from fps)
-    generation_frames: Optional[int] = None         # Stream generation length (overrides video_frames when stream enabled)
-    overlap_frames: int = 0                         # Blend/crossfade overlap frames
 
 
 @dataclass
@@ -265,7 +259,7 @@ class CycleState:
     prompt_history: List[str] = field(default_factory=list)
 
     # Paths
-    qodeyard_path: Path = Path("./qodeyard")
+    qodeyard_path: Path = Path("./run")
 
     # Stats
     total_generation_time: float = 0.0

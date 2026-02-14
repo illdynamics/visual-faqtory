@@ -12,7 +12,7 @@ Responsibilities:
   4. Analyze the visual output using LLM
   5. Suggest subtle creative variations for next cycle
 
-Part of QonQrete Visual FaQtory v0.3.5-beta
+Part of QonQrete Visual FaQtory v0.5.6-beta
 """
 
 import json
@@ -22,7 +22,13 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from .visual_briq import VisualBriq, BriqStatus
-from .llm_utils import create_llm_client, call_llm
+
+# LLM utils are optional — inspeqtor works fully without LLM
+try:
+    from .llm_utils import create_llm_client, call_llm
+except ImportError:
+    create_llm_client = None
+    call_llm = None
 
 logger = logging.getLogger(__name__)
 
@@ -315,30 +321,41 @@ class InspeQtor:
                 pass
 
     def _create_crossfade_loop(self, input_path: Path, output_path: Path) -> None:
-        """Create a loopable clip using a crossfade from end→start."""
+        """Create a loopable clip using a crossfade from end→start (PTS-safe, CFR-safe)."""
         input_path = input_path.resolve()
         duration = self._get_video_duration(input_path)
-        xfade_duration = self.crossfade_frames / float(self.output_fps)
-
+        fps = float(self.output_fps)
+        xfade_duration = self.crossfade_frames / fps
+    
         if duration <= xfade_duration * 2:
             logger.warning("[InspeQtor] Video too short for crossfade, using pingpong")
             self._create_pingpong_loop(input_path, output_path)
             return
-
-        # Build a clip where the end is crossfaded into the beginning.
-        # NOTE: This is a simple implementation; pingpong is usually more robust.
+    
+        # PTS + timebase normalization is REQUIRED for xfade
+        # This fixes the dreaded: "current rate of 1/0 is invalid"
         filter_complex = (
-            f"[0:v]split[main][end];"
-            f"[end]trim=start={duration - xfade_duration},setpts=PTS-STARTPTS[endclip];"
-            f"[main]trim=end={duration - xfade_duration},setpts=PTS-STARTPTS[mainclip];"
-            f"[mainclip][endclip]xfade=transition=fade:duration={xfade_duration}:offset=0[out]"
+            f"[0:v]"
+            f"settb=AVTB,"
+            f"setpts=N/({fps}*TB),"
+            f"fps={fps},"
+            f"split=2[main][end];"
+            f"[end]"
+            f"trim=start={duration - xfade_duration},"
+            f"setpts=PTS-STARTPTS[endclip];"
+            f"[main]"
+            f"trim=end={duration - xfade_duration},"
+            f"setpts=PTS-STARTPTS[mainclip];"
+            f"[mainclip][endclip]"
+            f"xfade=transition=fade:duration={xfade_duration}:offset=0[out]"
         )
-
+    
         for codec in [self.output_codec, "libx264"]:
             video_args = self._encode_args(codec)
-
+    
             cmd = [
                 "ffmpeg", "-y",
+                "-fflags", "+genpts",
                 "-i", str(input_path),
                 "-filter_complex", filter_complex,
                 "-map", "[out]",
@@ -349,16 +366,20 @@ class InspeQtor:
                 "-pix_fmt", "yuv420p",
                 str(output_path),
             ]
-
+    
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode == 0:
+                logger.info(f"[InspeQtor] Crossfade succeeded with {codec}")
                 return
-
-            logger.warning(f"[InspeQtor] Crossfade with {codec} failed, trying next... stderr: {result.stderr}")
-
-        # If everything fails, fall back to pingpong
+    
+            logger.warning(
+                f"[InspeQtor] Crossfade with {codec} failed, trying next... "
+                f"stderr: {result.stderr[:300]}"
+            )
+    
         logger.warning("[InspeQtor] Crossfade failed for all codecs, falling back to pingpong")
         self._create_pingpong_loop(input_path, output_path)
+
 
     # ──────────────────────────────────────────────────────────────────────────
     # Helpers
