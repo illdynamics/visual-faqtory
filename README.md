@@ -2,7 +2,7 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 ![Repo Views](https://komarev.com/ghpvc/?username=illdynamics-visual-faqtory&label=Repo+Views&color=blue)
 
-![Splash](vfaq/visual-faqtory.png)
+![Splash](visual-faqtory.png)
 
 **Automated long-form AI visual generation for music, DJ sets, and experimental audiovisual projects.**
 
