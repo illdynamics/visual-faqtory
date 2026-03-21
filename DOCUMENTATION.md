@@ -1,544 +1,626 @@
-# QonQrete Visual FaQtory - Technical Documentation v0.0.7-alpha
+# Visual FaQtory v0.5.8-beta — Documentation
 
 ## Table of Contents
 
-1. [System Overview](#1-system-overview)
-2. [Core Concepts](#2-core-concepts)
-3. [Agent Roles](#3-agent-roles)
-4. [Pipeline Flow](#4-pipeline-flow)
-5. [Backend Architecture](#5-backend-architecture)
-6. [ComfyUI Integration Details](#6-comfyui-integration-details)
-7. [Configuration Reference](#7-configuration-reference)
-8. [CLI Reference](#8-cli-reference)
-9. [Finalizer Logic](#9-finalizer-logic)
-10. [Post-Stitch Finalizer (Interpolation + Upscale)](#10-post-stitch-finalizer-interpolation--upscale)
-11. [Failure Modes & Debugging](#11-failure-modes--debugging)
-12. [Performance Notes](#12-performance-notes)
+1. [Overview](#1-overview)
+2. [Architecture](#2-architecture)
+3. [Configuration Reference](#3-configuration-reference)
+4. [Story Engine](#4-story-engine)
+5. [Input Modes](#5-input-modes)
+6. [Reinject Mode](#6-reinject-mode)
+7. [Backend Configuration](#7-backend-configuration)
+8. [LoRA Support](#8-lora-support)
+9. [Audio Support](#9-audio-support)
+10. [Finalizer Pipeline](#10-finalizer-pipeline)
+11. [Project Saving](#11-project-saving)
+12. [Prompt Files](#12-prompt-files)
+13. [Briq State Tracking](#13-briq-state-tracking)
+14. [CLI Reference](#14-cli-reference)
+15. [Crowd Control](#15-crowd-control)
+16. [Troubleshooting](#16-troubleshooting)
 
 ---
 
-## 1. System Overview
+## 1. Overview
 
-Visual FaQtory is a 3-agent + finalizer pipeline that generates long-form evolving visual content from text prompts or base images. Each cycle produces a video segment that chains into the next, with LLM-guided or algorithmic prompt evolution. After all cycles complete, the post-stitch finalizer interpolates to 60fps and upscales to 1080p.
+Visual FaQtory is an automated long-form AI visual generation pipeline. It reads a story, splits it into paragraphs, and generates a continuous visual narrative using a sliding window engine. Each cycle produces a keyframe image and a transition video. Cycles are chained by feeding the last frame of each video into the next cycle's generation step (reinject mode).
 
-### Architecture Diagram
-
+The pipeline:
 ```
-User
- ↓
-vfaq_cli.py  (-n <project-name>)
- ↓
-VisualFaQtory
- ├─ InstruQtor          (parse tasq.md → create VisualBriq)
- ├─ ConstruQtor
- │   ├─ SDXL (image)    (txt2img or img2img via backend)
- │   └─ SVD (video)     (img2vid via backend)
- ├─ InspeQtor           (passthrough or loop + evolution suggestion)
- ├─ Finalizer           (ffmpeg concat → final_output.mp4)
- └─ Post-Stitch         (interpolate 60fps → upscale 1080p → final_60fps_1080p.mp4)
- ↓
-worqspace/qonstructions/<project-name>/
- ├─ briqs/
- ├─ images/
- ├─ videos/
- ├─ factory_state.json
- ├─ config_snapshot.yaml
- ├─ final_output.mp4          (base master — 8fps, 1024×576)
- └─ final_60fps_1080p.mp4     (final deliverable — 60fps, 1920×1080)
+story.txt → paragraph sliding window → per-cycle generation
+  → keyframe (txt2img or img2img) → video (img2vid or morph)
+  → finalizer (stitch → 60fps → 1080p → audio mux)
+  → save to worqspace/saved-runs/<project-name>
 ```
 
 ---
 
-## 2. Core Concepts
+## 2. Architecture
 
-### Briq (VisualBriq)
+### Pipeline Agents
 
-The fundamental instruction unit passed between agents. Contains prompt, mode, specs, seed, base paths, status, and outputs. Serializable to JSON for state persistence.
+The core pipeline uses three agents in sequence:
 
-### Cycle
+- **InstruQtor** — Reads config and prompt files, prepares VisualBriq instruction packets per cycle.
+- **ConstruQtor** — Validates inputs, calls the backend for image and video generation.
+- **InspeQtor** — Runs quality checks on generated content.
 
-One complete pass through the 3-agent pipeline producing a single video segment. Cycle 0 starts from tasq.md; cycle N>0 evolves from the previous cycle's output.
+### Orchestration
 
-### Worqspace
+`VisualFaQtory` (visual_faqtory.py) is the thin orchestrator that wires everything together:
 
-The input directory containing `config.yaml` (mechanical parameters) and `tasq.md` (creative intent). Also hosts the `qonstructions/` directory for named project storage.
+1. Load config, detect inputs (base image/video/audio)
+2. Run `sliding_story_engine` (paragraph window → cycle generation)
+3. Run `Finalizer` (stitch → interpolate → upscale)
+4. Mux audio (if present)
+5. Save run to `worqspace/saved-runs/<project-name>`
 
-### Qonstructions
+### Directory Layout
 
-Project-based archival storage under `worqspace/qonstructions/<project-name>/`. Each project contains all artifacts: briqs, images, videos, state, config snapshot, and final outputs.
-
-### Base Master vs Deliverable
-
-- **Base Master** (`final_output.mp4`): Raw stitched video at original fps/resolution. Never modified after creation.
-- **Final Deliverable** (`final_60fps_1080p.mp4`): Post-processed output with 60fps interpolation and 1080p upscale. The file you ship.
-
----
-
-## 3. Agent Roles
-
-### InstruQtor
-
-First agent. Parses `tasq.md` for creative intent, applies config.yaml mechanical parameters, creates a VisualBriq. For cycle 0: uses tasq prompt. For cycle N>0: evolves from previous prompt using InspeQtor's suggestion. Enforces strict config/tasq separation — mechanical parameters in tasq.md are ignored with warnings.
-
-### ConstruQtor
-
-Second agent. Validates required inputs per mode (fail-fast), calls the configured backend to generate images and videos. Mode handling:
-- TEXT: txt2img → img2vid
-- IMAGE: skip image gen, feed base image to img2vid
-- VIDEO: extract middle frame → img2img → img2vid
-
-### InspeQtor
-
-Third agent. Processes cycle video and generates evolution suggestions. Two operating modes:
-
-- **Looping enabled** (`looping.enabled: true`): Creates loopable video using FFmpeg (pingpong forward+reverse or crossfade). Each cycle produces a seamless loop.
-- **Passthrough mode** (`looping.enabled: false`): Re-encodes raw video with consistent codec/fps but NO reverse loop. Produces forward-evolving visuals that flow continuously when stitched. This is the recommended mode when using the post-stitch finalizer.
-
----
-
-## 4. Pipeline Flow (Step-by-Step)
-
+**During a run:**
 ```
-CYCLE 0 (text mode):
-  1. InstruQtor parses tasq.md → VisualBriq (mode=TEXT)
-  2. ConstruQtor generates image from prompt (txt2img)
-  3. ConstruQtor generates video from image (img2vid)
-  4. ConstruQtor saves as cycle0000_raw.mp4
-  5. InspeQtor processes video:
-     - looping.enabled=true:  pingpong/crossfade loop → cycle0000_video.mp4
-     - looping.enabled=false: passthrough re-encode → cycle0000_video.mp4
-  6. InspeQtor generates evolution suggestion
+run/
+├── videos/          # Per-cycle MP4s: video_000.mp4, video_001.mp4, ...
+├── frames/          # Keyframes and last-frames per cycle
+├── briqs/           # Per-cycle JSON: cycle_000.json, cycle_001.json, ...
+├── meta/            # Config snapshot, story snapshot, base inputs
+├── final_video.mp4
+├── final_video_60fps.mp4
+├── final_video_60fps_1080p.mp4
+├── final_video_60fps_1080p_audio.mp4  (if audio present)
+└── faqtory_state.json
+```
 
-CYCLE 0 (image mode):
-  1. InstruQtor parses tasq.md → VisualBriq (mode=IMAGE, base_image set)
-  2. ConstruQtor skips image gen, uses base_image directly
-  3. ConstruQtor generates video from base_image (img2vid)
-  4-6. Same as above
-
-CYCLE N>0 (always video mode):
-  1. InstruQtor receives previous briq + evolution suggestion
-  2. InstruQtor evolves prompt (80% same, 20% variation)
-  3. InstruQtor sets mode=VIDEO, base_video=previous cycle video
-  4. ConstruQtor extracts middle frame from base_video
-  5. ConstruQtor runs img2img on frame with evolved prompt
-  6. ConstruQtor generates video from evolved image (img2vid)
-  7-9. Same processing + evolution flow
-
-FINALIZATION (after all cycles):
-  1. Finalizer collects all cycleNNNN_video.mp4 in order
-  2. Concatenates via ffmpeg (stream-copy preferred, re-encode fallback)
-  3. Saves as final_output.mp4 (BASE MASTER)
-  4. Logs duration, fps, resolution, file size
-
-POST-STITCH FINALIZER (if enabled, runs ONCE):
-  1. Checks if final_60fps_1080p.mp4 already exists → skip if so
-  2. Detects encoder: h264_nvenc (GPU) or libx264 (CPU) fallback
-  3. STEP 1: Interpolate final_output.mp4 → 60fps (minterpolate MCI)
-  4. STEP 2: Upscale interpolated output → 1920×1080 (bicubic)
-  5. Saves as final_60fps_1080p.mp4 (FINAL DELIVERABLE)
-  6. Cleans up intermediate temp file
-  7. Logs deliverable metadata
+**After saving:**
+```
+worqspace/saved-runs/<project-name>/
+├── <project-name>.mp4    # Final deliverable
+├── videos/
+├── frames/
+├── briqs/
+├── meta/
+└── faqtory_state.json
 ```
 
 ---
 
-## 5. Backend Architecture
+## 3. Configuration Reference
 
-All backends implement the `GeneratorBackend` interface:
+All configuration lives in `worqspace/config.yaml`. The minimal canonical config:
 
-```python
-class GeneratorBackend(ABC):
-    def generate_image(request: GenerationRequest) -> GenerationResult
-    def generate_video(request: GenerationRequest, source_image: Path) -> GenerationResult
-    def check_availability() -> tuple[bool, str]
+```yaml
+# Paths
+paths:
+  output_dir: ./run
+  briqs_dir: ./run/briqs
+
+# Input mode
+input:
+  mode: text              # auto | text | image | video
+
+# Backend
+backend:
+  type: comfyui           # comfyui | mock
+  api_url: http://localhost:8188
+  timeout: 600
+  width: 1024
+  height: 576
+
+# ComfyUI-specific checkpoint names
+comfyui:
+  sdxl_ckpt: juggernautXL_ragnarokBy.safetensors
+  svd_ckpt: svd_xt_1_1.safetensors
+
+# LoRA (optional)
+lora:
+  enabled: false
+  path: /path/to/your/lora.safetensors
+  strength: 0.6
+  backend: comfyui
+
+# Story engine
+paragraph_story:
+  max_paragraphs: 2
+  img2vid_duration_sec: 3
+  img2img_denoise_min: 0.38
+  img2img_denoise_max: 0.58
+  video_fps: 8
+  seed_base: 2222
+  rolling_window: true
+  require_morph: false
+
+# Audio
+audio:
+  enabled: true
+  sync_video_audio: false
+  cycle_seconds: 3
+  allow_ext: [wav, mp3, flac]
+
+# Finalizer
+finalizer:
+  enabled: true
+  interpolate_fps: 60
+  upscale_resolution: 1920x1080
+  scale_algo: bicubic
+  encoder_preference: [h264_nvenc, libx264]
+  quality:
+    crf: 16
 ```
-
-Available backends:
-
-| Backend | Image Gen | Video Gen | Cost | NVENC |
-|---------|-----------|-----------|------|-------|
-| mock | placeholder | placeholder | Free | Fallback |
-| comfyui | SDXL | SVD | Free* | Yes |
-| diffusers | SDXL | SVD | Free* | Fallback |
-| replicate | SDXL | SVD | $$$ | N/A |
-
-All backends try h264_nvenc first, fallback to libx264 automatically.
 
 ---
 
-## 6. ComfyUI Integration Details
+## 4. Story Engine
 
-### Validation
+The sliding story engine (`sliding_story_engine.py`) reads `worqspace/story.txt` and splits it into paragraphs separated by blank lines.
 
-Before generation, ComfyUI backend:
-1. Fetches `/object_info` to get available nodes and models
-2. Validates SDXL checkpoint exists in `CheckpointLoaderSimple` options
-3. Validates SVD checkpoint exists in `ImageOnlyCheckpointLoader` options
-4. Fails early with actionable error messages if models are missing
+### Windowing Schedule
 
-### Required ComfyUI Nodes
+For P paragraphs and max window size M:
 
-- `CheckpointLoaderSimple` (SDXL)
-- `ImageOnlyCheckpointLoader` (SVD)
-- `KSampler`
-- `CLIPTextEncode`
-- `EmptyLatentImage`
-- `VAEDecode`
-- `SVD_img2vid_Conditioning`
-- `VHS_VideoCombine` (from VideoHelperSuite)
-- `SaveImage`
-- `LoadImage`
+1. **Ramp-up** (cycles 1..M): Window grows from [1] to [1..M]
+2. **Sliding** (cycles M+1..P): Fixed window slides forward by one
+3. **Ramp-down** (after last paragraph): Window shrinks to single paragraph
 
-### Config
+Example with P=6, M=3:
+```
+Cycle 0: [1]
+Cycle 1: [1,2]
+Cycle 2: [1,2,3]    ← full window
+Cycle 3: [2,3,4]    ← sliding
+Cycle 4: [3,4,5]
+Cycle 5: [4,5,6]
+Cycle 6: [5,6]      ← ramp-down
+Cycle 7: [6]
+```
+
+### Per-Cycle Generation
+
+Each cycle:
+1. Build prompt from paragraph window text
+2. Append motion_prompt, style_hints, evolution_lines
+3. Generate keyframe (txt2img or img2img with reinject)
+4. Generate video from keyframe (img2vid)
+5. Extract last frame for next cycle
+6. Write briq JSON for reproducibility
+
+---
+
+## 5. Input Modes
+
+### Text Mode (default)
+- Cycle 0 uses txt2img to generate the first keyframe from story prompt
+- Subsequent cycles use img2img (reinject) from the last frame
+
+### Image Mode
+- Auto-detects the newest image in `worqspace/base_images/` (png/jpg/jpeg/webp)
+- Cycle 0 uses that image as the starting point for img2img
+- Subsequent cycles chain normally via reinject
+
+### Video Mode
+- Auto-detects the newest video in `worqspace/base_video/` (mp4/mov/mkv/webm)
+- Extracts first frame using ffmpeg, resized/padded to configured dimensions
+- Uses extracted frame as if it were a base image (image mode from cycle 0)
+- Subsequent cycles chain normally
+
+### Auto Mode
+Set `input.mode: auto` in config to auto-detect: video > image > text.
+
+---
+
+## 6. Reinject Mode
+
+Reinject is the default behavior (ON). It means:
+
+**With reinject (default):**
+- Every cycle runs img2img on the last frame from the previous cycle
+- Denoise is sampled uniformly from `[img2img_denoise_min, img2img_denoise_max]`
+- This produces a new keyframe that evolves the visual narrative
+- Video is then generated from the new keyframe
+
+**Without reinject (`--no-reinject` / `-R`):**
+- The last frame is used directly as conditioning for img2vid
+- No img2img keyframe step is run
+- Results in more stable but less evolving visuals
+
+---
+
+## 7. Backend Configuration
+
+### ComfyUI (Production)
 
 ```yaml
 backend:
   type: comfyui
   api_url: http://localhost:8188
   timeout: 600
-
-comfyui:
-  sdxl_ckpt: sd_xl_base_1.0.safetensors
-  svd_ckpt: svd_xt.safetensors
-```
-
----
-
-## 7. Configuration Reference
-
-### config.yaml (complete)
-
-```yaml
-input:
-  tasq_file: tasq.md                    # Creative intent file
-
-backend:
-  type: comfyui                          # mock, comfyui, diffusers, replicate
-  api_url: http://localhost:8188
-  timeout: 600
-
-comfyui:
-  sdxl_ckpt: sd_xl_base_1.0.safetensors # Must match ComfyUI's available models
-  svd_ckpt: svd_xt.safetensors
-
-generation:
-  clip_seconds: 4.0                      # Raw video duration
   width: 1024
   height: 576
-  cfg_scale: 6.0
-  steps: 30
-  sampler: euler_ancestral
-  video_frames: 24
-  video_fps: 8
-  motion_bucket_id: 127
-  noise_aug_strength: 0.02
-
-chaining:
-  denoise_strength: 0.4                  # 0.3-0.5 recommended
-
-looping:
-  enabled: false                         # false = passthrough (forward-evolving)
-  method: pingpong                       # pingpong or crossfade (when enabled)
-  output_fps: 8
-  output_codec: h264_nvenc               # Falls back to libx264
-  output_quality: 16
-
-finalizer:
-  enabled: true                          # Post-stitch interpolation + upscale
-  interpolate_fps: 60                    # Target frame rate
-  upscale_resolution: 1920x1080          # Target resolution
-  scale_algo: bicubic                    # Scaling algorithm
-  encoder_preference:                    # GPU-first with fallback
-    - h264_nvenc
-    - libx264
-  quality:
-    crf: 16                              # CRF / NVENC CQ (lower = better)
-
-prompt_drift:
-  quality_tags: [masterpiece, best quality, highly detailed]
-  negative_prompt: "blurry, low quality, watermark, deformed"
-
-cycle:
-  max_cycles: 0                          # 0 = unlimited
-  target_duration_hours: 2.0
-  delay_seconds: 2.0
-  max_retries: 3
-  continue_on_error: true
-
-llm:
-  provider: mock                         # mock, openai, google
-  model: gpt-4.1-mini
-  api_key_env: OPENAI_API_KEY
 ```
 
-### tasq.md (allowed fields)
+The ComfyUI backend supports:
+- `generate_image()` — SDXL txt2img and img2img workflows
+- `generate_video()` — SVD img2vid workflows
+- `generate_morph_video()` — Morph between two images (requires workflow)
+
+Custom workflows can be specified:
+```yaml
+backend:
+  workflow_image: path/to/custom_image.json
+  workflow_video: path/to/custom_video.json
+  workflow_morph: path/to/morph_i2v.json
+```
+
+### Mock (Testing)
 
 ```yaml
----
-title: My Visual Project          # Descriptive title
-mode: text                         # text or image
-backend: comfyui                   # Backend hint (optional)
-input_image: inputs/my_image.png   # For image mode
-seed: 42                           # Initial seed
----
-
-Your creative prompt text here...
-
-## Negative
-Things to avoid in generation...
+backend:
+  type: mock
 ```
 
-**Forbidden in tasq.md:** fps, duration, resolution, width, height, video_frames, clip_seconds, steps, cfg_scale, sampler, motion_bucket_id, noise_aug_strength, denoise_strength, output_fps, output_codec, output_quality, crossfade_frames.
+Generates placeholder images and videos using PIL/ffmpeg. No GPU required.
 
 ---
 
-## 8. CLI Reference
+## 8. LoRA Support
 
-```
-vfaq_cli.py [-w WORQSPACE] [-o OUTPUT] COMMAND [OPTIONS]
-
-Global options:
-  -w, --worqspace DIR    Worqspace directory (default: ./worqspace)
-  -o, --output DIR       Default output dir (default: ./qodeyard)
-
-Commands:
-  run       Run the visual generation pipeline
-  single    Run a single test cycle
-  status    Show pipeline status
-  backends  List available backends
-  assemble  Assemble per-cycle videos into final_output.mp4
-  clean     Clean output / state files
-
-run options:
-  -n, --name NAME        Project name
-  -c, --cycles N         Number of cycles
-  --hours H              Target hours of content
-  -b, --backend TYPE     Override backend
-  --delay SECONDS        Inter-cycle delay
-  --fresh                Ignore saved state
-
-single options:
-  -n, --name NAME        Project name
-  --cycle N              Cycle index (default: 0)
-  -b, --backend TYPE     Override backend
-
-assemble options:
-  -n, --name NAME        Project name
-  --preview              Preview mode (first N videos)
-  --preview-count N      Videos in preview (default: 10)
-
-clean options:
-  -n, --name NAME        Project name
-  --all                  Remove all artifacts (not just state)
-```
-
----
-
-## 9. Finalizer Logic (Stitching)
-
-The Finalizer stitching runs after all cycles complete:
-
-1. **Validation**: Checks for failed cycles — if any exist, finalization is aborted with a report identifying which cycles failed.
-
-2. **Collection**: Gathers all `cycleNNNN_video.mp4` files in chronological order from the project's `videos/` directory.
-
-3. **Stream-copy attempt**: First tries `ffmpeg -c copy` concatenation (fastest, no re-encoding). This works when all videos share identical codec, resolution, and fps.
-
-4. **Re-encode fallback**: If stream-copy fails, re-encodes using preferred codec (h264_nvenc) with libx264 fallback.
-
-5. **Output**: Produces `final_output.mp4` (base master) in the project root.
-
-6. **Logging**: Reports duration (seconds/minutes), fps, resolution, and file size.
-
----
-
-## 9.5. Prompt Bundle System (v0.0.7-alpha)
-
-### Overview
-
-The Prompt Bundle system allows users to split creative intent across multiple worqspace files, giving the LLM richer context and the user finer-grained control.
-
-### Files
-
-| File | Required | Purpose |
-|------|----------|---------|
-| `tasq.md` | YES | Base creative prompt + frontmatter |
-| `negative_prompt.md` | no | Negative prompt source of truth |
-| `style_hints.md` | no | Style constraints, evolution rules |
-| `motion_prompt.md` | no | Video motion intent, camera direction |
-
-### Loader: `vfaq/prompt_bundle.py`
-
-The `load_prompt_bundle()` function reads all files from worqspace and returns a `PromptBundle` dataclass. The InstruQtor caches this bundle and passes it to the LLM on every cycle.
-
-### Negative Prompt Precedence
-
-1. tasq.md frontmatter `negative_prompt:` (power-user override)
-2. `negative_prompt.md` file content
-3. `## Negative` section inside tasq.md body
-4. config.yaml `prompt_drift.negative_prompt`
-5. LLM-returned negative (only if source was config default)
-
-### Mechanical Separation
-
-The PromptBundle loader enforces that creative files do NOT contain mechanical parameters. If `tasq.md` frontmatter contains keys like `fps`, `resolution`, `steps`, etc., they are logged as warnings and IGNORED. These belong exclusively in `config.yaml`.
-
-### VisualBriq Fields
-
-Every briq JSON now contains these additional fields for auditability:
-
-- `style_hints` — contents of style_hints.md
-- `motion_prompt` — contents of motion_prompt.md
-- `video_prompt` — dedicated video prompt (LLM-generated or derived)
-- `motion_hint` — short LLM-generated motion guidance
-
-### Split Backend Config (v0.0.7-alpha)
-
-Use different backends for image and video generation:
+Optional LoRA injection for ComfyUI workflows:
 
 ```yaml
-backends:
-  image:
-    type: comfyui
-    api_url: http://image-gpu:8188
-  video:
-    type: comfyui
-    api_url: http://video-gpu:8188
+lora:
+  enabled: true
+  path: /absolute/path/to/your/lora.safetensors
+  strength: 0.6
+  backend: comfyui
 ```
 
-If `backends:` is present, it takes priority over legacy `backend:`. If `backends.video` is omitted, it defaults to the image config. The global `comfyui:` section is auto-merged for ckpt visibility.
+The LoRA loader is automatically injected into image generation workflows. Video generation workflows are not affected by LoRA.
+
+Requirements:
+- The `.safetensors` file must exist at the specified path
+- The path must be within a `models/loras` directory structure
+- Backend must be `comfyui`
+
+CLI overrides: `--lora-enabled`, `--no-lora`, `--lora-path`, `--lora-strength`
 
 ---
 
-## 10. Post-Stitch Finalizer (Interpolation + Upscale)
+## 9. Audio Support
 
-### Overview
+Audio is optional but fully supported as a final mux step.
 
-The post-stitch finalizer is a **permanent pipeline capability** that runs exactly once after stitching. It transforms the base master into a cinema-smooth deliverable.
+### Setup
 
-### Pipeline Position
+Place audio files in `worqspace/base_audio/` (supported: wav, mp3, flac). The pipeline auto-detects the newest file.
 
-```
-final_output.mp4 (8fps, 1024×576)
-  → STEP 1: minterpolate to 60fps
-  → STEP 2: bicubic upscale to 1920×1080
-  → STEP 3: encode with h264_nvenc or libx264
-final_60fps_1080p.mp4 (60fps, 1920×1080)
-```
+### Audio Sync
 
-### Non-Negotiable Rules
+When `audio.sync_video_audio: true` and an audio file is present:
+- Audio duration is determined via ffprobe
+- Cycle count is computed: `ceil(duration / cycle_seconds)`
+- Maximum overrun: 2.0 seconds (from ceil rounding)
 
-- ❌ MUST NOT run per cycle
-- ❌ MUST NOT run before final stitching
-- ❌ MUST NOT modify the raw stitched master
-- ❌ MUST NOT double-run if pipeline is resumed or re-entered
-- ✅ MUST run once, after final stitching, before pipeline exits
+### Audio Muxing
 
-### Encoder Detection
-
-The finalizer programmatically detects encoder availability:
-
-1. Attempts h264_nvenc with a minimal test encode (`nullsrc` → `/dev/null`)
-2. If NVENC fails (no GPU, driver issue, etc.), falls back to libx264
-3. If ALL encoders fail, the finalizer aborts with a clear error
-
-**NVENC args**: `-c:v h264_nvenc -cq 16 -preset p5 -pix_fmt yuv420p`
-**libx264 args**: `-c:v libx264 -crf 16 -preset slow -pix_fmt yuv420p`
-
-### Interpolation Details
-
-Uses FFmpeg's `minterpolate` filter with motion-compensated interpolation:
-
-```
-minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1
-```
-
-- `mi_mode=mci`: Motion Compensated Interpolation (best quality)
-- `mc_mode=aobmc`: Adaptive Overlapped Block Motion Compensation
-- `me_mode=bidir`: Bidirectional motion estimation
-- `vsbmc=1`: Variable-size block motion compensation
-
-This preserves glitch artifacts and AI-generated visual characteristics while creating smooth temporal transitions.
-
-### Idempotency
-
-If `final_60fps_1080p.mp4` already exists when the finalizer is invoked, it skips entirely. This prevents double-processing on pipeline resume or re-entry.
-
-### Quality Goals
-
-- Preserve glitch artifacts and AI generation aesthetics
-- Enhance temporal continuity (smooth frame transitions)
-- Avoid reverse-loop dependence (forward-evolving visuals)
-- Produce cinema-smooth, high-resolution deliverables
-- All post-processing is FFmpeg-based (no VRAM needed)
+After the finalizer completes (stitch → interpolate → upscale), the audio is muxed:
+- Video is trimmed to audio duration (no trailing silence)
+- Output: `final_video_60fps_1080p_audio.mp4`
 
 ---
 
-## 11. Failure Modes & Debugging
+## 10. Finalizer Pipeline
 
-### No videos generated
-1. Check backend: `python vfaq_cli.py backends`
-2. Verify FFmpeg: `ffmpeg -version`
-3. Check project videos/ directory for raw files
+Runs automatically after all cycles complete:
 
-### ComfyUI not reachable
-1. Start ComfyUI first: `python main.py --listen`
-2. Verify api_url in config.yaml
-3. Test: `curl http://localhost:8188/system_stats`
+1. **Stitch** — Concatenate all cycle videos → `final_video.mp4`
+2. **Interpolate** — Interpolate to 60fps via minterpolate → `final_video_60fps.mp4`
+3. **Upscale** — Scale to 1920×1080 → `final_video_60fps_1080p.mp4`
+4. **Audio Mux** — If audio present → `final_video_60fps_1080p_audio.mp4`
 
-### SDXL/SVD checkpoint not found
-1. Check ComfyUI models: `curl http://localhost:8188/object_info | jq '.CheckpointLoaderSimple.input.required.ckpt_name[0]'`
-2. Ensure checkpoint filenames in config.yaml match exactly
-3. Restart ComfyUI after adding models
+Encoder preference: `h264_nvenc` (GPU) → `libx264` (CPU fallback).
 
-### Finalization failed
-1. Check for failed cycles in factory_state.json
-2. Verify all cycle videos exist in videos/ directory
-3. Run manually: `python vfaq_cli.py assemble -n <project>`
+---
 
-### Post-stitch finalizer failed
-1. Check ffmpeg has minterpolate support: `ffmpeg -filters | grep minterpolate`
-2. Check encoder: `ffmpeg -encoders | grep h264` (need nvenc or x264)
-3. Check disk space — interpolated video can be large
-4. Check logs for specific step failure (interpolation vs upscale)
+## 11. Project Saving
 
-### State file issues
+After completion:
+- If `--name` was passed, uses that name
+- Otherwise, prompts: "Project name to save as: "
+- Name is sanitized for filesystem safety
+- If folder exists, auto-suffixed: `name-001`, `name-002`, etc.
+- `run/` is moved to `worqspace/saved-runs/<name>/`
+- Best deliverable is renamed to `<name>.mp4`
+
+---
+
+## 12. Prompt Files
+
+All prompt files live in `worqspace/`:
+
+| File | Purpose | Required |
+|------|---------|----------|
+| `story.txt` | Main narrative paragraphs | Yes |
+| `motion_prompt.md` | Camera/motion hints | No |
+| `style_hints.md` | Style modifiers | No |
+| `evolution_lines.md` | Per-cycle evolution guidance | No |
+| `negative_prompt.md` | Negative prompt | No |
+| `transient_tasq.md` | Per-run overrides | No |
+
+Prompt synthesis is deterministic (no LLM). The prompt for each cycle combines:
+- Paragraph window text (base prompt)
+- Style hints
+- Motion prompt
+- Evolution line for current cycle
+- Transient task (if present)
+
+---
+
+## 13. Briq State Tracking
+
+Every cycle writes JSON into `run/briqs/`:
+```json
+{
+  "cycle_index": 0,
+  "paragraph_window": [1, 2],
+  "paragraph_text": "...",
+  "prompt_final": "...",
+  "negative_prompt": "...",
+  "seed": 2222,
+  "denoise": 0.42,
+  "input_mode": "text",
+  "paths": {
+    "keyframe": "run/frames/keyframe_000.png",
+    "video": "run/videos/video_000.mp4",
+    "last_frame": "run/frames/lastframe_000.png"
+  },
+  "backend": "comfyui"
+}
+```
+
+The run-level state is tracked in `run/faqtory_state.json`:
+```json
+{
+  "run_id": "run_20250212_143000_abc123",
+  "version": "v0.5.6-beta",
+  "start_time": "...",
+  "end_time": "...",
+  "mode": "text",
+  "reinject": true,
+  "cycles_planned": 8,
+  "cycles_completed": 8,
+  "finalizer_outputs": {...},
+  "saved_to": "worqspace/saved-runs/my-project"
+}
+```
+
+---
+
+## 14. CLI Reference
+
 ```bash
-python vfaq_cli.py clean -n my-project         # Reset state only
-python vfaq_cli.py clean -n my-project --all    # Full reset
+# Default run (reinject ON)
+python vfaq_cli.py
+
+# Named project
+python vfaq_cli.py -n cyberpunk-set
+
+# Disable reinject
+python vfaq_cli.py --no-reinject
+python vfaq_cli.py -R
+
+# Override mode
+python vfaq_cli.py --mode image
+python vfaq_cli.py --mode video
+
+# Mock backend test
+python vfaq_cli.py -n test -b mock
+
+# Dry run (validate only)
+python vfaq_cli.py --dry-run
+
+# With LoRA
+python vfaq_cli.py --lora-enabled --lora-path /path/to/lora.safetensors --lora-strength 0.7
+
+# Check status
+python vfaq_cli.py status
+
+# List backends
+python vfaq_cli.py backends
 ```
 
-### Mechanical params in tasq.md
-If you see warnings about "forbidden keys", move those parameters from tasq.md to config.yaml. tasq.md is for creative intent only.
+---
+
+## 15. Crowd Control
+
+Crowd Control enables live audience prompt injection during streams. Viewers scan a QR code, land on a minimal web page, and submit prompts that get injected into the Visual FaQtory's next generation cycle.
+
+### Architecture
+
+The system has two sides:
+
+**Server** (FastAPI, runs on the visuals machine):
+- Serves the HTML prompt page at `{prefix}/`
+- Serves a QR code image at `{prefix}/qr.png`
+- Accepts prompt submissions at `{prefix}/api/submit`
+- Provides a token-protected pop endpoint at `{prefix}/api/next`
+- Health check at `{prefix}/api/health`
+- SQLite database for queue, rate limiting, and audit trail
+
+**Client** (built into the generator):
+- At the start of each cycle, the sliding story engine calls `/api/next`
+- If a crowd prompt exists, it's injected into the stacked prompt
+- If the server is down or unreachable, the engine continues in story mode (fail-open)
+- All errors are caught and logged — generation never hard-fails
+
+### Quick Start
+
+**1. Start the Crowd Control server on the visuals machine:**
+
+```bash
+python vfaq_cli.py crowd --token MY_SECRET_TOKEN --public-url http://192.168.1.50:8808/visuals
+```
+
+**2. In OBS, add a Browser Source or Image Source** pointing at:
+```
+http://<visuals-host>:8808/visuals/qr.png
+```
+
+**3. Enable crowd control in `worqspace/config.yaml`:**
+
+```yaml
+crowd_control:
+  enabled: true
+  base_url: "http://127.0.0.1:8808/visuals"
+  pop_token: "MY_SECRET_TOKEN"
+```
+
+**4. Run Visual FaQtory** — it will check the queue each cycle:
+
+```bash
+python vfaq_cli.py
+```
+
+### Configuration Reference
+
+All settings in `worqspace/config.yaml` under `crowd_control:`:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `false` | Master switch for crowd prompt injection |
+| `base_url` | `http://127.0.0.1:8808/visuals` | URL the generator uses to reach the server |
+| `pop_token` | `CHANGE_ME_LONG_RANDOM` | Bearer token for the `/api/next` endpoint |
+| `timeout_seconds` | `1.0` | HTTP timeout for generator→server calls |
+| `inject_label` | `Audience mutation request` | Label injected into the prompt |
+| `inject_mode` | `append` | `append` adds to story, `replace` overrides story |
+| `max_chars` | `300` | Maximum prompt length from viewers |
+| `rate_limit_seconds` | `600` | Seconds between submissions per IP |
+| `max_queue` | `100` | Maximum pending prompts in queue |
+| `badwords_path` | `worqspace/badwords.txt` | Path to bad word filter file |
+| `public_url` | `https://wonq.tv/visuals` | URL the QR code points to |
+| `prefix` | `/visuals` | URL path prefix for all routes |
+| `db_path` | `worqspace/crowdcontrol.sqlite3` | SQLite database file path |
+
+### Security & Abuse Controls
+
+- **Rate limiting**: 1 submission per IP per `rate_limit_seconds` (default 10 minutes)
+- **Bad word filtering**: Regex word-boundary matching from `worqspace/badwords.txt`
+- **Queue cap**: Rejects submissions when queue reaches `max_queue`
+- **Input sanitization**: Strips whitespace, collapses spaces, removes newlines, enforces max length
+- **Token protection**: `/api/next` requires Bearer token or query `?token=...`
+- **Proxy IP detection**: Reads `CF-Connecting-IP` → `X-Forwarded-For` → `request.client.host`
+- **Audit trail**: All submissions (accepted and rejected) are recorded in SQLite
+
+### Bad Words File
+
+Edit `worqspace/badwords.txt` to add or remove words/phrases. Format:
+- One word or phrase per line
+- Lines starting with `#` are comments
+- Blank lines are ignored
+- Matching is case-insensitive with word boundaries (e.g., "ass" won't match "class")
+
+### Fail-Open Behavior
+
+The generator is designed to never hard-fail due to crowd control issues:
+- If the server is unreachable → continues story mode
+- If the pop request times out → continues story mode
+- If the token is wrong → logs warning, continues story mode
+- If the crowd control module fails to import → logs warning, continues story mode
+- If the queue is empty → continues story mode normally
+
+### Reverse Proxy Setup (Future)
+
+The Crowd Control server is designed to sit behind a reverse proxy. The planned setup:
+
+```
+https://wonq.tv/visuals  →  http://<visuals-zt-ip>:8808/visuals
+```
+
+This will be handled by WoNQ.TV infra (Traefik/NGINX/Cloudflare) over ZeroTier or WireGuard. The server already supports:
+- Configurable `prefix` for path-based routing
+- Configurable `public_url` for QR code generation
+- Proxy IP extraction from `CF-Connecting-IP` and `X-Forwarded-For`
+
+No changes to the Crowd Control code are needed — just set `public_url` to the final public URL and configure the reverse proxy.
+
+### Prompt Injection Flow
+
+When a crowd prompt is served, it appears in the stacked prompt like this (append mode):
+
+```
+[paragraph 1 text]
+
+[paragraph 2 text]
+
+[AUDIENCE MUTATION REQUEST]
+cyberpunk jellyfish swimming through neon rain
+```
+
+In replace mode, the crowd prompt completely overrides the story prompt for that cycle.
+
+The briq JSON for each cycle records crowd control state:
+
+```json
+{
+  "crowd_control": {
+    "used": true,
+    "prompt_preview": "cyberpunk jellyfish swimming through neon rain",
+    "inject_mode": "append"
+  }
+}
+```
+
+### CLI Reference
+
+```bash
+python vfaq_cli.py crowd [OPTIONS]
+
+Options:
+  --host TEXT          Bind host (default: 0.0.0.0)
+  --port INT           Bind port (default: 8808)
+  --prefix TEXT        URL prefix (default: /visuals)
+  --public-url TEXT    Public URL for QR code
+  --db-path TEXT       SQLite database path
+  --token TEXT         Bearer token for /api/next
+  --badwords TEXT      Bad words filter file
+  --max-chars INT      Max prompt length (default: 300)
+  --rate-limit INT     Rate limit seconds per IP (default: 600)
+  --max-queue INT      Max queue length (default: 100)
+```
+
+Environment variables:
+- `VF_CROWD_TOKEN`: Alternative to `--token`
+- `VF_CROWD_ALLOW_NO_TOKEN=true`: Skip token requirement (dev only)
 
 ---
 
-## 12. Performance Notes
+## 16. Troubleshooting
 
-- Each cycle produces ~4-8s of video (configurable via `clip_seconds`)
-- Mock backend is instant (CPU only, for testing)
-- ComfyUI with SDXL+SVD: ~30-60s per cycle on modern GPU
-- NVENC encoding is 5-10x faster than libx264
-- Stream-copy finalization is near-instant regardless of video count
-- State is saved after each cycle — resume anytime
-- LLM calls add ~1-2s per cycle (optional, basic fallback is instant)
+**"Backend not fully available"**
+- Check ComfyUI is running at the configured `api_url`
+- Verify with: `curl http://localhost:8188/system_stats`
 
-### Post-Stitch Finalizer Performance
+**"Configured SDXL/SVD checkpoint not found"**
+- Place checkpoint files in ComfyUI's models directory
+- Restart ComfyUI or click "Reload models"
+- Update `comfyui.sdxl_ckpt` / `comfyui.svd_ckpt` in config
 
-- Interpolation (minterpolate) is CPU-intensive: ~5-15 minutes per minute of source video
-- Upscale is relatively fast: ~1-3 minutes per minute of interpolated video
-- NVENC encoding is 5-10x faster than libx264 for the upscale step
-- Total post-stitch time for a 2-hour source: ~30-60 minutes (varies by CPU)
+**"LoRA file not found"**
+- Ensure `lora.path` points to an existing `.safetensors` file
+- Path must be within a `models/loras` directory structure
 
-### Duration Estimation
+**No cycle videos generated**
+- Check story.txt has at least 2 paragraphs separated by blank lines
+- Run with `--dry-run` first to validate config
 
-| Target | Cycles (~4s each) | Est. Gen Time (GPU) | Post-Stitch |
-|--------|-------------------|---------------------|-------------|
-| 30 min | ~450 | ~4 hours | ~15-30 min |
-| 1 hour | ~900 | ~8 hours | ~30-60 min |
-| 2 hours | ~1800 | ~16 hours | ~60-120 min |
+**Audio mux fails**
+- Ensure ffmpeg and ffprobe are installed
+- Check audio file format (wav/mp3/flac)
+- Verify audio file is not corrupted
+
+**Finalizer encoder fails**
+- h264_nvenc requires NVIDIA GPU with NVENC support
+- Falls back to libx264 automatically
+- Ensure ffmpeg is compiled with the appropriate encoders
 
 ---
 
-*Documentation for QonQrete Visual FaQtory v0.0.7-alpha*
-*Part of the WoNQ Cinematic Universe*
+*Visual FaQtory v0.5.8-beta — Built by Ill Dynamics / WoNQ*

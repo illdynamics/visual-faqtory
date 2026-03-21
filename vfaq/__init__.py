@@ -1,119 +1,61 @@
 #!/usr/bin/env python3
 """
-QonQrete Visual FaQtory v0.0.7-alpha
+QonQrete Visual FaQtory v0.5.9-beta
 ═══════════════════════════════════════════════════════════════════════════════
 
 An automated, long-form AI visual generation pipeline for music, DJ sets,
 and experimental audiovisual projects.
 
-3-Agent Pipeline:
-  - InstruQtor: Creates VisualBriq from Prompt Bundle (LLM-powered)
-  - ConstruQtor: Calls backend to generate video
-  - InspeQtor: Loops video, suggests evolution (LLM-powered, innovative mode)
+Pipeline: paragraph_story (sliding window) + ComfyUI backend + Finalizer
 
-Prompt Bundle (v0.0.7):
-  - tasq.md, negative_prompt.md, style_hints.md, motion_prompt.md
-
-Finalizer:
-  - Stitches all per-cycle MP4s into a single final_output.mp4
-  - Post-stitch: interpolation to 60fps + upscale to 1080p
-
-Based on QonQrete's deterministic, state-driven architecture.
-
-Usage:
-    from vfaq import VisualFaQtory
-
-    faqtory = VisualFaQtory(worqspace_dir="./worqspace", output_dir="./qodeyard")
-    faqtory.run(cycles=100)
+v0.5.9-beta — Clean Base + Reinject Default + Run/Saved-Runs Refactor
+  - Reinject mode ON by default (img2img keyframe restoration every cycle)
+  - ComfyUI-only backend
+  - Output dir: ./run (current run), worqspace/saved-runs/<name> (archives)
+  - Working input modes: text / image / video
+  - Base audio muxing + optional auto-cycle count from audio duration
+  - Finalizer: stitch → interpolate 60fps → upscale 1080p → optional audio mux
+  - Deterministic prompt synthesis (no LLM dependency)
 
 License: AGPL-3.0 (same as QonQrete)
 """
 
-__version__ = "0.0.7-alpha"
+__version__ = "0.5.9-beta"
 __author__ = "Ill Dynamics / WoNQ"
 __license__ = "AGPL-3.0"
 
-# Core models
 from .visual_briq import (
-    VisualBriq,
-    GenerationSpec,
-    InputMode,
-    BriqStatus,
-    CycleState,
-    generate_briq_id
+    VisualBriq, GenerationSpec, InputMode, BriqStatus,
+    CycleState, generate_briq_id
 )
-
-# Prompt Bundle (v0.0.7)
 from .prompt_bundle import PromptBundle, load_prompt_bundle
-
-# Three agents
+from .prompt_synth import (
+    synthesize_prompt, synthesize_video_prompt,
+    load_evolution_lines, select_evolution_mutations, map_motion_to_bucket_id,
+)
+from .base_folders import select_base_files
 from .instruqtor import InstruQtor
 from .construqtor import ConstruQtor
 from .inspeqtor import InspeQtor
-
-# Finalizer
 from .finalizer import Finalizer
-
-# Main pipeline
-from .visual_faqtory import VisualFaQtory, quick_run
-
-# Backends
 from .backends import (
-    BackendType,
-    GenerationRequest,
-    GenerationResult,
-    GeneratorBackend,
-    MockBackend,
-    ComfyUIBackend,
-    DiffusersBackend,
-    ReplicateBackend,
-    SplitBackend,
-    create_backend,
-    create_split_backend,
-    list_available_backends
+    BackendType, GenerationRequest, GenerationResult,
+    GeneratorBackend, MockBackend, ComfyUIBackend,
+    create_backend, list_available_backends
 )
+from .sliding_story_engine import SlidingStoryConfig, run_sliding_story
 
 __all__ = [
-    # Version
-    "__version__",
-    "__author__",
-    "__license__",
-
-    # Core models
-    "VisualBriq",
-    "GenerationSpec",
-    "InputMode",
-    "BriqStatus",
-    "CycleState",
-    "generate_briq_id",
-
-    # Prompt Bundle
-    "PromptBundle",
-    "load_prompt_bundle",
-
-    # Agents
-    "InstruQtor",
-    "ConstruQtor",
-    "InspeQtor",
-
-    # Finalizer
-    "Finalizer",
-
-    # Pipeline
-    "VisualFaQtory",
-    "quick_run",
-
-    # Backends
-    "BackendType",
-    "GenerationRequest",
-    "GenerationResult",
-    "GeneratorBackend",
-    "MockBackend",
-    "ComfyUIBackend",
-    "DiffusersBackend",
-    "ReplicateBackend",
-    "SplitBackend",
-    "create_backend",
-    "create_split_backend",
-    "list_available_backends"
+    "__version__", "__author__", "__license__",
+    "VisualBriq", "GenerationSpec", "InputMode", "BriqStatus",
+    "CycleState", "generate_briq_id",
+    "PromptBundle", "load_prompt_bundle",
+    "synthesize_prompt", "synthesize_video_prompt",
+    "load_evolution_lines", "select_evolution_mutations", "map_motion_to_bucket_id",
+    "select_base_files",
+    "InstruQtor", "ConstruQtor", "InspeQtor", "Finalizer",
+    "BackendType", "GenerationRequest", "GenerationResult",
+    "GeneratorBackend", "MockBackend", "ComfyUIBackend",
+    "create_backend", "list_available_backends",
+    "SlidingStoryConfig", "run_sliding_story",
 ]

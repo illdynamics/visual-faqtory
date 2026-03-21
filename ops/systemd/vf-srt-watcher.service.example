@@ -1,0 +1,34 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# vf-srt-watcher.service.example
+# Visual FaQtory SRT A/B Watcher — systemd unit
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Install:
+#   cp ops/systemd/vf-srt-watcher.service.example /etc/systemd/system/vf-srt-watcher.service
+#   cp vf-obs-watcher-srt-endpoints.env.example /opt/visual-faqtory/vf-obs-watcher-srt-endpoints.env
+#   # Edit the .env file with your settings
+#   systemctl daemon-reload
+#   systemctl enable --now vf-srt-watcher
+#
+# Part of QonQrete Visual FaQtory v0.5.9-beta
+
+[Unit]
+Description=Visual FaQtory SRT A/B Playout Watcher
+After=network.target
+
+[Service]
+Type=simple
+User=vfaq
+Group=vfaq
+WorkingDirectory=/opt/visual-faqtory
+EnvironmentFile=/opt/visual-faqtory/vf-obs-watcher-srt-endpoints.env
+ExecStart=/opt/visual-faqtory/vf-obs-watcher-srt-endpoints.sh
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

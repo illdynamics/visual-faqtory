@@ -1,0 +1,42 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# vf-crowd-control.service.example
+# Visual FaQtory Crowd Control Server — systemd unit
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Install:
+#   cp ops/systemd/vf-crowd-control.service.example /etc/systemd/system/vf-crowd-control.service
+#   cp vf-crowd-control.env.example /opt/visual-faqtory/vf-crowd-control.env
+#   # Edit the .env file with your settings
+#   systemctl daemon-reload
+#   systemctl enable --now vf-crowd-control
+#
+# Part of QonQrete Visual FaQtory v0.5.9-beta
+
+[Unit]
+Description=Visual FaQtory Crowd Control Server
+After=network.target
+
+[Service]
+Type=simple
+User=vfaq
+Group=vfaq
+WorkingDirectory=/opt/visual-faqtory
+EnvironmentFile=/opt/visual-faqtory/vf-crowd-control.env
+ExecStart=/opt/visual-faqtory/.venv/bin/python vfaq_cli.py crowd \
+    --host ${VF_CROWD_HOST} \
+    --port ${VF_CROWD_PORT} \
+    --prefix ${VF_CROWD_PREFIX} \
+    --public-url ${VF_CROWD_PUBLIC_URL} \
+    --db-path ${VF_CROWD_DB_PATH} \
+    --token ${VF_CROWD_TOKEN} \
+    --badwords ${VF_CROWD_BADWORDS} \
+    --max-chars ${VF_CROWD_MAX_CHARS} \
+    --rate-limit ${VF_CROWD_RATE_LIMIT} \
+    --max-queue ${VF_CROWD_MAX_QUEUE}
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

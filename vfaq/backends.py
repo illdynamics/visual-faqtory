@@ -5,13 +5,11 @@ backends.py - AI Generation Backend Abstraction
 
 Pluggable backends for image and video generation:
   - MockBackend: Testing without GPU (fully functional)
-  - ComfyUIBackend: ComfyUI API (fully functional)
-  - DiffusersBackend: Local HuggingFace diffusers
-  - ReplicateBackend: Replicate.com API
+  - ComfyUIBackend: ComfyUI API (production backend)
 
 Each backend implements the GeneratorBackend interface.
 
-Part of QonQrete Visual FaQtory v0.0.7-alpha
+Part of QonQrete Visual FaQtory v0.5.9-beta
 """
 import os
 import io
@@ -35,8 +33,6 @@ class BackendType(Enum):
     """Available backend types."""
     MOCK = "mock"
     COMFYUI = "comfyui"
-    DIFFUSERS = "diffusers"
-    REPLICATE = "replicate"
 
 
 class InputMode(Enum):
@@ -62,15 +58,25 @@ class GenerationRequest:
     sampler: str = "euler_ancestral"
     denoise_strength: float = 0.4
     init_image_path: Optional[Path] = None
-    video_frames: int = 25
-    video_fps: int = 8
+    video_frames: Optional[int] = None
+    video_fps: float = 8.0
     motion_bucket_id: int = 127
     noise_aug_strength: float = 0.02
     output_dir: Path = field(default_factory=lambda: Path("./output"))
     atom_id: str = ""
-    # Prompt Bundle extensions (v0.0.7-alpha)
+    # Prompt Bundle extensions (v0.1.0-alpha)
     video_prompt: Optional[str] = None       # Dedicated prompt for video stage
     motion_prompt: Optional[str] = None      # Raw motion intent from motion_prompt.md
+    # Duration authority (v0.5.9-beta)
+    duration_seconds: Optional[float] = None  # Explicit duration in seconds (authoritative)
+
+    @property
+    def effective_frames(self) -> int:
+        """Derive frame count from duration_seconds × fps if duration is set,
+        otherwise fall back to video_frames."""
+        if self.duration_seconds is not None and self.duration_seconds > 0:
+            return max(1, int(self.duration_seconds * self.video_fps))
+        return self.video_frames if self.video_frames is not None else 25 # Fallback to 25
 
 
 @dataclass
@@ -87,6 +93,11 @@ class GenerationResult:
 # ═══════════════════════════════════════════════════════════════════════════════
 # BASE BACKEND INTERFACE
 # ═══════════════════════════════════════════════════════════════════════════════
+
+class FatalConfigError(RuntimeError):
+    """Raised when a configuration value is unsafe or invalid. Aborts the cycle."""
+    pass
+
 
 class GeneratorBackend(ABC):
     """Abstract interface for image/video generation backends."""
@@ -109,6 +120,26 @@ class GeneratorBackend(ABC):
     
     def supports_mode(self, mode: InputMode) -> bool:
         return True
+
+    def generate_morph_video(self, request: GenerationRequest, start_image_path: Path, end_image_path: Path) -> GenerationResult:
+        """
+        Generate a morphing video between two images.  Implementations must
+        produce a smooth transition from the start image to the end image
+        using the specified duration and frame rate in `request`.  The
+        default implementation does not support morph video and will raise
+        NotImplementedError.  Backends capable of morphing must override
+        this method.
+
+        Args:
+            request: GenerationRequest containing prompt and video settings.
+            start_image_path: Path to the starting image (last frame).
+            end_image_path: Path to the ending image (new keyframe).
+
+        Returns:
+            GenerationResult with video_path pointing to the generated
+            morph video.
+        """
+        return GenerationResult(success=False, error=f"Backend '{self.name}' does not support morph video generation")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -156,7 +187,30 @@ class MockBackend(GeneratorBackend):
             generation_time=time.time() - start_time,
             metadata={"backend": "mock", "frames": request.video_frames}
         )
-    
+
+    def generate_morph_video(self, request: GenerationRequest, start_image_path: Path, end_image_path: Path) -> GenerationResult:
+        """
+        Generate a morphing video between two images for the mock backend.
+
+        The mock backend cannot perform true latent interpolation.  To
+        approximate a morph, this implementation simply delegates to
+        ``generate_video`` using the end image.  The resulting video is a
+        static loop of the final keyframe for the requested duration.  No
+        external dependencies such as OpenCV are used.
+
+        Args:
+            request: GenerationRequest containing duration and fps.
+            start_image_path: Path to starting image (ignored for mock morph).
+            end_image_path: Path to ending image used as the source frame.
+
+        Returns:
+            GenerationResult with path to the mock morph video.
+        """
+        # The mock morph is implemented by reusing the standard video
+        # generator with the ending image as the source.  This produces a
+        # simple looping video of the keyframe without any interpolation.
+        return self.generate_video(request, end_image_path)
+
     def check_availability(self) -> tuple:
         return True, "Mock backend always available"
     
@@ -203,7 +257,7 @@ class MockBackend(GeneratorBackend):
         path.write_bytes(png_data)
     
     def _create_placeholder_video(self, path: Path, source_image: Path, request: GenerationRequest):
-        duration = request.video_frames / request.video_fps
+        duration = request.effective_frames / request.video_fps
         # Try h264_nvenc first (preferred), then libx264 fallback
         for codec in ['h264_nvenc', 'libx264']:
             try:
@@ -248,8 +302,89 @@ class ComfyUIBackend(GeneratorBackend):
         self.api_url = config.get('api_url', 'http://localhost:8188')
         self.workflow_image = config.get('workflow_image')
         self.workflow_video = config.get('workflow_video')
+        # Morph workflow for image-to-video morphing (two images)
+        self.workflow_morph = config.get('workflow_morph')
         self.timeout = config.get('timeout', 300)
         self._comfyui_object_info_cache: Optional[Dict] = None
+
+        # ── LoRA Configuration ──────────────────────────────────────────────
+        # LoRA support is optional but must be explicitly enabled via config.
+        # The lora configuration should live at the same level as the backend
+        # config passed into the backend factory.  It supports these keys:
+        #   enabled (bool): whether to apply the LoRA
+        #   name    (str): path to a .safetensors file on the local filesystem
+        #   strength (float): the weight applied to both model and clip
+        #   backend  (str): must equal "comfyui" when enabled
+        # If lora.enabled is True but backend != "comfyui", the run fails.
+        # If the file specified by lora.name does not exist, the run fails.
+        # This configuration is captured at construction time and persisted
+        # throughout the backend instance.  The LoRA loader will be injected
+        # into every workflow built by this backend.
+        self.lora_config = None
+        raw_lora_cfg = config.get('lora')
+        if raw_lora_cfg:
+            # Normalize booleans and defaults
+            enabled = bool(raw_lora_cfg.get('enabled', False))
+            backend = raw_lora_cfg.get('backend', 'comfyui')
+            if enabled:
+                # Enforce backend match
+                if backend.lower() != 'comfyui':
+                    raise FatalConfigError(
+                        f"LoRA backend mismatch: lora.backend={backend!r} but backend type is 'comfyui'"
+                    )
+                lora_path_str = raw_lora_cfg.get('path')
+                if not lora_path_str:
+                    raise FatalConfigError(
+                        "LoRA enabled but no lora.path specified in config"
+                    )
+                strength = float(raw_lora_cfg.get('strength', 1.0))
+
+                # --- LoRA Path Validation ---
+                lora_path = Path(lora_path_str).expanduser().resolve()
+
+                if not lora_path.exists():
+                    raise FatalConfigError(
+                        f"LoRA file not found: {lora_path}"
+                    )
+                if not lora_path.is_file():
+                    raise FatalConfigError(
+                        f"LoRA path is not a file: {lora_path}"
+                    )
+                if lora_path.suffix.lower() != '.safetensors':
+                    raise FatalConfigError(
+                        f"LoRA file must be a .safetensors file, got: {lora_path}"
+                    )
+
+                try:
+                    # Resolve ComfyUI-style relative name from absolute path
+                    lora_name = self._resolve_lora_name_from_path(lora_path)
+                    if not lora_name: # Handle case where it's directly in models/loras
+                         lora_name = lora_path.name
+                except FatalConfigError as e:
+                    raise e # Re-raise if our resolver fails
+                except Exception:
+                    # Generic fallback for unexpected Path parsing issues
+                    raise FatalConfigError(
+                        f"Could not resolve relative LoRA name from '{lora_path}'"
+                    )
+
+                # Store both the absolute path and the ComfyUI-style relative name
+                self.lora_config = {
+                    'enabled': True,
+                    'path': str(lora_path), # Store as string for Dict serialization
+                    'name': lora_name,
+                    'strength': strength
+                }
+
+        # Resolve default morph workflow path if not provided
+        if not self.workflow_morph:
+            try:
+                # Determine repo root (two levels up from this file)
+                repo_root = Path(__file__).resolve().parents[2]
+                default_morph = repo_root / 'worqspace' / 'workflows' / 'morph_i2v.json'
+                self.workflow_morph = str(default_morph)
+            except Exception:
+                self.workflow_morph = None
 
     def _get_comfyui_object_info(self) -> Dict:
         """
@@ -280,6 +415,16 @@ class ComfyUIBackend(GeneratorBackend):
         
         # Build workflow
         workflow = self._build_image_workflow(request)
+
+        # Inject LoRA if enabled in config
+        if self.lora_config and self.lora_config.get('enabled'):
+            try:
+                workflow = self._inject_lora(workflow)
+            except FatalConfigError:
+                # Bubble up fatal config errors
+                raise
+            except Exception as e:
+                return GenerationResult(success=False, error=f"Failed to apply LoRA: {e}")
         
         # Handle img2img if init image provided
         if request.init_image_path and request.init_image_path.exists():
@@ -307,12 +452,50 @@ class ComfyUIBackend(GeneratorBackend):
         
         # Build video workflow
         workflow = self._build_video_workflow(request, image_name)
+
+        # Note: LoRA injection is intentionally skipped for video workflows in this release.
+        # Video generation should not be influenced by LoRA.  If LoRA is enabled in the
+        # configuration, it will still apply to image generation, but not here.
+
+        # Log motion_prompt warning if workflow lacks text conditioning (Fix 4)
+        self._warn_motion_prompt_if_ignored(workflow, request)
         
         # Queue and wait
         result = self._queue_and_wait(workflow, request, is_video=True)
         result.generation_time = time.time() - start_time
         return result
-    
+
+    def generate_morph_video(self, request: GenerationRequest, start_image_path: Path, end_image_path: Path) -> GenerationResult:
+        """
+        Generate a morphing video between two images via the ComfyUI backend.
+
+        In the current release, ComfyUI does not natively support true
+        two‑image interpolation.  Rather than performing an unsupported
+        cross‑fade with OpenCV, this implementation delegates to the
+        existing ``generate_video`` method using the ending image as the
+        source.  The generated video will be a simple looping animation
+        of the new keyframe for the requested duration.  This keeps
+        all video rendering within the ComfyUI backend and avoids any
+        direct image manipulation or external multimedia dependencies.
+
+        Args:
+            request: GenerationRequest containing duration_seconds and video_fps.
+            start_image_path: Path to starting image (ignored for morph).
+            end_image_path: Path to ending image used as the source frame.
+
+        Returns:
+            GenerationResult indicating success and the path to the output mp4.
+        """
+        # Ensure morph workflow exists for validation.  The presence of
+        # worqspace/workflows/morph_i2v.json is treated as a contract that
+        # morphing is supported.  If missing, fail fast.
+        if not self.workflow_morph or not Path(self.workflow_morph).exists():
+            return GenerationResult(success=False, error=f"Morph workflow not found: {self.workflow_morph}")
+        # Generate a video from the end image.  LoRA injection is
+        # intentionally skipped in generate_video.  We reuse the same
+        # GenerationRequest so that duration and fps are honoured.
+        return self.generate_video(request, end_image_path)
+
     def check_availability(self) -> tuple:
         try:
             import requests
@@ -425,6 +608,9 @@ class ComfyUIBackend(GeneratorBackend):
                 f"Please place '{svd_ckpt}' in a ComfyUI checkpoint directory (e.g., ComfyUI/models/checkpoints/) "
                 f"and restart ComfyUI or click 'Reload models'."
             )
+        # Determine video_frames for workflow injection, preferring request.video_frames if set
+        workflow_video_frames = request.video_frames if request.video_frames is not None else request.effective_frames
+
         return {
             "1": {
                 "class_type": "ImageOnlyCheckpointLoader",
@@ -439,7 +625,7 @@ class ComfyUIBackend(GeneratorBackend):
                 "inputs": {
                     "width": request.width,
                     "height": request.height,
-                    "video_frames": request.video_frames,
+                    "video_frames": workflow_video_frames,
                     "motion_bucket_id": request.motion_bucket_id,
                     "fps": request.video_fps,
                     "augmentation_level": request.noise_aug_strength,
@@ -482,12 +668,20 @@ class ComfyUIBackend(GeneratorBackend):
         }
     
     def _customize_workflow(self, workflow: Dict, request: GenerationRequest, is_video: bool = False) -> Dict:
-        """Inject parameters into loaded workflow. For video, prefers video_prompt."""
+        """Inject parameters into loaded workflow using graph-based CLIP resolution."""
         # Determine which prompt to use for positive CLIP nodes
         effective_prompt = request.prompt
         if is_video and request.video_prompt:
             effective_prompt = request.video_prompt
             logger.info(f"[ComfyUI] Using video_prompt for video workflow injection")
+
+        # ── GRAPH-BASED PROMPT INJECTION (v0.1.1 — replaces heuristic) ──
+        workflow = self._inject_prompts_graph_based(
+            workflow, effective_prompt, request.negative_prompt
+        )
+
+        # Determine video_frames for workflow injection, preferring request.video_frames if set
+        workflow_video_frames = request.video_frames if request.video_frames is not None else request.effective_frames
 
         for node_id, node in workflow.items():
             inputs = node.get('inputs', {})
@@ -501,19 +695,258 @@ class ComfyUIBackend(GeneratorBackend):
                 if 'cfg' in inputs:
                     inputs['cfg'] = request.cfg_scale
             
-            # Inject prompt into CLIP nodes
-            if class_type == 'CLIPTextEncode':
-                if 'positive' in node_id.lower() or inputs.get('text', '').startswith('masterpiece'):
-                    inputs['text'] = effective_prompt
-                elif 'negative' in node_id.lower():
-                    inputs['text'] = request.negative_prompt
-            
             # Inject dimensions
             if class_type == 'EmptyLatentImage':
                 inputs['width'] = request.width
                 inputs['height'] = request.height
-        
+            
+            # Inject video parameters for video workflows
+            if is_video:
+                if class_type == 'SVD_img2vid_Conditioning':
+                    inputs['width'] = request.width
+                    inputs['height'] = request.height
+                    inputs['video_frames'] = workflow_video_frames
+                    inputs['fps'] = request.video_fps
+                    if 'motion_bucket_id' in inputs: # Preserve existing if custom workflow has it
+                        inputs['motion_bucket_id'] = request.motion_bucket_id
+                    if 'augmentation_level' in inputs: # Preserve existing
+                        inputs['augmentation_level'] = request.noise_aug_strength
+
+                elif class_type == 'VHS_VideoCombine':
+                    inputs['frame_rate'] = request.video_fps
+                    if 'filename_prefix' in inputs:
+                         inputs['filename_prefix'] = f"{request.atom_id}_video"
+
         return workflow
+
+    # ────────────────────────────────────────────────────────────────────────
+    # LoRA Injection Utilities
+    #
+    # The ComfyUI backend optionally supports injecting a LoRA loader into
+    # every workflow.  This is done by locating the checkpoint loader node
+    # (CheckpointLoaderSimple or ImageOnlyCheckpointLoader), inserting a
+    # LoraLoader node wired to its outputs and then redirecting all
+    # downstream references from the loader to the new LoRA node for model
+    # (index 0) and clip (index 1).  VAE outputs (index 2) remain untouched.
+    # If no loader is found, a FatalConfigError is raised.  If a LoRA
+    # already exists in the workflow, the original workflow is returned.
+
+    def _inject_lora(self, workflow: Dict) -> Dict:
+        """Inject a LoraLoader node into the workflow if enabled.
+
+        Args:
+            workflow: The ComfyUI workflow graph to modify.
+
+        Returns:
+            Modified workflow with a new LoraLoader node and updated
+            connections.  If a LoRA node is already present, the workflow
+            is returned unchanged.
+
+        Raises:
+            FatalConfigError: If no suitable loader node is found for
+                              injection.
+        """
+        # If no lora_config or not enabled, pass through
+        if not self.lora_config or not self.lora_config.get('enabled'):
+            return workflow
+
+        configured_lora_name = self.lora_config['name']
+        configured_strength = float(self.lora_config['strength'])
+
+        # Detect existing LoRA loader; if present validate configuration and wiring
+        for lora_id, node in workflow.items():
+            if node.get('class_type') == 'LoraLoader':
+                # Validate that the existing LoRA matches the configured name and strength
+                inputs = node.get('inputs', {})
+                # Validate name
+                existing_lora_name = inputs.get('lora_name')
+                if existing_lora_name != configured_lora_name:
+                    raise FatalConfigError(
+                        f"Existing LoRALoader uses '{existing_lora_name}', expected '{configured_lora_name}'"
+                    )
+                # Validate strength for model and clip
+                model_strength = float(inputs.get('strength_model', 0.0))
+                clip_strength = float(inputs.get('strength_clip', 0.0))
+                
+                if not (abs(model_strength - configured_strength) < 1e-6 and
+                        abs(clip_strength - configured_strength) < 1e-6):
+                    raise FatalConfigError(
+                        f"Existing LoRALoader strength mismatch: model={model_strength}, clip={clip_strength}, expected={configured_strength}"
+                    )
+                # Ensure the LoRA is wired into at least one downstream input for model or clip
+                used = False
+                for other_id, other_node in workflow.items():
+                    if other_id == lora_id:
+                        continue
+                    other_inputs = other_node.get('inputs', {})
+                    for key, val in other_inputs.items():
+                        if isinstance(val, list) and len(val) == 2:
+                            ref_id, idx = val
+                            # Check if it refers to the LoraLoader and its model (0) or clip (1) output
+                            if ref_id == lora_id and idx in (0, 1):
+                                used = True
+                                break
+                    if used:
+                        break
+                if not used:
+                    raise FatalConfigError("Existing LoRALoader is not wired into model/clip outputs")
+                
+                # If validation passes, return original workflow
+                return workflow
+
+        # Identify the base model loader node; only inject into CheckpointLoaderSimple
+        loader_id: Optional[str] = None
+        for nid, node in workflow.items():
+            ct = node.get('class_type')
+            # LoRA should only be injected after CheckpointLoaderSimple
+            if ct == 'CheckpointLoaderSimple':
+                loader_id = nid
+                break
+        if not loader_id:
+            raise FatalConfigError("No CheckpointLoaderSimple found for LoRA injection; cannot apply LoRA.")
+
+        # Compute new node id (string) by incrementing the highest numeric id
+        existing_ids: List[int] = []
+        for key in workflow.keys():
+            try:
+                existing_ids.append(int(key))
+            except ValueError:
+                continue
+        new_id_int = max(existing_ids) + 1 if existing_ids else 1
+        new_id = str(new_id_int)
+
+        # Build LoRA loader node
+        lora_node = {
+            'class_type': 'LoraLoader',
+            'inputs': {
+                'lora_name': configured_lora_name,
+                'strength_model': configured_strength,
+                'strength_clip': configured_strength,
+                # Connect to model (index 0) and clip (index 1) of loader
+                'model': [loader_id, 0],
+                'clip': [loader_id, 1],
+            }
+        }
+
+        # Insert LoRA node into workflow
+        workflow[new_id] = lora_node
+
+        # Redirect downstream connections referencing loader model (0) or clip (1)
+        for nid, node in workflow.items():
+            if nid == new_id:
+                continue
+            inputs = node.get('inputs', {})
+            for key, value in list(inputs.items()):
+                if isinstance(value, list) and len(value) == 2:
+                    ref_id, idx = value
+                    # Only update model (0) and clip (1) references that point to the original loader
+                    if ref_id == loader_id and idx in (0, 1):
+                        inputs[key] = [new_id, idx]
+        return workflow
+
+    @staticmethod
+    def _resolve_clip_nodes_from_graph(workflow: Dict) -> Dict[str, List[str]]:
+        """
+        Graph-based CLIP node resolution (v0.1.1).
+
+        Walk the workflow graph to find which CLIPTextEncode nodes are wired
+        to KSampler positive vs negative inputs.
+
+        Algorithm:
+          1. Find all KSampler nodes
+          2. For each KSampler, follow the 'positive' input reference → node id
+          3. If that node is CLIPTextEncode → it's a positive CLIP node
+          4. Same for 'negative' input → negative CLIP node
+
+        Returns:
+            {"positive": [node_id, ...], "negative": [node_id, ...]}
+        """
+        positive_ids: List[str] = []
+        negative_ids: List[str] = []
+
+        for node_id, node in workflow.items():
+            if node.get('class_type') != 'KSampler':
+                continue
+
+            inputs = node.get('inputs', {})
+
+            # Follow positive reference: ["node_id", output_slot]
+            pos_ref = inputs.get('positive')
+            if isinstance(pos_ref, list) and len(pos_ref) >= 1:
+                target_id = str(pos_ref[0])
+                target_node = workflow.get(target_id, {})
+                if target_node.get('class_type') == 'CLIPTextEncode':
+                    if target_id not in positive_ids:
+                        positive_ids.append(target_id)
+
+            # Follow negative reference
+            neg_ref = inputs.get('negative')
+            if isinstance(neg_ref, list) and len(neg_ref) >= 1:
+                target_id = str(neg_ref[0])
+                target_node = workflow.get(target_id, {})
+                if target_node.get('class_type') == 'CLIPTextEncode':
+                    if target_id not in negative_ids:
+                        negative_ids.append(target_id)
+
+        return {"positive": positive_ids, "negative": negative_ids}
+
+    def _inject_prompts_graph_based(
+        self, workflow: Dict, prompt: str, negative_prompt: str
+    ) -> Dict:
+        """
+        Inject prompt text into workflow using graph-based CLIP resolution.
+
+        Falls back to scanning all CLIPTextEncode nodes if no KSampler
+        references are found (e.g., unusual workflow topologies).
+        """
+        resolved = self._resolve_clip_nodes_from_graph(workflow)
+
+        injected_positive = False
+        injected_negative = False
+
+        # Inject positive prompt
+        for nid in resolved["positive"]:
+            workflow[nid]['inputs']['text'] = prompt
+            injected_positive = True
+            logger.debug(f"[ComfyUI] Graph-injected positive prompt into node {nid}")
+
+        # Inject negative prompt
+        for nid in resolved["negative"]:
+            workflow[nid]['inputs']['text'] = negative_prompt or "low quality, blurry"
+            injected_negative = True
+            logger.debug(f"[ComfyUI] Graph-injected negative prompt into node {nid}")
+
+        if injected_positive or injected_negative:
+            logger.info(
+                f"[ComfyUI] Graph-based CLIP injection: "
+                f"positive={resolved['positive']}, negative={resolved['negative']}"
+            )
+        else:
+            logger.warning(
+                "[ComfyUI] No CLIPTextEncode nodes wired to KSampler found. "
+                "Workflow may not support text conditioning."
+            )
+
+        return workflow
+
+    def _warn_motion_prompt_if_ignored(self, workflow: Dict, request: GenerationRequest) -> None:
+        """
+        Log a warning when motion_prompt is provided but the workflow has
+        no text conditioning path (no CLIPTextEncode wired to KSampler).
+
+        The motion_prompt is still preserved in the briq JSON for audit.
+        """
+        if not request.motion_prompt:
+            return
+
+        resolved = self._resolve_clip_nodes_from_graph(workflow)
+        has_text_conditioning = bool(resolved["positive"] or resolved["negative"])
+
+        if not has_text_conditioning:
+            logger.warning(
+                "WARNING: motion_prompt provided but ignored by backend "
+                "(workflow does not support text conditioning)"
+            )
     
     def _inject_init_image(self, workflow: Dict, image_name: str, denoise: float) -> Dict:
         """Convert txt2img workflow to img2img by adding LoadImage and VAEEncode nodes."""
@@ -561,6 +994,43 @@ class ComfyUIBackend(GeneratorBackend):
             if param_name in inputs.get(category, {}):
                 return True
         return False
+
+    @staticmethod
+    def _resolve_lora_name_from_path(lora_path: Path) -> str:
+        """
+        Resolves the ComfyUI-style relative LoRA name from an absolute filesystem path.
+        Assumes the path is validated to exist and end in .safetensors.
+        The lora_path must live under a directory structure ending in 'models/loras'.
+        Example: /x/ComfyUI/models/loras/psy/glitch/brainmelt.safetensors -> psy/glitch/brainmelt.safetensors
+        """
+        # Search for 'loras' in the path components, then 'models' immediately before it
+        parts = lora_path.parts
+        try:
+            # Iterate backwards to find the last 'loras' in the path, ensuring it's for models/loras
+            loras_idx = -1
+            for i in range(len(parts) -1, -1, -1):
+                if parts[i] == 'loras':
+                    if i > 0 and parts[i-1] == 'models':
+                        loras_idx = i
+                        break
+            
+            if loras_idx == -1:
+                raise ValueError("Path structure 'models/loras' not found within the LoRA path.")
+
+            # The relative path starts from the element AFTER 'loras'
+            relative_parts = parts[loras_idx + 1:]
+            
+            # If the lora file is directly in models/loras/, relative_parts will be empty
+            # In this case, the lora_name is just the file name
+            if not relative_parts:
+                return lora_path.name
+
+            return str(Path(*relative_parts))
+        except ValueError as e:
+            raise FatalConfigError(
+                f"LoRA path '{lora_path}' is not within a 'models/loras' directory structure: {e}"
+            )
+
     
     def _upload_image(self, image_path: Path) -> Optional[str]:
         """Upload image to ComfyUI and return the filename."""
@@ -732,365 +1202,29 @@ class ComfyUIBackend(GeneratorBackend):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# DIFFUSERS BACKEND (Local GPU)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class DiffusersBackend(GeneratorBackend):
-    """Local HuggingFace diffusers backend."""
-    
-    def __init__(self, config: Dict[str, Any]):
-        super().__init__(config)
-        self.name = "diffusers"
-        self.model_id = config.get('model_id', 'stabilityai/stable-diffusion-xl-base-1.0')
-        self.video_model_id = config.get('video_model_id', 'stabilityai/stable-video-diffusion-img2vid')
-        self.device = config.get('device', 'cuda')
-        self.dtype = config.get('dtype', 'float16')
-        self._image_pipe = None
-        self._video_pipe = None
-    
-    def generate_image(self, request: GenerationRequest) -> GenerationResult:
-        start_time = time.time()
-        
-        try:
-            pipe = self._get_image_pipeline()
-            import torch
-            from PIL import Image
-            
-            generator = torch.Generator(device=self.device).manual_seed(request.seed)
-            
-            if request.init_image_path and request.init_image_path.exists():
-                # img2img
-                init_image = Image.open(request.init_image_path).convert('RGB')
-                init_image = init_image.resize((request.width, request.height))
-                image = pipe(
-                    prompt=request.prompt,
-                    negative_prompt=request.negative_prompt,
-                    image=init_image,
-                    strength=request.denoise_strength,
-                    num_inference_steps=request.steps,
-                    guidance_scale=request.cfg_scale,
-                    generator=generator
-                ).images[0]
-            else:
-                # txt2img
-                image = pipe(
-                    prompt=request.prompt,
-                    negative_prompt=request.negative_prompt,
-                    width=request.width,
-                    height=request.height,
-                    num_inference_steps=request.steps,
-                    guidance_scale=request.cfg_scale,
-                    generator=generator
-                ).images[0]
-            
-            output_path = request.output_dir / f"{request.atom_id}_image.png"
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            image.save(output_path)
-            
-            return GenerationResult(
-                success=True,
-                image_path=output_path,
-                generation_time=time.time() - start_time
-            )
-        except Exception as e:
-            return GenerationResult(success=False, error=str(e))
-    
-    def generate_video(self, request: GenerationRequest, source_image: Path) -> GenerationResult:
-        start_time = time.time()
-        
-        try:
-            pipe = self._get_video_pipeline()
-            import torch
-            from PIL import Image
-            
-            image = Image.open(source_image).convert('RGB').resize((request.width, request.height))
-            generator = torch.Generator(device=self.device).manual_seed(request.seed)
-            
-            frames = pipe(
-                image,
-                num_frames=request.video_frames,
-                motion_bucket_id=request.motion_bucket_id,
-                noise_aug_strength=request.noise_aug_strength,
-                generator=generator
-            ).frames[0]
-            
-            output_path = request.output_dir / f"{request.atom_id}_video.mp4"
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            self._frames_to_video(frames, output_path, request.video_fps)
-            
-            return GenerationResult(
-                success=True,
-                video_path=output_path,
-                generation_time=time.time() - start_time
-            )
-        except Exception as e:
-            return GenerationResult(success=False, error=str(e))
-    
-    def check_availability(self) -> tuple:
-        try:
-            import torch
-            if not torch.cuda.is_available():
-                return False, "CUDA not available"
-            import diffusers
-            return True, f"Diffusers {diffusers.__version__} with CUDA"
-        except ImportError as e:
-            return False, f"Missing package: {e}"
-    
-    def _get_image_pipeline(self):
-        if self._image_pipe is None:
-            import torch
-            from diffusers import AutoPipelineForText2Image
-            dtype = torch.float16 if self.dtype == 'float16' else torch.float32
-            self._image_pipe = AutoPipelineForText2Image.from_pretrained(
-                self.model_id, torch_dtype=dtype, variant="fp16"
-            ).to(self.device)
-        return self._image_pipe
-    
-    def _get_video_pipeline(self):
-        if self._video_pipe is None:
-            import torch
-            from diffusers import StableVideoDiffusionPipeline
-            dtype = torch.float16 if self.dtype == 'float16' else torch.float32
-            self._video_pipe = StableVideoDiffusionPipeline.from_pretrained(
-                self.video_model_id, torch_dtype=dtype, variant="fp16"
-            ).to(self.device)
-        return self._video_pipe
-    
-    def _frames_to_video(self, frames: List, output_path: Path, fps: int):
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmpdir:
-            for i, frame in enumerate(frames):
-                frame.save(f"{tmpdir}/frame_{i:04d}.png")
-            # Try h264_nvenc first, then libx264 fallback
-            for codec in ['h264_nvenc', 'libx264']:
-                result = subprocess.run([
-                    'ffmpeg', '-y', '-framerate', str(fps),
-                    '-i', f'{tmpdir}/frame_%04d.png',
-                    '-c:v', codec, '-pix_fmt', 'yuv420p',
-                    str(output_path)
-                ], capture_output=True, text=True)
-                if result.returncode == 0:
-                    return
-            raise RuntimeError("All video encoders failed")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# REPLICATE BACKEND (Cloud API)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class ReplicateBackend(GeneratorBackend):
-    """Replicate.com API backend."""
-    
-    def __init__(self, config: Dict[str, Any]):
-        super().__init__(config)
-        self.name = "replicate"
-        self.api_token = config.get('api_token') or os.environ.get('REPLICATE_API_TOKEN')
-        self.image_model = config.get('image_model', 'stability-ai/sdxl')
-        self.video_model = config.get('video_model', 'stability-ai/stable-video-diffusion')
-    
-    def generate_image(self, request: GenerationRequest) -> GenerationResult:
-        try:
-            import replicate
-        except ImportError:
-            return GenerationResult(success=False, error="replicate package not installed")
-        
-        start_time = time.time()
-        try:
-            input_params = {
-                "prompt": request.prompt,
-                "negative_prompt": request.negative_prompt,
-                "width": request.width,
-                "height": request.height,
-                "num_inference_steps": request.steps,
-                "guidance_scale": request.cfg_scale,
-                "seed": request.seed
-            }
-            
-            if request.init_image_path and request.init_image_path.exists():
-                input_params["image"] = open(request.init_image_path, 'rb')
-                input_params["prompt_strength"] = request.denoise_strength
-            
-            output = replicate.run(self.image_model, input=input_params)
-            
-            output_path = request.output_dir / f"{request.atom_id}_image.png"
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            urllib.request.urlretrieve(output[0], output_path)
-            
-            return GenerationResult(
-                success=True,
-                image_path=output_path,
-                generation_time=time.time() - start_time
-            )
-        except Exception as e:
-            return GenerationResult(success=False, error=str(e))
-    
-    def generate_video(self, request: GenerationRequest, source_image: Path) -> GenerationResult:
-        try:
-            import replicate
-        except ImportError:
-            return GenerationResult(success=False, error="replicate package not installed")
-        
-        start_time = time.time()
-        try:
-            with open(source_image, 'rb') as f:
-                output = replicate.run(
-                    self.video_model,
-                    input={
-                        "input_image": f,
-                        "motion_bucket_id": request.motion_bucket_id,
-                        "fps": request.video_fps,
-                        "seed": request.seed
-                    }
-                )
-            
-            output_path = request.output_dir / f"{request.atom_id}_video.mp4"
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            urllib.request.urlretrieve(output, output_path)
-            
-            return GenerationResult(
-                success=True,
-                video_path=output_path,
-                generation_time=time.time() - start_time
-            )
-        except Exception as e:
-            return GenerationResult(success=False, error=str(e))
-    
-    def check_availability(self) -> tuple:
-        if not self.api_token:
-            return False, "REPLICATE_API_TOKEN not set"
-        try:
-            import replicate
-            return True, "Replicate API available"
-        except ImportError:
-            return False, "replicate package not installed"
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SPLIT BACKEND (v0.0.7-alpha — separate image and video backends)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class SplitBackend(GeneratorBackend):
-    """
-    Wrapper that delegates image and video generation to separate backends.
-
-    Config (v0.0.7-alpha):
-      backends:
-        image:
-          type: comfyui
-          ...
-        video:
-          type: comfyui
-          ...
-
-    Falls back to single backend if both are the same instance.
-    """
-
-    def __init__(self, image_backend: GeneratorBackend, video_backend: GeneratorBackend):
-        # No config needed at wrapper level
-        super().__init__({})
-        self.name = f"split({image_backend.name}/{video_backend.name})"
-        self.image_backend = image_backend
-        self.video_backend = video_backend
-
-    def generate_image(self, request: GenerationRequest) -> GenerationResult:
-        """Delegate image generation to image backend."""
-        return self.image_backend.generate_image(request)
-
-    def generate_video(self, request: GenerationRequest, source_image: Path) -> GenerationResult:
-        """Delegate video generation to video backend."""
-        return self.video_backend.generate_video(request, source_image)
-
-    def check_availability(self) -> tuple:
-        """Combined status of both backends."""
-        img_ok, img_msg = self.image_backend.check_availability()
-        vid_ok, vid_msg = self.video_backend.check_availability()
-
-        if img_ok and vid_ok:
-            return True, f"Image: {img_msg} | Video: {vid_msg}"
-        elif img_ok:
-            return False, f"Image OK ({img_msg}) but Video failed: {vid_msg}"
-        elif vid_ok:
-            return False, f"Video OK ({vid_msg}) but Image failed: {img_msg}"
-        else:
-            return False, f"Both failed — Image: {img_msg} | Video: {vid_msg}"
-
-    def supports_mode(self, mode: InputMode) -> bool:
-        return self.image_backend.supports_mode(mode) and self.video_backend.supports_mode(mode)
-
-
-def create_split_backend(config: Dict[str, Any]) -> GeneratorBackend:
-    """
-    Create backend(s) from config, supporting both legacy single-backend
-    and new split-backend configurations.
-
-    Legacy (v0.0.6):
-      backend:
-        type: comfyui
-
-    New (v0.0.7):
-      backends:
-        image:
-          type: comfyui
-        video:
-          type: comfyui
-
-    Falls back gracefully: if 'backends' not present, uses legacy 'backend'.
-    """
-    backends_config = config.get('backends')
-
-    if backends_config:
-        # New split-backend config
-        image_cfg = backends_config.get('image', {})
-        video_cfg = backends_config.get('video', image_cfg)  # default to image if video not set
-
-        # Merge top-level comfyui section into each backend for ckpt visibility
-        comfyui_global = config.get('comfyui', {})
-        if comfyui_global:
-            if 'comfyui' not in image_cfg:
-                image_cfg = {**image_cfg, 'comfyui': comfyui_global}
-            if 'comfyui' not in video_cfg:
-                video_cfg = {**video_cfg, 'comfyui': comfyui_global}
-
-        image_backend = create_backend(image_cfg)
-        video_backend = create_backend(video_cfg)
-
-        logger.info(
-            f"[SplitBackend] Image: {image_backend.name}, Video: {video_backend.name}"
-        )
-        return SplitBackend(image_backend, video_backend)
-
-    # Legacy single-backend config
-    backend_config = config.get('backend', {'type': 'mock'})
-    return create_backend(backend_config)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# FACTORY
+# FACTORY FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def create_backend(config: Dict[str, Any]) -> GeneratorBackend:
     """Factory function to create backend."""
     backend_type = config.get('type', 'mock').lower()
-    
+
     backends = {
         'mock': MockBackend,
         'comfyui': ComfyUIBackend,
-        'diffusers': DiffusersBackend,
-        'replicate': ReplicateBackend,
     }
-    
+
     if backend_type not in backends:
         logger.warning(f"Unknown backend '{backend_type}', using mock")
         backend_type = 'mock'
-    
+
     return backends[backend_type](config)
 
 
 def list_available_backends() -> Dict[str, tuple]:
     """Check all backend availability."""
     results = {}
-    for name, cls in [('mock', MockBackend), ('comfyui', ComfyUIBackend), 
-                      ('diffusers', DiffusersBackend), ('replicate', ReplicateBackend)]:
+    for name, cls in [('mock', MockBackend), ('comfyui', ComfyUIBackend)]:
         try:
             backend = cls({})
             results[name] = backend.check_availability()
@@ -1101,7 +1235,7 @@ def list_available_backends() -> Dict[str, tuple]:
 
 __all__ = [
     'BackendType', 'InputMode', 'GenerationRequest', 'GenerationResult',
-    'GeneratorBackend', 'MockBackend', 'ComfyUIBackend', 'DiffusersBackend',
-    'ReplicateBackend', 'SplitBackend',
-    'create_backend', 'create_split_backend', 'list_available_backends'
+    'FatalConfigError',
+    'GeneratorBackend', 'MockBackend', 'ComfyUIBackend',
+    'create_backend', 'list_available_backends'
 ]

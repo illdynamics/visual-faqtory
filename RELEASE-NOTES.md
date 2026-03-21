@@ -1,212 +1,199 @@
-# QonQrete Visual FaQtory - Release Notes
+# Release Notes — Visual FaQtory v0.5.8-beta
 
-## v0.0.7-alpha
+**"Crowd Replace Visual Reset & OBS Prewarm Swap"**
 
-### New Features
-
-- **Prompt Bundle System** — Full creative prompt loading from multiple worqspace files:
-  - `tasq.md` — Base creative prompt (existing, still required)
-  - `negative_prompt.md` — Dedicated negative prompt source of truth (optional, NEW)
-  - `style_hints.md` — Style constraints and evolution direction (optional, NEW)
-  - `motion_prompt.md` — Video motion intent and camera direction (optional, NEW)
-  - All files are loaded via the new `PromptBundle` loader (`vfaq/prompt_bundle.py`)
-  - Backward-compatible: missing files fall back to existing behavior
-
-- **LLM-Aware Prompt Refinement** — InstruQtor and InspeQtor LLM templates now receive full bundle context (style hints, motion prompt, negative prompt) so the model can make informed creative decisions. LLM output fields extended to include `motion_hint`, `video_prompt`, and refined `negative_prompt`.
-
-- **video_prompt Support** — Dedicated prompt for the video generation stage, separate from the image prompt. Useful for text-conditioned video workflows (e.g. custom ComfyUI workflows that accept text prompts for video). SVD default workflow ignores it gracefully — no regression.
-
-- **Split Backend Configuration** — Use different backends for image and video generation:
-  ```yaml
-  backends:
-    image:
-      type: comfyui
-      api_url: http://image-gpu:8188
-    video:
-      type: comfyui
-      api_url: http://video-gpu:8188
-  ```
-  - `SplitBackend` wrapper delegates image/video to separate backend instances
-  - Legacy single `backend:` config still works unchanged
-  - ComfyUI global `comfyui:` section (ckpt paths) auto-merged into each split backend
-
-- **VisualBriq Extended** — New fields for full creative auditability:
-  - `style_hints`, `motion_prompt`, `video_prompt`, `motion_hint`
-  - Backward-compatible: old briq JSONs load with empty defaults
-
-### Improvements
-
-- **Negative Prompt Precedence** — Clear, documented priority chain:
-  1. tasq.md frontmatter `negative_prompt:` (power-user override)
-  2. `negative_prompt.md` file
-  3. `## Negative` section inside tasq.md body
-  4. config.yaml `prompt_drift.negative_prompt`
-  5. LLM-refined negative (only if source was config default)
-
-- **Mechanical Separation Enforced** — FORBIDDEN_CREATIVE_KEYS validation in PromptBundle loader prevents mechanical parameters (fps, resolution, steps, etc.) from leaking into creative files.
-
-- **ComfyUI video_prompt Injection** — Custom video workflows now receive `video_prompt` via CLIPTextEncode injection when available.
-
-- **InspeQtor Style/Motion Context** — Evolution suggestions now respect style_hints boundaries and consider motion_prompt for continuity.
-
-- **Worqspace Template Files** — Drop-in templates for all prompt bundle files with documentation headers.
-
-- **Example Files** — `prompt_bundle_guide.md` and `split_backend_config.yaml` added to `worqspace/examples/`.
-
-### Quality Goals
-- Backward compatible with v0.0.6-alpha configs and briq JSONs
-- Deterministic fallback when LLM is disabled
-- No silent failure: every file load logged
-- All new fields persisted in briq JSON for full auditability
-
-### Output Contract (unchanged)
-At pipeline completion:
-- `final_output.mp4` — raw stitched base master (8fps, 1024×576) — NEVER MODIFIED
-- `final_60fps_1080p.mp4` — final deliverable (60fps, 1920×1080, CRF 16)
+Release Date: 2026-02-27
 
 ---
 
-## v0.0.6-alpha
+## Summary
 
-### New Features
-
-- **Post-Stitch Finalizer: Interpolation → Upscale** — The BANGER upgrade. After all cycles are stitched into `final_output.mp4` (base master), a new finalizer stage runs ONCE to produce `final_60fps_1080p.mp4`:
-  - **Step 1 — Interpolation to 60fps** using FFmpeg `minterpolate` (MCI mode with bidirectional motion estimation). Converts the base 8fps video into cinema-smooth 60fps with temporal continuity.
-  - **Step 2 — Upscale to 1920×1080** using bicubic scaling. Takes the interpolated output from 1024×576 to full HD.
-  - **Encoding** — h264_nvenc (GPU) first with programmatic detection, automatic libx264 (CPU) fallback. CRF 16 / NVENC CQ 16 for high quality. `yuv420p` pixel format enforced.
-  - Runs **exactly once**, never per-cycle, never before stitching, never on re-entry if deliverable already exists (idempotent).
-  - Preserves the raw stitched master — `final_output.mp4` is never modified.
-  - Configurable via `finalizer:` section in config.yaml with enable/disable flag.
-
-- **Looping Disable (Passthrough Mode)** — InspeQtor now respects `looping.enabled: false` in config.yaml. When disabled, raw cycle videos are re-encoded with consistent codec/fps settings but WITHOUT creating a reverse (pingpong) loop. This produces forward-evolving visuals that look like continuous progression rather than small looping segments. Combined with the post-stitch interpolation, this creates smooth, cinematic visual flows.
-
-- **Finalizer Config Section** — New `finalizer:` block in config.yaml:
-  ```yaml
-  finalizer:
-    enabled: true
-    interpolate_fps: 60
-    upscale_resolution: 1920x1080
-    scale_algo: bicubic
-    encoder_preference:
-      - h264_nvenc
-      - libx264
-    quality:
-      crf: 16
-  ```
-
-### Improvements
-
-- **GPU Encoder Detection** — Post-stitch finalizer programmatically tests h264_nvenc availability before use, with automatic libx264 fallback. Detection is based on actual ffmpeg return codes, not assumptions.
-- **Verbose Finalizer Logging** — Full logging of encoder detection, interpolation progress, upscale progress, file sizes, and video metadata for both base master and deliverable.
-- **Idempotent Finalizer** — If `final_60fps_1080p.mp4` already exists, the post-stitch finalizer skips entirely. Safe for pipeline resume/re-entry.
-- **Pipeline Summary Enhanced** — Final pipeline output now shows both stitched master path and final deliverable path.
-- **All version strings bumped** — Every file, module docstring, banner, and config reference updated to v0.0.6-alpha.
-
-### Quality Goals
-
-The post-stitch finalizer is designed to:
-- Preserve glitch artifacts and AI generation characteristics
-- Enhance temporal continuity (smooth frame transitions)
-- Avoid reverse-loop dependence (forward-evolving visuals)
-- Produce cinema-smooth, high-resolution deliverables
-- Avoid VRAM-heavy generation paths (all post-processing is FFmpeg-based)
-
-### Output Contract
-
-At pipeline completion, the following artifacts exist:
-- `final_output.mp4` — raw stitched base master (8fps, 1024×576)
-- `final_60fps_1080p.mp4` — final deliverable (60fps, 1920×1080, CRF 16)
-
-No other steps may modify these files.
+v0.5.8-beta delivers two long-awaited fixes: Crowd Control `replace` mode now performs a full visual reset (TEXT2IMG, no last-frame bleed) for every cycle it fires — including cycle 1 — and OBS A/B switching has been upgraded to a prewarm swap that eliminates the ~1s black flash by warming up the incoming source behind the current one before cutting over.
 
 ---
 
-## v0.0.5-alpha
+## What's New in v0.5.8-beta
 
-### Bug Fixes
-- **Fixed IMAGE mode cascade failure** — When cycle 0 failed or when cycle N>0 had no previous briq, IMAGE mode would crash because `base_image_path` was never set from `input_image` in the fallback path. The InstruQtor now correctly propagates `input_image` from tasq.md in all IMAGE mode scenarios, including cycle N>0 fallback.
-- **Fixed ComfyUI execution error detection** — `_queue_and_wait` now checks the ComfyUI history `status.status_str` field for execution errors before attempting output download. Previously, a failed execution would appear as "Could not download outputs" with no actionable detail. Now surfaces the actual ComfyUI error.
-- **Fixed VHS_VideoCombine `save_output` detection** — The `save_output` and `pingpong` parameters were only checked in VHS `required` inputs, but VHS places these in `optional`/`hidden`. New `_vhs_has_input()` helper checks all input categories. Without `save_output=True`, VHS could write to temp storage causing download failures.
-- **Fixed VHS output format handling** — `_queue_and_wait` now checks for `'video'` (singular) key in addition to `'videos'` and `'gifs'`, covering all known VHS_VideoCombine output formats. Also handles dict (single-video) vs list normalization.
-- **Improved ComfyUI download diagnostics** — Download failures now log the actual HTTP status, response body, and output node structure. URL parameters use proper `urllib.parse.urlencode` instead of raw f-string interpolation. Empty downloads are caught and reported.
+### Crowd Control — Force TEXT2IMG on Replace Mode (`vfaq/sliding_story_engine.py`)
 
-### Improvements
-- **Verbose output structure logging** — When ComfyUI generates outputs but no media is downloadable, the error now includes the actual node output keys so you can see exactly what ComfyUI produced.
-- **All version strings bumped** — Every file, module docstring, banner, and config reference updated to v0.0.5-alpha.
+- **`crowd_replace_active` flag** — computed per-cycle: `True` when a crowd entry was consumed _and_ `inject_mode == "replace"`.
+- **`effective_reinject`** — `config.reinject AND NOT crowd_replace_active`. Crowd replace overrides the global reinject setting for that cycle only; subsequent cycles resume normal chaining from the newly generated last frame.
+- **`effective_require_morph`** — `config.require_morph AND effective_reinject`. Morph requires both chain endpoints; a replace-reset cycle has no valid start image so morph is suppressed for that cycle.
+- **Cycle 1 override** — even if `base_image_path` is set, a crowd replace active in cycle 1 bypasses the base image and runs TEXT2IMG, preventing visual bleed from the base image into a wholly different crowd prompt.
+- **Cycle > 1 override** — a new `crowd_replace_active` branch runs `GenerationRequest(mode=InputMode.TEXT, init_image_path=None)` and omits `start_image` from `briq_data["paths"]`, proving no last-frame was used.
+- **Loud logging** — every visual reset emits `[SlidingStory] Crowd REPLACE visual reset: TEXT2IMG keyframe (reinject overridden)`.
+- **Briq telemetry** — `briq_data["crowd_control"]` now includes `visual_reset: bool` and `effective_reinject: bool` for post-run inspection.
 
-### Verified Working
-- **TEXT mode**: text → image → video ✓
-- **IMAGE mode**: input_image → video (cycle 0 and fallback) ✓  
-- **VIDEO mode**: previous cycle video → frame extract → img2img → video ✓ (requires successful cycle 0)
+### OBS A/B — Prewarm Swap (`obs-swap.py`)
 
----
+- **Full rewrite** of `obs-swap.py` implementing the prewarm sequence:
+  1. Z-order: current source on top (`index 0`), incoming target below (`index 1`).
+  2. Enable target while hidden behind current.
+  3. Force media reload via `trigger_media_input_action(RESTART)` — eliminates the need for "Close file when inactive".
+  4. Fallback: if RESTART fails, toggles `local_file` setting to force re-open.
+  5. Poll `get_media_input_status` until `media_state == OBS_MEDIA_STATE_PLAYING` or `cursor > 0`.
+  6. Disable current — cut is instantaneous, frame already buffered.
+  7. Reorder target to `index 0` so the next swap works in reverse.
+- **Fail-open**: timeout or WebSocket errors log a warning and proceed — the swap still completes.
+- **Configurable prewarm** via `--prewarm SECONDS` CLI arg or `OBS_PREWARM_SEC` env var (default `0.8`).
+- **OBS settings overridable** via env: `OBS_HOST`, `OBS_PORT`, `OBS_PASSWORD`, `OBS_SCENE`.
 
-## v0.0.4-alpha
+### OBS Watcher — Prewarm Config (`vf-obs-watcher-same-machine.sh`)
 
-### New Features
-- **Project-based runs** — Use `-n <project-name>` to store all artifacts in `worqspace/qonstructions/<project-name>/` with structured layout (briqs/, images/, videos/, factory_state.json, config_snapshot.yaml, final_output.mp4)
-- **Qonstructions directory** — Persistent archival storage for named projects under worqspace/
-- **Interactive save** — Unnamed runs prompt user to save as named project after completion
-- **Final video stitching (Finalizer)** — Automatic concatenation of all per-cycle MP4s into `final_output.mp4` after pipeline completion, with stream-copy preferred and re-encode fallback
-- **NVENC encoding support** — h264_nvenc preferred throughout pipeline with automatic libx264 fallback
-- **VERSION file** — Canonical version tracking at repo root
-
-### Improvements
-- **Strict config/tasq separation** — Mechanical parameters (fps, duration, resolution, steps, etc.) in tasq.md are now ignored with clear warnings. config.yaml is the single source of truth for technical parameters.
-- **Formalized mode handling** — TEXT mode: text→image→video. IMAGE mode: requires input_image, skips image gen. VIDEO mode: only valid for cycle N>0, requires previous cycle output. Pipeline fails fast with clear errors on invalid inputs.
-- **ComfyUI model validation** — SDXL and SVD checkpoint availability verified via /object_info before generation, with actionable error messages
-- **Pipeline never hard-resets visual identity** — Cycle N>0 always chains from previous output unless explicitly instructed otherwise
-- **Documentation overhaul** — Complete rewrite of DOCUMENTATION.md with architecture diagram, all 11 sections, and accurate code-matching content
-- **README update** — Reflects v0.0.4-alpha features, project-based workflow, and strict separation rules
-
-### Bug Fixes
-- Fixed duplicate backend initialization in VisualFaQtory.__init__
-- Fixed InspeQtor using wrong LLM client reference
-- Added missing `cycle_video_paths` and `failed_cycles` tracking to CycleState
-- Ensured briq save creates parent directories
-
-### Breaking Changes
-- Output directory structure changed: videos and raw files now go to `videos/` subdirectory within projects
-- tasq.md mechanical parameters (fps, duration, resolution, width, height, etc.) are no longer respected — move to config.yaml
-- CLI `-n`/`--name` flag now controls project naming (previously used for assemble output filename)
+- Passes `--prewarm "$OBS_PREWARM_SEC"` to `obs-swap.py` on every swap call.
+- Exports `OBS_PREWARM_SEC` with default `0.8` — override before launching the watcher or set in your environment.
+- Watcher startup log now prints the active prewarm value.
+- **User note**: "Close file when inactive" can be disabled on both OBS sources — media reload is now WebSocket-driven.
 
 ---
 
-## v0.0.3-alpha
+## What's New in v0.5.7-beta (Previous)
 
-### Features
-- Fully wired pipeline: config.yaml + tasq.md actually used
-- 3-Agent architecture: InstruQtor → ConstruQtor → InspeQtor
-- Video chaining: each cycle uses previous output
-- Frame extraction: video mode extracts frame for img2img
-- FFmpeg looping: pingpong creates seamless 16s loops
-- Evolution suggestions: InspeQtor suggests next cycle variations
-- State persistence: resume interrupted runs
-- Temp file cleanup: auto-removes intermediate files
-- CLI delay option: `--delay 0` for fast testing
-- ComfyUI backend fully functional with SDXL + SVD workflows
-- ComfyUI object_info validation for SVD checkpoints
-- LLM integration (OpenAI, Google Gemini, Mock)
-- Mock backend with Pillow-generated placeholder images
-- Diffusers and Replicate backends (partial)
-- Quick test script (quick_test.py)
-- Example tasq.md files for all three modes
+**"Strict Timing Normalization & Per-Cycle Interpolation"**
 
----
+Release Date: 2026-02-21
 
-## v0.0.2-alpha
+### Strict Timing Normalization
 
-### Features
-- Initial 3-agent pipeline architecture
-- VisualBriq data model
-- Basic backend abstraction
-- ComfyUI workflow generation
-- FFmpeg video processing
+### Strict Timing Normalization
+- Implemented a `TimingResolver` module (`vfaq/timing.py`) to normalize video frames, FPS, and duration.
+- Configurable `timing_authority` (`frames`, `duration`, or `fps`) dictates which variable is treated as truth, adjusting others accordingly.
+- All timing calculations now occur *before* generation, ensuring deterministic video length.
+
+### Per-Cycle Interpolation
+- Optional feature to interpolate each raw SVD video to a higher FPS immediately after generation.
+- Interpolated videos are stored in a new `run/videos_interpolated/` directory.
+- The final stitch process uses these interpolated videos (with fallback to raw if interpolation fails for a cycle).
+- Configurable `finalizer.per_cycle_interpolation` and `finalizer.interpolate_fps` settings in `worqspace/config.yaml`.
 
 ---
 
-## v0.0.1-alpha
+## What's New in v0.5.6-beta
 
-### Features
-- Initial proof of concept
-- Basic pipeline structure
+### Reinject Mode Default ON
+- Reinject is now the default behavior — every cycle produces an img2img keyframe from the previous cycle's last frame
+- CLI: `--reinject` / `-r` (default ON), `--no-reinject` / `-R` to disable
+- Denoise is sampled from configurable range per cycle
+
+### Directory Refactor
+- **`qodeyard/`** → **`run/`** — current run artifacts live here
+- **`worqspace/qonstructions/`** → **`worqspace/saved-runs/`** — archived runs
+- Clean subdirectory structure: `run/videos/`, `run/frames/`, `run/briqs/`, `run/meta/`
+- Run inputs (config, story, prompts, base files) are copied into `run/meta/` at start
+
+### Project Saving
+- After completion, prompts for project name (or accepts `-n` flag)
+- Moves `run/` → `worqspace/saved-runs/<project-name>/`
+- Auto-suffix (`-001`, `-002`) if name already exists
+- Deliverable renamed to `<project-name>.mp4` in saved run root
+
+### Finalizer Working Again
+- Complete pipeline: stitch → interpolate 60fps → upscale 1080p → audio mux
+- Output naming: `final_video.mp4` → `final_video_60fps.mp4` → `final_video_60fps_1080p.mp4` → `final_video_60fps_1080p_audio.mp4`
+- GPU encoding (h264_nvenc) with CPU fallback (libx264)
+
+### Audio Mux + Sync
+- Base audio auto-detected from `worqspace/base_audio/`
+- `audio.sync_video_audio: true` auto-computes cycle count from audio duration
+- Audio duration via ffprobe (no librosa dependency)
+- Video trimmed to audio duration on mux
+
+### ComfyUI-Only Backend
+- Single production backend: ComfyUI API
+- Mock backend retained for testing only
+- LoRA injection support with automatic workflow wiring
+
+### Working Input Modes
+- **text**: txt2img → img2vid
+- **image**: base image from `worqspace/base_images/` → img2img → img2vid
+- **video**: frame extraction from `worqspace/base_video/` → img2img → img2vid
+- **auto**: auto-detect mode (video > image > text)
+
+### Dry Run Mode
+- `--dry-run` validates config, resolves inputs, writes state JSON, exits before generation
+- Useful for testing config changes without burning GPU time
+
+### Briq State Tracking
+- Every cycle writes JSON to `run/briqs/cycle_NNN.json`
+- Includes: paragraph window, prompt, seed, denoise, paths, backend info
+- Run-level state in `run/faqtory_state.json`
+
+---
+
+## What Was Removed
+
+The following experimental features from v0.5.5 and earlier have been fully removed (code, config, docs, CLI flags):
+
+- **Deforum stack** (agents, camera presets, init_pool, deformer)
+- **Audio reactivity** (librosa, sounddevice, beat detection)
+- **Turbo mode** (live frame generation engine)
+- **Crowd mode** (prompt server, queue, rate limiting)
+- **Stream / Longcat mode** (autoregressive video continuation)
+- **Video2Video** (true v2v latent pipeline)
+- **Psycho Mode** (entropy injection system)
+- **OSC output** (TouchDesigner integration)
+- **MIDI sidecar**
+- **Replicate backend** (API-based generation)
+- **Diffusers backend** (local HuggingFace pipeline)
+- **Story Engine** (beat-based, non-paragraph story engine)
+- **Init Pool** (motion-aware init image pools)
+- **Color Stability Controller** (per-frame color correction)
+- **Split backend** (separate image/video backends)
+- **Prompt drift tags**
+- **LLM/OpenAI/Gemini integration**
+
+---
+
+## Files Changed (v0.5.8-beta)
+
+### New Files
+- `vfaq/timing.py` — New module for timing normalization.
+
+### Modified Files
+- `vfaq/sliding_story_engine.py` — Integrated TimingResolver, Finalizer instantiation, and per-cycle interpolation logic. Removed `_concat_videos_ffmpeg`.
+- `vfaq/backends.py` — `GenerationRequest` updated to include `Optional[video_frames]` and `float` for `video_fps`. `MockBackend._create_placeholder_video` updated to use `effective_frames`.
+- `vfaq/finalizer.py` — Added `per_cycle_interpolation` flag, `videos_interpolated_dir`, and `_interpolate_cycle` method.
+- `worqspace/config.yaml` — Added `finalizer.per_cycle_interpolation` setting.
+- `README.md` — Updated Features, Directory Structure, and Finalizer Output Naming sections.
+- `RELEASE-NOTES.md` — Updated with v0.5.8-beta release notes.
+
+### Preserved Files (already clean from v0.5.5)
+- `vfaq/visual_faqtory.py` — Main orchestrator (was already v0.5.6-ready)
+- `vfaq/prompt_synth.py` — Deterministic prompt synthesis
+- `vfaq/prompt_bundle.py` — Prompt file loading
+- `vfaq/instruqtor.py` — Instruction preparation agent
+- `vfaq/inspeqtor.py` — Quality inspection agent
+- `vfaq/base_folders.py` — Input file detection
+- `vfaq/image_metrics.py` — Image quality metrics
+
+---
+
+## Acceptance Tests
+
+1. ✅ `python vfaq_cli.py --help` works; no removed features mentioned
+2. ✅ `python -c "import vfaq"` does not crash; no broken imports
+3. ✅ ConstruQtor instantiation works without `get_stream_config` error
+4. ✅ `python vfaq_cli.py --dry-run -b mock` creates `./run` structure
+5. ✅ No dead imports or missing modules in any Python file
+6. ✅ `requirements.txt` matches actual imports
+7. ✅ No removed features referenced in code, config, or docs
+
+---
+
+## CLI Examples
+
+```bash
+python vfaq_cli.py                              # Default run (reinject ON)
+python vfaq_cli.py -n my-project                # Named project
+python vfaq_cli.py --no-reinject                # Disable reinject
+python vfaq_cli.py -R                           # Disable reinject (short)
+python vfaq_cli.py --mode image                 # Image mode
+python vfaq_cli.py --mode video                 # Video mode
+python vfaq_cli.py -n test -b mock --dry-run    # Mock dry run
+python vfaq_cli.py status                       # Check status
+python vfaq_cli.py backends                     # List backends
+```
+
+---
+
+*Visual FaQtory v0.5.8-beta — Built by Ill Dynamics / WoNQ*

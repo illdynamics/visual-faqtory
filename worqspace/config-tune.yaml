@@ -58,7 +58,7 @@ comfyui:
 lora:
   enabled: false
   path: /x/ComfyUI/models/loras/pytorch_lora_weights.safetensors
-  strength: 1.0
+  strength: 0.4
   backend: comfyui
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -76,11 +76,11 @@ lora:
 paragraph_story:
   max_paragraphs: 2                 # Maximum paragraphs per window
   img2vid_duration_sec: 2           # Duration of each transition video (sec)
-  img2img_denoise_min: 0.44         # Minimum denoise for img2img evolution
-  img2img_denoise_max: 0.55         # Maximum denoise for img2img evolution
-  video_fps: 8                      # FPS for cycle videos
-  seed_base: 9999                   # Base seed for deterministic runs
-  rolling_window: false
+  img2img_denoise_min: 0.22         # Minimum denoise for img2img evolution
+  img2img_denoise_max: 0.33         # Maximum denoise for img2img evolution
+  video_fps: 4                      # FPS for cycle videos
+  seed_base: 2768                   # Base seed for deterministic runs
+  rolling_window: true
   require_morph: false              # Set true to use morph workflow
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -103,6 +103,37 @@ audio:
     - flac
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# CROWD CONTROL (Live Audience Prompt Injection)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Enables live viewers to submit visual prompts via QR code during streams.
+# The crowd-control FastAPI server runs on the visuals machine and serves:
+#   - A web page where viewers type prompts
+#   - A QR code image for OBS overlay
+#   - A queue API consumed by the generator
+#
+# Disabled by default. Enable + set pop_token + run: python vfaq_cli.py crowd
+#
+# Later, WoNQ.TV infra will reverse proxy:
+#   https://wonq.tv/visuals → http://<visuals-zt-ip>:8808/visuals
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+crowd_control:
+  enabled: false                        # Set true to activate crowd prompt injection
+  base_url: "http://10.20.30.22:8000/visuals"  # Where the generator reaches the server
+  pop_token: "Setyup34Setyup34Setyup34Setyup34"    # Bearer token for /api/next endpoint
+  timeout_seconds: 1.0                  # HTTP timeout for generator→server calls
+  inject_label: "Audience mutation request"  # Label injected into the prompt
+  inject_mode: "replace"                 # append = add to story | replace = override story
+  max_chars: 300                        # Max prompt length from viewers
+  rate_limit_seconds: 180               # 1 submission per IP per this many seconds
+  max_queue: 100                        # Max pending prompts in queue
+  badwords_path: "worqspace/badwords.txt"  # Bad word filter file
+  public_url: "https://wonq.tv/visuals" # URL the QR code points to (override for local dev)
+  prefix: "/visuals"                    # URL prefix (must match reverse proxy path)
+  db_path: "worqspace/crowdcontrol.sqlite3"  # SQLite database path
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # POST-STITCH FINALIZER (Interpolation + Upscale + Audio Mux)
 # ═══════════════════════════════════════════════════════════════════════════════
 #
@@ -123,4 +154,4 @@ finalizer:
   upscale_resolution: 1280x720
   scale_algo: bicubic
   encoder_preference: auto # auto | h264_nvenc | libx264
-  quality: 11 # CRF value for per-cycle encoding (0-51, lower is higher quality)
+  quality: 16 # CRF value for per-cycle encoding (0-51, lower is higher quality)
