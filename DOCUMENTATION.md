@@ -1,4 +1,4 @@
-# Visual FaQtory v0.5.8-beta — Documentation
+# Visual FaQtory v0.6.0-beta — Documentation
 
 ## Table of Contents
 
@@ -18,6 +18,7 @@
 14. [CLI Reference](#14-cli-reference)
 15. [Crowd Control](#15-crowd-control)
 16. [Troubleshooting](#16-troubleshooting)
+17. [Veo Backend (NEW)](#17-veo-backend)
 
 ---
 
@@ -624,3 +625,127 @@ Environment variables:
 ---
 
 *Visual FaQtory v0.5.8-beta — Built by Ill Dynamics / WoNQ*
+
+---
+
+## 17. Veo Backend
+
+### 17.1 Overview
+
+The Veo backend generates video directly from text or images via Google's Veo API. No local GPU is required — video generation runs on Google's infrastructure.
+
+**Key differences from ComfyUI:**
+- No separate txt2img → img2img → img2vid pipeline. Veo generates video directly.
+- Duration is controlled natively (5-8 seconds per clip).
+- The `first_last_frame` mode replaces ComfyUI's morph workflow.
+- Output is downloaded immediately after generation completes.
+
+### 17.2 Authentication
+
+Veo supports two providers:
+
+**Gemini Developer API** (`provider: gemini`):
+Set one of these environment variables (checked in order):
+1. `GOOGLE_API_KEY`
+2. `GEMINI_API_KEY`
+3. `GOOGLE_API_TOKEN` (legacy alias)
+4. `GEMINI_API_TOKEN` (legacy alias)
+
+**Vertex AI** (`provider: vertex`):
+Uses Application Default Credentials (ADC). Set:
+- `GOOGLE_CLOUD_PROJECT` — your GCP project ID
+- `GOOGLE_CLOUD_LOCATION` — region (default: `us-central1`)
+
+### 17.3 Configuration
+
+Copy `worqspace/config-veo.yaml` to `worqspace/config.yaml` for a complete Veo configuration template.
+
+Key settings in the `veo:` section:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `provider` | `gemini` | `gemini` or `vertex` |
+| `model` | `veo-3.1-generate-preview` | Primary Veo model ID |
+| `fast_model` | `veo-3.1-fast-generate-preview` | Fast model (lower quality) |
+| `prefer_fast_model` | `false` | Use fast model by default |
+| `duration_seconds` | `8` | Clip duration (5-8, clamped) |
+| `aspect_ratio` | `16:9` | Output aspect ratio |
+| `resolution` | `720p` | Output resolution |
+| `generate_audio` | `false` | Generate audio track |
+| `enable_last_frame` | `true` | Enable first_last_frame mode |
+| `enable_extension` | `false` | Enable video extension |
+| `enable_loop_closure` | `false` | Generate loop-closure clip |
+| `poll_interval` | `10.0` | Seconds between operation polls |
+| `poll_timeout` | `600.0` | Max wait for generation |
+| `max_retries` | `3` | Retry attempts for transient errors |
+
+### 17.4 Generation Modes
+
+**text_to_video** — Generate video purely from a text prompt. Used for cycle 1 in text input mode.
+
+**image_to_video** — Generate video from a starting image + optional prompt. Used for subsequent cycles (previous last frame → next clip).
+
+**first_last_frame** — Interpolation between a start frame and an end frame. Replaces the ComfyUI morph workflow. Enabled when `require_morph: true` and `enable_last_frame: true`.
+
+**extend_video** — Extend a previously Veo-generated clip. Requires `enable_extension: true` and a valid prior Veo clip.
+
+### 17.5 Story Engine Routing
+
+When `backend.type: veo`, the sliding story engine routes cycles differently:
+
+```
+Cycle 1 (no base image): text_to_video
+Cycle 1 (base image):    image_to_video (base image as anchor)
+Cycle n>1:               image_to_video (previous last frame)
+Cycle n>1 (morph=true):  first_last_frame (last frame → new keyframe)
+Loop closure cycle:      first_last_frame (final last frame → cycle-1 anchor)
+```
+
+All existing ComfyUI pipeline logic is untouched — the Veo routing is a clean separate code path.
+
+### 17.6 Loop Closure
+
+When `enable_loop_closure: true` in the `veo:` config, the engine generates one additional clip after all story cycles complete. This clip uses `first_last_frame` mode to transition from the final video's last frame back to the first cycle's anchor frame, creating a seamless loop.
+
+This is ideal for DJ sets and live visuals where the video needs to loop continuously.
+
+### 17.7 Retry Behavior
+
+The Veo backend classifies failures into three categories:
+- **Auth errors** (invalid key, permission denied) — immediate fail, no retry
+- **Parameter errors** (unsupported combination) — immediate fail, no retry
+- **Transient errors** (quota, timeout, server error) — exponential backoff with jitter, up to `max_retries` attempts
+
+### 17.8 Observability
+
+Every Veo generation logs:
+- Backend, provider, model
+- Auth mode (api_key or adc)
+- Request mode (text_to_video, image_to_video, etc.)
+- Duration, aspect ratio, resolution
+- Seed
+- Output path
+- Operation polling status
+- Generation latency
+- Retry/backoff events
+
+Per-cycle briq JSON includes `veo_mode` and `veo_metadata` fields for full reproducibility.
+
+### 17.9 Quick Start
+
+```bash
+# Install Veo dependency
+pip install google-genai
+
+# Set API key
+export GEMINI_API_TOKEN=your-api-key-here
+
+# Use Veo config
+cp worqspace/config-veo.yaml worqspace/config.yaml
+
+# Write story
+echo "A cyberpunk cityscape at night, neon lights reflecting off wet streets" > worqspace/story.txt
+
+# Run
+python vfaq_cli.py -n veo-test
+```

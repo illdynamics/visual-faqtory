@@ -1,3 +1,112 @@
+# Release Notes — Visual FaQtory v0.6.0-beta
+
+**"Veo Backend — Cloud Video Generation Goes Brrrr"**
+
+Release Date: 2026-03-22
+
+---
+
+## Summary
+
+v0.6.0-beta introduces a first-class Google Veo video generation backend alongside the existing ComfyUI backend. Veo generates video directly from text or images via the Google Gen AI SDK — no local GPU required. The sliding story engine has been made backend-aware, with Veo-specific cycle routing that maps the existing pipeline semantics to Veo's native text_to_video, image_to_video, and first_last_frame modes. A new loop closure feature enables seamless looping video output. All existing ComfyUI functionality is fully preserved.
+
+---
+
+## What's New in v0.6.0-beta
+
+### Google Veo Backend (`vfaq/veo_backend.py`)
+
+- **Full Veo integration** via `google-genai` SDK with support for:
+  - `text_to_video` — generate video purely from text prompt
+  - `image_to_video` — generate video from a starting image + prompt
+  - `first_last_frame` — interpolation between start and end frames (replaces morph)
+  - `extend_video` — extend a previously Veo-generated clip
+- **Dual provider support:**
+  - `provider: gemini` — Google Gemini Developer API (API key auth)
+  - `provider: vertex` — Google Vertex AI (ADC / service account auth)
+- **Auth resolution chain** for gemini: `GOOGLE_API_KEY` → `GEMINI_API_KEY` → `GOOGLE_API_TOKEN` → `GEMINI_API_TOKEN`
+- **Retry with exponential backoff + jitter** for transient failures, with clear separation of auth/quota/parameter errors
+- **Operation polling** with configurable interval and timeout
+- **Immediate file download** — video bytes saved to disk as soon as generation completes
+- **Per-generation observability logging:** provider, model, mode, duration, auth mode, seed, latency, attempt count
+
+### Backend Abstraction (`vfaq/backends.py`)
+
+- **`BackendType.VEO`** enum added
+- **`GenerationRequest` extended** with Veo-specific fields:
+  - `veo_mode`, `last_frame_path`, `input_video_path`
+  - `reference_image_paths[]`, `reference_image_types[]`
+  - `generate_audio`, `aspect_ratio`, `resolution`, `person_generation`
+  - `continuity_strength`, `mutation_strength`, `identity_lock_strength`, `loop_closure_strength`
+  - `sample_count`, `storage_uri`, `compression_quality`
+- All new fields are **backward-compatible** — existing ComfyUI/Mock configs work without changes
+- **Factory function** updated: `create_backend()` lazily imports `VeoBackend` to avoid hard google-genai dependency
+
+### Veo-Aware Sliding Story Engine (`vfaq/sliding_story_engine.py`)
+
+- **Backend-aware cycle routing:**
+  - Veo cycles skip the separate txt2img→img2img→img2vid pipeline
+  - Cycle 1: `text_to_video` or `image_to_video` (if base image exists)
+  - Cycle n>1: `image_to_video` from previous last frame
+  - If `require_morph=true`: generates target keyframe then uses `first_last_frame`
+- **Loop closure** (new `enable_loop_closure` config):
+  - Final cycle generates a clip from last frame back to cycle-1 anchor frame
+  - Creates seamless loop when video is played on repeat
+- **`_extract_first_frame_ffmpeg()`** — new helper to extract first frame for anchor storage
+- **`SlidingStoryConfig`** extended with `veo_config` and `enable_loop_closure` fields
+- **All ComfyUI/Mock cycle logic untouched** — the Veo path is a clean `if is_veo: ... continue` block
+
+### Config & CLI Updates
+
+- **`config-veo.yaml`** — complete Veo backend config template with inline documentation
+- **`config.yaml`** — updated header, backend comments now list all three backends
+- **CLI** — `--backend veo` option, `backends` command lists Veo availability
+- **`requirements.txt`** — `google-genai>=1.0` added (optional, only for Veo)
+
+### Pipeline Wiring (`vfaq/visual_faqtory.py`)
+
+- `_build_story_config()` now injects `veo:` section into backend config
+- Veo duration defaults applied when `img2vid_duration_sec` not set
+- `veo_config` and `enable_loop_closure` passed through to story engine
+
+---
+
+## Backward Compatibility
+
+- **No breaking changes.** All existing `config.yaml` files with `backend.type: comfyui` or `backend.type: mock` work exactly as before.
+- **No new mandatory dependencies.** `google-genai` is only imported when `backend.type: veo` is selected.
+- **No behavioral changes** to the ComfyUI or Mock backends.
+
+---
+
+## Quick Start — Veo Backend
+
+```bash
+# 1. Install google-genai
+pip install google-genai
+
+# 2. Set API key
+export GEMINI_API_TOKEN=<your-gemini-api-key>
+
+# 3. Copy Veo config
+cp worqspace/config-veo.yaml worqspace/config.yaml
+
+# 4. Run
+python vfaq_cli.py -n my-veo-project
+```
+
+---
+
+## Known Limitations (v0.6.0-beta)
+
+- `extend_video` mode requires prior Veo-generated clips (not arbitrary MP4s)
+- Veo `generate_image` for text mode produces a short clip + extracts frame (no native txt2img)
+- `negative_prompt` support varies by Veo model — unsupported models log a warning and continue
+- Reference images (`STYLE`/`ASSET`) availability depends on model version
+- Loop closure quality depends on visual similarity between last and first frames
+
+---
+
 # Release Notes — Visual FaQtory v0.5.8-beta
 
 **"Crowd Replace Visual Reset & OBS Prewarm Swap"**

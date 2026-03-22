@@ -12,7 +12,7 @@ Pipeline flow:
   4. Audio mux (if base audio present)
   5. Save run to worqspace/saved-runs/<project-name>
 
-Part of QonQrete Visual FaQtory v0.5.9-beta
+Part of QonQrete Visual FaQtory v0.6.0-beta
 """
 import json
 import logging
@@ -141,7 +141,7 @@ def _mux_audio(video_path: Path, audio_path: Path, output_path: Path) -> bool:
 
 class VisualFaQtory:
     """
-    Main orchestrator for the Visual FaQtory v0.5.9-beta pipeline.
+    Main orchestrator for the Visual FaQtory v0.6.0-beta pipeline.
 
     Wires config loading, input detection, sliding story engine,
     finalizer, audio mux, and project saving.
@@ -262,9 +262,21 @@ class VisualFaQtory:
         if comfyui_section:
             bc["comfyui"] = comfyui_section
 
+        # ── Veo backend config injection (v0.6.0-beta) ────────────────────
+        veo_section = self.config.get("veo", {})
+        if veo_section:
+            bc["veo"] = veo_section
+
+        # Determine Veo-specific overrides for timing
+        is_veo = bc.get("type", "").lower() == "veo"
+        img2vid_duration = ps.get("img2vid_duration_sec")
+        if is_veo and img2vid_duration is None:
+            # Default Veo duration from veo section
+            img2vid_duration = veo_section.get("duration_seconds", 8)
+
         return SlidingStoryConfig(
             max_paragraphs=ps.get("max_paragraphs", 4),
-            img2vid_duration_sec=ps.get("img2vid_duration_sec"), # No default, let TimingResolver handle it
+            img2vid_duration_sec=img2vid_duration,
             img2img_denoise_min=ps.get("img2img_denoise_min", 0.25),
             img2img_denoise_max=ps.get("img2img_denoise_max", 0.45),
             rolling_window_mode=ps.get("rolling_window", True),
@@ -277,6 +289,8 @@ class VisualFaQtory:
             finalizer_config=self.config.get("finalizer", {}), # New
             reinject=self.reinject,
             crowd_control_config=self.config.get("crowd_control", {}),
+            veo_config=veo_section,
+            enable_loop_closure=veo_section.get("enable_loop_closure", False),
         )
 
     def _compute_cycle_count(self, config: SlidingStoryConfig) -> Optional[int]:
@@ -439,7 +453,7 @@ class VisualFaQtory:
         """Write faqtory_state.json."""
         state = {
             "run_id": self.run_id,
-            "version": "v0.5.9-beta",
+            "version": "v0.6.0-beta",
             "start_time": start_time.isoformat(),
             "end_time": end_time.isoformat(),
             "config_snapshot": "meta/config.yaml",
@@ -480,18 +494,33 @@ class VisualFaQtory:
 
         # Handle base image/video for image/video modes
         base_image_for_run = None
+        base_video_for_run = None
+        is_veo_backend = self.config.get("backend", {}).get("type", "").lower() == "veo"
+
         if self.mode == "image" and self.base_image:
             base_image_for_run = self.base_image
         elif self.mode == "video" and self.base_video:
-            # Extract frame from video
-            extracted = self.run_dir / "meta" / "extracted_frame.png"
-            width = self.config.get("backend", {}).get("width", 1024)
-            height = self.config.get("backend", {}).get("height", 576)
-            if _extract_video_frame(self.base_video, extracted, width, height):
-                base_image_for_run = extracted
-                logger.info(f"[FaQtory] Extracted frame from video → {extracted}")
+            if is_veo_backend and self.config.get("veo", {}).get("enable_extension", False):
+                # Veo extension bootstrap: pass the actual video through
+                base_video_for_run = self.base_video
+                logger.info(f"[FaQtory] Veo extension bootstrap: passing base video directly")
+                # Also extract a frame as fallback if extension fails
+                extracted = self.run_dir / "meta" / "extracted_frame.png"
+                width = self.config.get("backend", {}).get("width", 1024)
+                height = self.config.get("backend", {}).get("height", 576)
+                if _extract_video_frame(self.base_video, extracted, width, height):
+                    base_image_for_run = extracted
+                    logger.info(f"[FaQtory] Also extracted fallback frame → {extracted}")
             else:
-                logger.warning("[FaQtory] Video frame extraction failed, falling back to text mode")
+                # Non-Veo or extension disabled: extract frame as before
+                extracted = self.run_dir / "meta" / "extracted_frame.png"
+                width = self.config.get("backend", {}).get("width", 1024)
+                height = self.config.get("backend", {}).get("height", 576)
+                if _extract_video_frame(self.base_video, extracted, width, height):
+                    base_image_for_run = extracted
+                    logger.info(f"[FaQtory] Extracted frame from video → {extracted}")
+                else:
+                    logger.warning("[FaQtory] Video frame extraction failed, falling back to text mode")
 
         if self.dry_run:
             logger.info("[FaQtory] DRY RUN — config loaded, inputs resolved, exiting before generation")
@@ -505,6 +534,7 @@ class VisualFaQtory:
             config=story_config,
             max_cycles=audio_cycles,
             base_image_path=base_image_for_run,
+            base_video_path=base_video_for_run,
         )
 
         # Count completed cycles

@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """
-QonQrete Visual FaQtory v0.5.9-beta
+QonQrete Visual FaQtory v0.6.0-beta
 ═══════════════════════════════════════════════════════════════════════════════
 
 An automated, long-form AI visual generation pipeline for music, DJ sets,
 and experimental audiovisual projects.
 
-Pipeline: paragraph_story (sliding window) + ComfyUI backend + Finalizer
+Pipeline: paragraph_story (sliding window) + Backend (ComfyUI or Veo) + Finalizer
 
-v0.5.9-beta — Clean Base + Reinject Default + Run/Saved-Runs Refactor
+v0.6.0-beta — Veo Backend + Loop Closure + Backend Abstraction
+  - NEW: Google Veo backend (text_to_video, image_to_video, first_last_frame, extend_video)
+  - NEW: Gemini Developer API and Vertex AI provider support
+  - NEW: Loop closure cycle for seamless looping video generation
+  - NEW: Veo-aware sliding story engine routing
+  - KEPT: ComfyUI backend fully intact and backward-compatible
+  - KEPT: Mock backend for testing
   - Reinject mode ON by default (img2img keyframe restoration every cycle)
-  - ComfyUI-only backend
-  - Output dir: ./run (current run), worqspace/saved-runs/<name> (archives)
+  - Output dir: ./run (current run), worqspace/saved-runs/<n> (archives)
   - Working input modes: text / image / video
   - Base audio muxing + optional auto-cycle count from audio duration
   - Finalizer: stitch → interpolate 60fps → upscale 1080p → optional audio mux
@@ -20,7 +25,7 @@ v0.5.9-beta — Clean Base + Reinject Default + Run/Saved-Runs Refactor
 License: AGPL-3.0 (same as QonQrete)
 """
 
-__version__ = "0.5.9-beta"
+__version__ = "0.6.0-beta"
 __author__ = "Ill Dynamics / WoNQ"
 __license__ = "AGPL-3.0"
 

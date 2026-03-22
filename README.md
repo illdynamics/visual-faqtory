@@ -1,4 +1,4 @@
-# QonQrete Visual FaQtory v0.5.8-beta
+# QonQrete Visual FaQtory v0.6.0-beta
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 ![Repo Views](https://komarev.com/ghpvc/?username=illdynamics-visual-faqtory&label=Repo+Views&color=blue)
 
@@ -11,6 +11,8 @@ Visual FaQtory takes a written story, splits it into paragraphs, and generates a
 ---
 
 ## Features
+
+**Google Veo Backend (NEW in v0.6.0)** — Generate video directly from text or images via Google's Veo API. No local GPU required. Supports text_to_video, image_to_video, first_last_frame interpolation, and video extension. Works with Gemini Developer API or Vertex AI. See `worqspace/config-veo.yaml` for configuration.
 
 **Paragraph Story Engine** — Write your narrative in `worqspace/story.txt`. The sliding window engine splits paragraphs into overlapping windows, producing one visual cycle per window step (ramp-up → slide → ramp-down).
 
@@ -26,6 +28,8 @@ Visual FaQtory takes a written story, splits it into paragraphs, and generates a
 
 **LoRA Support** — Optional LoRA injection into ComfyUI workflows for stylistic control. Configure in `config.yaml` with path, strength, and automatic workflow wiring.
 
+**Loop Closure (NEW in v0.6.0)** — When using Veo, optionally generate a final clip that transitions from the last frame back to the first, creating a seamless loop for track-length visuals.
+
 **Audio Sync** — Drop audio into `worqspace/base_audio/`. Optionally auto-compute cycle count from audio duration. Final video is muxed with audio after all processing.
 
 **Finalizer Pipeline** — Automatic post-processing: stitch → interpolate 60fps → upscale 1920×1080 → audio mux. GPU-accelerated encoding with h264_nvenc fallback to libx264.
@@ -38,23 +42,34 @@ Visual FaQtory takes a written story, splits it into paragraphs, and generates a
 
 ## Quick Start
 
+### ComfyUI Backend (local GPU)
 ```bash
-# 1. Install dependencies
 pip install -r requirements.txt
-
-# 2. Write your story
 nano worqspace/story.txt
-
-# 3. Configure backend
 nano worqspace/config.yaml    # Set backend.api_url to your ComfyUI instance
+python vfaq_cli.py -n my-project
+```
 
-# 4. Run
-python vfaq_cli.py
-python vfaq_cli.py -n my-project          # Named project
-python vfaq_cli.py --mode image           # Use base image
-python vfaq_cli.py --no-reinject          # Disable reinject
-python vfaq_cli.py --dry-run              # Validate without generation
-python vfaq_cli.py -n test -b mock        # Mock backend test
+### Veo Backend (cloud, no GPU needed)
+```bash
+pip install -r requirements.txt
+pip install google-genai
+export GEMINI_API_TOKEN=<your-api-key>
+cp worqspace/config-veo.yaml worqspace/config.yaml
+nano worqspace/story.txt
+python vfaq_cli.py -n my-veo-project
+```
+
+### Common commands
+```bash
+python vfaq_cli.py                            # Run with defaults (reinject ON)
+python vfaq_cli.py -n cyberpunk-set           # Named project
+python vfaq_cli.py --no-reinject              # Disable reinject
+python vfaq_cli.py --mode image               # Use base image
+python vfaq_cli.py --dry-run                  # Validate without generation
+python vfaq_cli.py -n test -b mock            # Mock backend test
+python vfaq_cli.py -b veo -n veo-test         # Veo backend override
+python vfaq_cli.py backends                   # List available backends
 ```
 
 ---

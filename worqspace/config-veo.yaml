@@ -1,0 +1,120 @@
+# Visual FaQtory Configuration v0.6.0-beta — VEO BACKEND
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Google Veo backend configuration — generates video directly from text or image.
+# No local GPU required. Uses Google Gemini Developer API or Vertex AI.
+#
+# Pipeline: story.txt → sliding window → Veo (text_to_video/image_to_video)
+#           → finalizer (stitch → 60fps → 1080p → audio mux)
+#           → save to worqspace/saved-runs/<project-name>
+#
+# AUTH: Set one of these env vars before running:
+#   export GEMINI_API_TOKEN=<your-gemini-api-key>
+#   export GOOGLE_API_KEY=<your-api-key>
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PATHS
+# ═══════════════════════════════════════════════════════════════════════════════
+paths:
+  output_dir: ./run
+  briqs_dir: ./run/briqs
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INPUT CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
+input:
+  mode: text                        # auto | text | image | video
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BACKEND CONFIGURATION — VEO
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Veo generates video directly — no separate txt2img step needed.
+# Set type: veo to enable. See the veo: section below for provider settings.
+#
+# Supported providers:
+#   gemini  — Google Gemini Developer API (API key auth)
+#   vertex  — Google Vertex AI (ADC / service account auth)
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+backend:
+  type: veo
+  width: 1280
+  height: 720
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VEO BACKEND SETTINGS
+# ═══════════════════════════════════════════════════════════════════════════════
+veo:
+  provider: gemini                           # gemini | vertex
+  model: veo-3.1-generate-preview            # Primary model
+  fast_model: veo-3.1-fast-generate-preview  # Fast model (lower quality, faster)
+  prefer_fast_model: false                   # Use fast model by default?
+  api_version: v1beta
+  default_mode: image_to_video               # text_to_video | image_to_video
+  duration_seconds: 8                        # 4, 6, or 8 seconds (Veo 3.1)
+  aspect_ratio: "16:9"                       # 16:9 | 9:16 (Veo 3.1 only)
+  resolution: "720p"                         # 720p | 1080p (8s required for 1080p)
+  sample_count: 1                            # Number of videos per request (first used)
+  person_generation: "allow_adult"           # allow_adult | disallow
+  generate_audio: false                      # Veo native audio generation
+  storage_uri: null                          # GCS URI for Vertex output (optional)
+  resize_mode: "PAD"                         # PAD | CROP (REST API only; not in Python SDK)
+  compression_quality: "optimized"           # optimized | lossless
+  enable_reference_images: true              # Allow style/subject references
+  enable_last_frame: true                    # Enable first_last_frame interpolation
+  enable_extension: false                    # Enable video extension mode
+  enable_loop_closure: false                 # Generate final loop-closure clip
+  download_immediately: true
+
+  # ── Orchestration parameters (not native Veo) ──────────────────────────
+  # These control how the story engine schedules and chains Veo generations.
+  continuity_strength: 0.85                  # How much to maintain visual continuity
+  mutation_strength: 0.25                    # How much to allow visual drift
+  identity_lock_strength: 0.80              # Subject consistency across cycles
+  loop_closure_strength: 0.90               # Quality threshold for loop closure
+
+  # ── Polling & retry ────────────────────────────────────────────────────
+  poll_interval: 10.0                        # Seconds between operation polls
+  poll_timeout: 600.0                        # Max seconds to wait for generation
+  max_retries: 3                             # Max retry attempts for transient errors
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SLIDING WINDOW STORY ENGINE (paragraph_story)
+# ═══════════════════════════════════════════════════════════════════════════════
+paragraph_story:
+  max_paragraphs: 2
+  img2vid_duration_sec: 8                    # Matches veo.duration_seconds
+  img2img_denoise_min: 0.44                  # Used as mutation scheduling for Veo
+  img2img_denoise_max: 0.55
+  video_fps: 24                              # Veo outputs ~24fps natively
+  seed_base: 9999
+  rolling_window: false
+  require_morph: false                       # Set true for first_last_frame mode
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AUDIO CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
+audio:
+  enabled: false
+  sync_video_audio: false
+  cycle_seconds: 8                           # Must match veo.duration_seconds
+  allow_ext:
+    - wav
+    - mp3
+    - flac
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# POST-STITCH FINALIZER
+# ═══════════════════════════════════════════════════════════════════════════════
+finalizer:
+  enabled: true
+  per_cycle_interpolation: false
+  per_cycle_pingpong: false
+  interpolate_fps: 30
+  upscale_resolution: 1920x1080
+  scale_algo: bicubic
+  encoder_preference: auto
+  quality: 11

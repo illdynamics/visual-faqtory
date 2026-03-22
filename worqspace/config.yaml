@@ -1,7 +1,8 @@
-# Visual FaQtory Configuration v0.5.7-beta
+# Visual FaQtory Configuration v0.6.0-beta
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # Clean base configuration — paragraph_story + ComfyUI + reinject default ON
+# For Veo backend config, see config-veo.yaml
 #
 # Pipeline: story.txt → sliding window → ComfyUI (txt2img/img2img/img2vid)
 #           → finalizer (stitch → 60fps → 1080p → audio mux)
@@ -35,8 +36,12 @@ input:
 # BACKEND CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 #
-# ComfyUI is the only supported production backend.
-# Mock backend available for testing (generates placeholder files).
+# Supported backends:
+#   comfyui — ComfyUI API (local GPU, production backend)
+#   veo     — Google Veo via Gen AI SDK (cloud, no local GPU needed)
+#   mock    — Testing without GPU (generates placeholder files)
+#
+# For Veo: copy config-veo.yaml → config.yaml or set backend.type: veo
 # ═══════════════════════════════════════════════════════════════════════════════
 backend:
   type: comfyui

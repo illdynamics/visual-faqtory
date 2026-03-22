@@ -6,10 +6,11 @@ backends.py - AI Generation Backend Abstraction
 Pluggable backends for image and video generation:
   - MockBackend: Testing without GPU (fully functional)
   - ComfyUIBackend: ComfyUI API (production backend)
+  - VeoBackend: Google Veo via Gen AI SDK (see veo_backend.py)
 
 Each backend implements the GeneratorBackend interface.
 
-Part of QonQrete Visual FaQtory v0.5.9-beta
+Part of QonQrete Visual FaQtory v0.6.0-beta
 """
 import os
 import io
@@ -33,6 +34,7 @@ class BackendType(Enum):
     """Available backend types."""
     MOCK = "mock"
     COMFYUI = "comfyui"
+    VEO = "veo"
 
 
 class InputMode(Enum):
@@ -69,6 +71,28 @@ class GenerationRequest:
     motion_prompt: Optional[str] = None      # Raw motion intent from motion_prompt.md
     # Duration authority (v0.5.9-beta)
     duration_seconds: Optional[float] = None  # Explicit duration in seconds (authoritative)
+
+    # ── Veo-specific fields (v0.6.0-beta) ─────────────────────────────────
+    # These fields are used exclusively by the VeoBackend and are ignored
+    # by ComfyUI and Mock backends.  They are part of the unified request
+    # to avoid backend-specific request subclasses.
+    veo_mode: Optional[str] = None            # text_to_video | image_to_video | first_last_frame | extend_video
+    last_frame_path: Optional[Path] = None    # End frame for first_last_frame mode
+    input_video_path: Optional[Path] = None   # Input video for extend_video mode
+    reference_image_paths: Optional[List[Path]] = None    # Reference images
+    reference_image_types: Optional[List[str]] = None     # Reference types (STYLE|ASSET)
+    generate_audio: Optional[bool] = None     # Veo audio generation
+    aspect_ratio: Optional[str] = None        # Veo aspect ratio (e.g. "16:9")
+    resolution: Optional[str] = None          # Veo resolution (e.g. "720p")
+    person_generation: Optional[str] = None   # Veo person generation policy
+    sample_count: Optional[int] = None        # Number of videos to generate
+    storage_uri: Optional[str] = None         # GCS URI for Vertex output
+    compression_quality: Optional[str] = None # Veo compression quality
+    # Orchestration params (not native Veo — used by story engine scheduling)
+    continuity_strength: Optional[float] = None
+    mutation_strength: Optional[float] = None
+    identity_lock_strength: Optional[float] = None
+    loop_closure_strength: Optional[float] = None
 
     @property
     def effective_frames(self) -> int:
@@ -1214,6 +1238,17 @@ def create_backend(config: Dict[str, Any]) -> GeneratorBackend:
         'comfyui': ComfyUIBackend,
     }
 
+    # Veo backend is lazily imported to avoid hard dependency on google-genai
+    if backend_type == 'veo':
+        try:
+            from .veo_backend import VeoBackend
+            return VeoBackend(config)
+        except ImportError as e:
+            raise RuntimeError(
+                f"Veo backend requires google-genai SDK: pip install google-genai\n"
+                f"Import error: {e}"
+            )
+
     if backend_type not in backends:
         logger.warning(f"Unknown backend '{backend_type}', using mock")
         backend_type = 'mock'
@@ -1230,6 +1265,28 @@ def list_available_backends() -> Dict[str, tuple]:
             results[name] = backend.check_availability()
         except Exception as e:
             results[name] = (False, str(e))
+
+    # Check Veo availability: import check + auth hint (don't require live auth)
+    try:
+        from .veo_backend import VeoBackend  # noqa: F401
+        import importlib
+        importlib.import_module("google.genai")
+        # SDK importable — check if any auth env vars are set
+        import os
+        has_auth = any(os.environ.get(k) for k in [
+            "GOOGLE_API_KEY", "GEMINI_API_KEY",
+            "GOOGLE_API_TOKEN", "GEMINI_API_TOKEN",
+            "GOOGLE_CLOUD_PROJECT",
+        ])
+        if has_auth:
+            results['veo'] = (True, "Veo SDK installed, credentials detected")
+        else:
+            results['veo'] = (True, "Veo SDK installed (no credentials set — set GEMINI_API_TOKEN to use)")
+    except ImportError:
+        results['veo'] = (False, "Veo: google-genai not installed (pip install google-genai)")
+    except Exception as e:
+        results['veo'] = (False, f"Veo: {e}")
+
     return results
 
 
@@ -1237,5 +1294,5 @@ __all__ = [
     'BackendType', 'InputMode', 'GenerationRequest', 'GenerationResult',
     'FatalConfigError',
     'GeneratorBackend', 'MockBackend', 'ComfyUIBackend',
-    'create_backend', 'list_available_backends'
+    'create_backend', 'list_available_backends',
 ]

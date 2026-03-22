@@ -14,7 +14,7 @@ Usage:
     python vfaq_cli.py status                   # Check pipeline status
     python vfaq_cli.py backends                 # List available backends
 
-Part of QonQrete Visual FaQtory v0.5.9-beta
+Part of QonQrete Visual FaQtory v0.6.0-beta
 """
 import os
 import sys
@@ -37,9 +37,9 @@ BANNER = """
   ╚████╔╝ ██║███████║╚██████╔╝██║  ██║███████╗    ██║     ██║  ██║╚██████╔╝   ██║   ╚██████╔╝██║  ██║   ██║
    ╚═══╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝    ╚═╝     ╚═╝  ╚═╝ ╚══▀▀═╝    ╚═╝    ╚═════╝ ╚═╝  ╚═╝   ╚═╝
 
-  QonQrete Visual FaQtory v0.5.9-beta
+  QonQrete Visual FaQtory v0.6.0-beta
   ═══════════════════════════════════════
-  Reinject Default ON | ComfyUI Backend | Paragraph Story Engine
+  Reinject Default ON | ComfyUI + Veo Backends | Paragraph Story Engine
 """
 
 
@@ -110,7 +110,7 @@ def cmd_status(args):
 
     if state_path.exists():
         state = json.loads(state_path.read_text())
-        print(f"\n=== Visual FaQtory v0.5.9-beta Status ===")
+        print(f"\n=== Visual FaQtory v0.6.0-beta Status ===")
         for key, value in state.items():
             print(f"  {key}: {value}")
     else:
@@ -132,7 +132,7 @@ def cmd_backends(args):
     """List available backends."""
     from vfaq.backends import list_available_backends
 
-    print(f"\n=== Available Backends (v0.5.9-beta) ===\n")
+    print(f"\n=== Available Backends (v0.6.0-beta) ===\n")
     results = list_available_backends()
     for name, (available, message) in results.items():
         status = "✓" if available else "✗"
@@ -140,8 +140,14 @@ def cmd_backends(args):
 
     print("\nTo use a backend, set in worqspace/config.yaml:")
     print("  backend:")
-    print("    type: comfyui")
-    print("    api_url: http://localhost:8188")
+    print("    type: comfyui        # or: veo | mock")
+    print("    api_url: http://localhost:8188  # comfyui only")
+    print("")
+    print("  For Veo backend, also add:")
+    print("    veo:")
+    print("      provider: gemini")
+    print("      model: veo-3.1-generate-preview")
+    print("  And set: GEMINI_API_TOKEN=<your-key>")
 
 
 def cmd_crowd(args):
@@ -185,7 +191,7 @@ def cmd_crowd(args):
     local_url = f"http://{args.host}:{args.port}{args.prefix}"
     print(BANNER)
     print("  ┌──────────────────────────────────────────────────────────┐")
-    print("  │             CROWD CONTROL SERVER v0.5.9-beta            │")
+    print("  │             CROWD CONTROL SERVER v0.6.0-beta            │")
     print("  ├──────────────────────────────────────────────────────────┤")
     print(f"  │  Submit page : {local_url}/")
     print(f"  │  QR code     : {local_url}/qr.png")
@@ -216,7 +222,7 @@ def cmd_crowd(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="QonQrete Visual FaQtory v0.5.9-beta — Automated AI Visual Generation",
+        description="QonQrete Visual FaQtory v0.6.0-beta — Automated AI Visual Generation",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -241,7 +247,7 @@ Examples:
     parser.add_argument('--run-dir', default='./run',
                         help='Run output directory (default: ./run)')
     parser.add_argument('-V', '--version', action='version',
-                        version='Visual FaQtory v0.5.9-beta')
+                        version='Visual FaQtory v0.6.0-beta')
 
     subparsers = parser.add_subparsers(dest='command', help='Commands')
 
@@ -314,7 +320,7 @@ def _add_run_args(parser):
     parser.add_argument('--mode', choices=['text', 'image', 'video'],
                         help='Override input mode')
     parser.add_argument('-b', '--backend',
-                        help='Override backend (mock/comfyui)')
+                        help='Override backend (mock/comfyui/veo)')
     parser.add_argument('-s', '--seed', type=int,
                         help='Override base seed')
     parser.add_argument('--config', type=str,
