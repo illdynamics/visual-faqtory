@@ -1,0 +1,51 @@
+# Example capability-split backend config (v0.9.0-beta)
+# Qwen image backends are image-only. Do not treat them like full pipeline backends.
+# Keeps the public app interface stable while routing each generation stage
+# to a dedicated backend under the hood.
+
+backend:
+  type: hybrid
+  width: 1024
+  height: 576
+  timeout: 600
+
+  # Image stage only
+  image_backend:
+    type: qwen_image_comfyui
+    api_url: http://localhost:8188
+    workflow_image: ./worqspace/workflows/qwen_image_t2i.json
+    workflow_img2img: ./worqspace/workflows/qwen_image_i2i.json
+
+  # Video stage only
+  video_backend:
+    type: comfyui
+    api_url: http://localhost:8188
+    workflow_video: ./worqspace/workflows/svd_img2vid.json
+
+  # Morph / loop-closure stage
+  morph_backend:
+    type: comfyui
+    api_url: http://localhost:8188
+    workflow_morph: ./worqspace/workflows/morph_i2v.json
+
+comfyui:
+  sdxl_ckpt: juggernautXL_ragnarokBy.safetensors
+  svd_ckpt: svd_xt_1_1.safetensors
+
+# LoRA is validated against the IMAGE capability now, not the whole router.
+lora:
+  enabled: false
+  path: /x/ComfyUI/models/loras/pytorch_lora_weights.safetensors
+  strength: 1.0
+  backend: comfyui
+
+# Native Python alternative for the image stage:
+# image_backend:
+#   type: qwen_image_python
+#
+# qwen_python:
+#   model_id: Qwen/Qwen-Image
+#   img2img_model_id: Qwen/Qwen-Image
+#   edit_model_id: null
+#   device: auto
+#   torch_dtype: auto

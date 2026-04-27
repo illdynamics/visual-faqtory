@@ -13,7 +13,7 @@ Random mode uses deterministic seed derived from run_id.
 
 Does NOT break existing input modes — only activates if folders exist.
 
-Part of QonQrete Visual FaQtory v0.5.6-beta
+Part of Visual FaQtory v0.5.6-beta
 """
 import hashlib
 import logging

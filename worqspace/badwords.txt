@@ -1,0 +1,101 @@
+# Visual FaQtory — Crowd Control Bad Words / Phrases
+# One word or phrase per line.
+# Matching is case-insensitive with WORD BOUNDARIES (exact tokens/phrases).
+# Lines starting with # are comments. Blank lines ignored.
+
+# ── Sexual / explicit ─────────────────────────────────────────────────────────
+porn
+pornographic
+hentai
+nude
+nudes
+naked
+nudity
+xxx
+nsfw
+genitals
+penis
+vagina
+vulva
+clitoris
+cum
+semen
+orgasm
+orgasms
+masturbate
+masturbated
+masturbating
+masturbation
+blowjob
+handjob
+deepthroat
+deep-throat
+anal sex
+oral sex
+sex
+sexting
+gangbang
+bukkake
+bukakke
+creampie
+futanari
+lolicon
+shotacon
+
+# illegal sexual content terms (keep these blocked hard)
+child porn
+child pornography
+cp
+csam
+
+# ── Violence / gore ───────────────────────────────────────────────────────────
+gore
+gory
+dismember
+dismembered
+dismemberment
+decapitate
+decapitated
+decapitation
+beheading
+mutilate
+mutilated
+mutilation
+torture
+snuff
+beheading
+
+# ── Self-harm / suicide ───────────────────────────────────────────────────────
+suicide
+self harm
+self-harm
+kill myself
+kill-myself
+end my life
+slit wrist
+slit wrists
+cut myself
+cut-myself
+
+# ── Illegal / harmful instructions ────────────────────────────────────────────
+bomb making
+bomb-making
+how to make a bomb
+build a bomb
+make a bomb
+human trafficking
+child abuse
+
+# ── Prompt injection / jailbreak attempts ─────────────────────────────────────
+ignore previous
+ignore all instructions
+disregard instructions
+system prompt
+developer message
+you are now
+act as if
+pretend you are
+jailbreak
+dan mode
+bypass
+override safety

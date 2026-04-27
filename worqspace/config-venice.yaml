@@ -1,0 +1,114 @@
+# Visual FaQtory — Venice native backend config v0.9.0-beta
+# ═══════════════════════════════════════════════════════════════════════════════
+# Required secret:
+#   export VENICE_API_KEY=your_key_here
+#
+# List live Venice models:
+#   curl -s -H "Authorization: Bearer $VENICE_API_KEY" https://api.venice.ai/api/v1/models \
+#     | python3 -c "import sys,json; [print(m['id'],m.get('type')) for m in json.load(sys.stdin)['data']]"
+#
+# Parameter notes:
+#   - resolution / aspect_ratio / audio are model-dependent.
+#   - Backend omits unsupported optional fields automatically (from model metadata
+#     when available, or from safe HTTP 400 retry fallback when needed).
+#   - If resolution is supported but the value is invalid, backend snaps to the
+#     nearest valid option and retries.
+#   - text_to_video_first_cycle: false → cycle 1 does text2img → img2vid
+#                                true  → cycle 1 does text2vid directly
+# ═══════════════════════════════════════════════════════════════════════════════
+
+backend:
+  type: hybrid
+  width: 1280
+  height: 720
+
+image_backend:
+  type: venice
+
+video_backend:
+  type: venice
+
+morph_backend:
+  type: venice
+
+input:
+  mode: text
+
+venice:
+  api_key: ${VENICE_API_KEY}
+  base_url: https://api.venice.ai/api/v1
+  api_key_env: VENICE_API_KEY
+
+  timeout: 120
+  poll_interval: 3
+  poll_timeout: 900
+  max_retries: 3
+  retry_backoff_base: 1.5
+  retry_backoff_max: 20
+  cleanup_after_download: true
+  validate_models: false
+  strict_model_validation: false
+
+  models:
+    text2img: flux-2-pro
+    img2img: flux-2-pro
+    text2vid: grok-imagine-text-to-video
+    img2vid: wan-2.1-pro-image-to-video
+
+  image:
+    width: 1280
+    height: 720
+    cfg_scale: 7.5
+    steps: 8
+    negative_prompt: ""
+    hide_watermark: true
+    safe_mode: true
+
+  video:
+    resolution: 720p
+    aspect_ratio: "16:9"
+    negative_prompt: low resolution, error, worst quality, low quality, defects
+    audio: false
+
+    # Per-operation overrides — omit any field to inherit the global above.
+    #
+    # Resolution + aspect_ratio determine output pixel dimensions:
+    #   480p + 16:9  →  856×480
+    #   480p + 4:3   →  640×480  ← set this combination for 640×480
+    #   720p + 16:9  →  1280×720
+    #   720p + 4:3   →  960×720
+    #
+    # resolution/aspect_ratio/audio are model-dependent and may be auto-omitted
+    # when unsupported by the selected model.
+    # If resolution is supported but the value is invalid, backend snaps to the
+    # nearest valid option and logs a [Venice] Snapping line.
+    # Source images are also pre-resized to target dims before upload.
+    text2vid:
+      duration_seconds: 5
+      # aspect_ratio: "16:9"  # inherits global
+      # resolution: 720p      # inherits global
+
+    img2vid:
+      duration_seconds: 6
+      aspect_ratio: "16:9"   # change to "4:3" for 640×480 output with 480p below
+      resolution: 720p        # change to 480p + aspect_ratio "4:3" for 640×480 output
+
+  text_to_video_first_cycle: false
+  enable_end_frame_morph: true
+  enable_loop_closure: true
+
+paragraph_story:
+  max_paragraphs: 2
+  img2vid_duration_sec: 6
+  video_fps: 24
+  seed_base: 9999
+  rolling_window: true
+  require_morph: false
+  enable_loop_closure: true
+  img2img_denoise_min: 0.35
+  img2img_denoise_max: 0.55
+
+finalizer:
+  enabled: true
+  per_cycle_interpolation: false
+  upscale_resolution: 1280x720

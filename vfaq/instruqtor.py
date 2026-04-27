@@ -30,7 +30,7 @@ LLM output fields (v0.0.7-alpha):
   - motion_hint            short motion guidance for video
   - video_prompt           optional dedicated video prompt
 
-Part of QonQrete Visual FaQtory v0.5.6-beta
+Part of Visual FaQtory v0.5.6-beta
 """
 import os
 import re
@@ -68,7 +68,7 @@ FORBIDDEN_TASQ_KEYS = {
 # PROMPT TEMPLATES FOR LLM
 # ═══════════════════════════════════════════════════════════════════════════════
 
-INSTRUQTOR_SYSTEM_PROMPT = """You are InstruQtor, a visual generation instruction specialist for the QonQrete Visual FaQtory.
+INSTRUQTOR_SYSTEM_PROMPT = """You are InstruQtor, a visual generation instruction specialist for the Visual FaQtory.
 
 Your job is to transform raw creative prompts into optimized Stable Diffusion / AI video prompts.
 

@@ -31,7 +31,7 @@ NON-NEGOTIABLE RULES:
 
 Supports NVENC-based encoding (h264_nvenc preferred, libx264 fallback).
 
-Part of QonQrete Visual FaQtory v0.5.6-beta
+Part of Visual FaQtory v0.5.6-beta
 """
 import logging
 import subprocess
@@ -65,10 +65,38 @@ class Finalizer:
         self.videos_dir = self.project_dir / "videos"
         self.final_output_path = self.project_dir / "final_output.mp4"
 
-        # Post-stitch finalizer config
+        # Ensure cfg is defined from finalizer_config
         cfg = finalizer_config or {}
+
+        # Per-cycle interpolation config
+        self.per_cycle_interpolation = cfg.get('per_cycle_interpolation', False)
+        self.per_cycle_pingpong = cfg.get('per_cycle_pingpong', False)  # New config for pingpong
+
+        # Backwards-compatible FPS knobs:
+        # - Prefer explicit per-cycle key
+        # - Fall back to legacy interpolate_fps for per-cycle ONLY
+        self.per_cycle_interpolate_fps = cfg.get('per_cycle_interpolate_fps')
+        if self.per_cycle_interpolate_fps is None:
+            self.per_cycle_interpolate_fps = cfg.get('interpolate_fps', 30)
+
+        if self.per_cycle_interpolation:
+            self.videos_interpolated_dir = self.project_dir / "videos_interpolated"
+            self.videos_interpolated_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"[Finalizer] Per-cycle interpolation enabled. Output dir: {self.videos_interpolated_dir}")
+        else:
+            self.videos_interpolated_dir = None
+
+        # Post-stitch finalizer config
         self.finalizer_enabled = cfg.get('enabled', False)
-        self.interpolate_fps = cfg.get('interpolate_fps', 60)
+
+        # Keep post-stitch FPS independent from per-cycle interpolation.
+        # Users can override with post_interpolate_fps.
+        self.interpolate_fps = cfg.get('post_interpolate_fps', 60)
+
+        # Backwards compat: if per-cycle interpolation is OFF and user only set interpolate_fps,
+        # treat interpolate_fps as post-stitch fps.
+        if (not self.per_cycle_interpolation) and ('post_interpolate_fps' not in cfg) and ('interpolate_fps' in cfg):
+            self.interpolate_fps = cfg.get('interpolate_fps', 60)
         self.upscale_width = 1920
         self.upscale_height = 1080
         upscale_res = cfg.get('upscale_resolution', '1920x1080')
@@ -77,12 +105,290 @@ class Finalizer:
             self.upscale_width = int(parts[0])
             self.upscale_height = int(parts[1])
         self.scale_algo = cfg.get('scale_algo', 'bicubic')
-        self.finalizer_crf = cfg.get('quality', {}).get('crf', 16) if isinstance(cfg.get('quality'), dict) else cfg.get('crf', 16)
+        
+        # Quality parsing: can be int or {crf: int}
+        raw_quality = cfg.get('quality')
+        if isinstance(raw_quality, dict):
+            self.per_cycle_quality = raw_quality.get('crf', 18) # Default 18 for per-cycle
+            self.finalizer_crf = raw_quality.get('crf', 16) # Default 16 for post-stitch
+        elif isinstance(raw_quality, int):
+            self.per_cycle_quality = raw_quality
+            self.finalizer_crf = raw_quality
+        else:
+            self.per_cycle_quality = 18
+            self.finalizer_crf = 16
+
         self.encoder_preference = cfg.get('encoder_preference', ['h264_nvenc', 'libx264'])
 
         # Deliverable paths
         self.final_deliverable_path = self.project_dir / "final_60fps_1080p.mp4"
         self._interpolated_temp_path = self.project_dir / "_temp_interpolated_60fps.mp4"
+
+        self._encoder: Optional[str] = None
+        # _encoder_args will no longer be cached here, generated per-use dynamically
+
+    def _get_encoder_args(self, encoder_name: str, quality: int) -> list:
+        """
+        Generate FFmpeg encoder arguments based on encoder name and quality.
+        """
+        if encoder_name == 'h264_nvenc':
+            return [
+                '-c:v', 'h264_nvenc',
+                '-cq', str(quality),
+                '-preset', 'p5',
+                '-pix_fmt', 'yuv420p'
+            ]
+        elif encoder_name == 'libx264':
+            return [
+                '-c:v', 'libx264',
+                '-crf', str(quality),
+                '-preset', 'slow',
+                '-pix_fmt', 'yuv420p'
+            ]
+        else:
+            raise FinalizerError(f"Unknown encoder_name: {encoder_name}")
+
+    def _detect_encoder(self) -> str:
+        """
+        Detect the best available encoder based on preference and system capabilities.
+        Tries encoders in self.encoder_preference.
+
+        Returns:
+            str: The name of the detected encoder ('h264_nvenc' or 'libx264').
+        Raises:
+            FinalizerError: If no usable encoder is found after all attempts.
+        """
+        for encoder_pref in self.encoder_preference:
+            if encoder_pref == 'auto': # 'auto' is a special keyword, handled implicitly by trying specific encoders
+                continue
+
+            if encoder_pref == 'h264_nvenc':
+                # Test NVENC availability with a minimal encode
+                test_cmd = [
+                    'ffmpeg', '-y',
+                    '-f', 'lavfi', '-i', 'nullsrc=s=64x64:d=0.1', # Small dummy input
+                    '-c:v', 'h264_nvenc',
+                    '-f', 'null', '-' # Encode to null output
+                ]
+                try:
+                    result = subprocess.run(
+                        test_cmd, capture_output=True, text=True, timeout=10
+                    )
+                    if result.returncode == 0:
+                        logger.info("[Finalizer] NVENC (h264_nvenc) detected and available.")
+                        return 'h264_nvenc'
+                    else:
+                        logger.info(
+                            f"[Finalizer] h264_nvenc not available or failed: "
+                            f"Exit code {result.returncode}. Stderr: {result.stderr[:200]}"
+                        )
+                except Exception as e:
+                    logger.info(f"[Finalizer] h264_nvenc test failed unexpectedly: {e}")
+
+            elif encoder_pref == 'libx264':
+                logger.info("[Finalizer] Using libx264 (CPU fallback) as preferred.")
+                return 'libx264'
+
+            else:
+                logger.warning(f"[Finalizer] Unknown encoder in preference list, skipping: {encoder_pref}")
+
+        # If we reach here, none of the explicitly preferred encoders were found or worked.
+        # Default to libx264 if it wasn't already picked up or specified.
+        if 'libx264' in self.encoder_preference or 'auto' in self.encoder_preference: # Explicit or implicit fallback
+            logger.info("[Finalizer] Falling back to libx264 as no other preferred encoder is available.")
+            return 'libx264'
+        
+        # If no encoders available at all, raise a fatal error.
+        raise FinalizerError(
+            "[Finalizer] FATAL: No usable video encoder found after checking preferences. "
+            f"Tried: {self.encoder_preference}. "
+            "Ensure ffmpeg is installed with h264_nvenc or libx264 support."
+        )
+
+
+    def _get_or_detect_encoder(self) -> str:
+        """Detect encoder once and cache its name."""
+        if self._encoder:
+            return self._encoder
+        
+        self._encoder = self._detect_encoder()
+        return self._encoder
+
+    @staticmethod
+    def _probe_video_metadata(video_path: Path) -> Dict[str, Any]:
+        meta: Dict[str, Any] = {'duration': 0.0, 'frames': None, 'fps': 0.0}
+        try:
+            cmd = [
+                'ffprobe', '-v', 'error',
+                '-count_frames',
+                '-select_streams', 'v:0',
+                '-show_entries', 'stream=nb_read_frames,nb_frames,avg_frame_rate,r_frame_rate,duration',
+                '-show_entries', 'format=duration',
+                '-of', 'json',
+                str(video_path),
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            import json
+            payload = json.loads(result.stdout or '{}')
+            stream = (payload.get('streams') or [{}])[0]
+            fmt = payload.get('format') or {}
+
+            def _to_float(value):
+                if value in (None, '', 'N/A'):
+                    return None
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return None
+
+            fps_raw = stream.get('avg_frame_rate') or stream.get('r_frame_rate')
+            if isinstance(fps_raw, str) and '/' in fps_raw:
+                num, den = fps_raw.split('/', 1)
+                try:
+                    den_f = float(den)
+                    if den_f:
+                        meta['fps'] = float(num) / den_f
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
+            else:
+                fps_val = _to_float(fps_raw)
+                if fps_val:
+                    meta['fps'] = fps_val
+
+            frames_raw = stream.get('nb_read_frames') or stream.get('nb_frames')
+            if frames_raw not in (None, '', 'N/A'):
+                try:
+                    meta['frames'] = int(frames_raw)
+                except (TypeError, ValueError):
+                    meta['frames'] = None
+
+            duration = _to_float(fmt.get('duration')) or _to_float(stream.get('duration'))
+            if duration is None and meta['frames'] and meta['fps'] > 0:
+                duration = meta['frames'] / meta['fps']
+            meta['duration'] = float(duration or 0.0)
+        except Exception as e:
+            logger.warning(f"[Finalizer] Could not probe video metadata for {video_path}: {e}")
+        return meta
+
+    def _processed_video_is_usable(self, input_path: Path, output_path: Path, target_fps: float) -> bool:
+        if not output_path.exists() or output_path.stat().st_size <= 0:
+            return False
+        in_meta = self._probe_video_metadata(input_path)
+        out_meta = self._probe_video_metadata(output_path)
+        out_duration = float(out_meta.get('duration') or 0.0)
+        out_frames = out_meta.get('frames')
+        if out_duration <= 0.0 and not out_frames:
+            logger.error(f"[Finalizer] Processed video has no usable duration/frame metadata: {output_path}")
+            return False
+        if out_frames is not None and out_frames <= 1:
+            logger.error(f"[Finalizer] Processed video collapsed to {out_frames} frame: {output_path}")
+            return False
+        in_duration = float(in_meta.get('duration') or 0.0)
+        if in_duration > 0 and out_duration > 0 and out_duration < max(0.20, in_duration * 0.20):
+            logger.error(
+                f"[Finalizer] Processed video duration shrank too far ({out_duration:.3f}s from {in_duration:.3f}s): {output_path}"
+            )
+            return False
+        out_fps = float(out_meta.get('fps') or 0.0)
+        if target_fps > 0 and out_fps > 0 and out_fps < max(1.0, target_fps * 0.5):
+            logger.error(
+                f"[Finalizer] Processed video fps looks wrong ({out_fps:.2f} < expected around {target_fps:.2f}): {output_path}"
+            )
+            return False
+        return True
+        
+    def _process_cycle_video(self, input_path: Path, input_fps: float) -> Optional[Path]:
+        """
+        Performs per-cycle video processing (interpolation, optionally with pingpong).
+
+        Args:
+            input_path: Path to the raw SVD video file.
+            input_fps: The original FPS of the input video (resolved_fps from GenerationRequest).
+
+        Returns:
+            Path to the processed video, or None if processing fails.
+        """
+        if not self.per_cycle_interpolation:
+            return input_path # Skip processing if disabled
+
+        if not input_path.exists():
+            logger.error(f"[Finalizer] Cannot process cycle: Input video not found at {input_path}")
+            return None
+
+        output_dir = self.videos_interpolated_dir
+        if not output_dir: # Should not happen if per_cycle_interpolation is true
+            logger.error("[Finalizer] videos_interpolated_dir is not set for per-cycle interpolation.")
+            return None
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Output path: run/videos_interpolated/<same base name>.mp4
+        output_path = output_dir / input_path.name
+        temp_output_path = output_path.with_name(f"{output_path.stem}.tmp{output_path.suffix}")
+        if temp_output_path.exists():
+            temp_output_path.unlink()
+
+        encoder = self._get_or_detect_encoder()
+        encoder_args = self._get_encoder_args(encoder, self.per_cycle_quality)
+
+        filter_complex_str = ""
+        target_fps = self.per_cycle_interpolate_fps
+
+        if self.per_cycle_pingpong:
+            logger.info(f"[Finalizer] Performing per-cycle PINGPONG + INTERPOLATION on {input_path.name} to {target_fps}fps...")
+            # Normalize input timestamp before pingpong and interpolation
+            filter_complex_str = (
+                f"[0:v]setpts=PTS-STARTPTS[v0];"
+                f"[v0]split=2[vf][vr];"
+                f"[vr]reverse,select='not(eq(n,0))'[vr2];"
+                f"[vf][vr2]concat=n=2:v=1:a=0,"
+                f"minterpolate=fps={target_fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1"
+            )
+        else: # Only interpolation
+            logger.info(f"[Finalizer] Performing per-cycle INTERPOLATION on {input_path.name} to {target_fps}fps...")
+            filter_complex_str = (
+                f"minterpolate=fps={target_fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1"
+            )
+        
+        cmd = [
+            'ffmpeg', '-y',
+            '-fflags', '+genpts',
+            '-i', str(input_path),
+            '-filter_complex', filter_complex_str,
+            '-an',
+            '-fps_mode', 'cfr',
+            '-r', str(target_fps),
+            *encoder_args,
+            '-movflags', '+faststart',
+            str(temp_output_path)
+        ]
+        
+        logger.debug(f"[Finalizer] Per-cycle Processing cmd: {' '.join(cmd)}")
+        
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=300
+            )
+            if result.returncode == 0 and self._processed_video_is_usable(input_path, temp_output_path, float(target_fps)):
+                temp_output_path.replace(output_path)
+                logger.info(f"[Finalizer] Cycle processing SUCCESS: {output_path}")
+                return output_path
+
+            logger.error(
+                f"[Finalizer] Cycle processing FAILED (rc={result.returncode}) for {input_path.name}: "
+                f"{result.stderr}"
+            )
+            if result.stdout:
+                logger.debug(f"[Finalizer] FFmpeg stdout: {result.stdout}")
+            return None
+        except subprocess.TimeoutExpired:
+            logger.error(f"[Finalizer] Cycle processing timed out for {input_path.name}")
+            return None
+        except Exception as e:
+            logger.error(f"[Finalizer] Cycle processing error for {input_path.name}: {e}")
+            return None
+        finally:
+            if temp_output_path.exists():
+                temp_output_path.unlink(missing_ok=True)
 
     def finalize(
         self,
@@ -121,7 +427,13 @@ class Finalizer:
         if cycle_video_paths:
             videos = [Path(p) for p in cycle_video_paths if Path(p).exists()]
         else:
-            videos = self._discover_videos()
+            # If per_cycle_interpolation is enabled and no explicit paths are given,
+            # discover from the interpolated videos directory.
+            if self.per_cycle_interpolation and self.videos_interpolated_dir:
+                logger.info("[Finalizer] Discovering videos from interpolated directory.")
+                videos = sorted(self.videos_interpolated_dir.glob("processed_cycle*_video.mp4"))
+            else:
+                videos = self._discover_videos() # Fallback to original videos_dir
 
         if not videos:
             raise FinalizerError(
@@ -193,7 +505,8 @@ class Finalizer:
         logger.info("=" * 60)
 
         # ── Detect best encoder ──
-        encoder, encoder_args = self._detect_encoder()
+        encoder = self._get_or_detect_encoder()
+        encoder_args = self._get_encoder_args(encoder, self.finalizer_crf)
         logger.info(f"[Finalizer] Encoder selected: {encoder}")
 
         # ── STEP 1: Interpolation (8fps → 60fps) ──
@@ -201,7 +514,6 @@ class Finalizer:
         interp_success = self._interpolate(
             input_path=self.final_output_path,
             output_path=self._interpolated_temp_path,
-            encoder=encoder,
             encoder_args=encoder_args
         )
 
@@ -220,7 +532,6 @@ class Finalizer:
         upscale_success = self._upscale(
             input_path=self._interpolated_temp_path,
             output_path=self.final_deliverable_path,
-            encoder=encoder,
             encoder_args=encoder_args
         )
 
@@ -249,66 +560,10 @@ class Finalizer:
     # Post-stitch internal methods
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _detect_encoder(self) -> tuple:
-        """
-        Detect the best available encoder.
-        Tries h264_nvenc first, falls back to libx264.
-
-        Returns:
-            (encoder_name, encoder_args_list)
-        """
-        for encoder in self.encoder_preference:
-            if encoder == 'h264_nvenc':
-                # Test NVENC availability with a minimal encode
-                test_cmd = [
-                    'ffmpeg', '-y',
-                    '-f', 'lavfi', '-i', 'nullsrc=s=64x64:d=0.1',
-                    '-c:v', 'h264_nvenc',
-                    '-f', 'null', '-'
-                ]
-                try:
-                    result = subprocess.run(
-                        test_cmd, capture_output=True, text=True, timeout=10
-                    )
-                    if result.returncode == 0:
-                        logger.info("[Finalizer] NVENC (h264_nvenc) detected and available")
-                        return 'h264_nvenc', [
-                            '-c:v', 'h264_nvenc',
-                            '-cq', str(self.finalizer_crf),
-                            '-preset', 'p5',
-                            '-pix_fmt', 'yuv420p'
-                        ]
-                    else:
-                        logger.info(
-                            f"[Finalizer] h264_nvenc not available: "
-                            f"{result.stderr[:200]}"
-                        )
-                except Exception as e:
-                    logger.info(f"[Finalizer] h264_nvenc test failed: {e}")
-
-            elif encoder == 'libx264':
-                logger.info("[Finalizer] Using libx264 (CPU fallback)")
-                return 'libx264', [
-                    '-c:v', 'libx264',
-                    '-crf', str(self.finalizer_crf),
-                    '-preset', 'slow',
-                    '-pix_fmt', 'yuv420p'
-                ]
-            else:
-                logger.warning(f"[Finalizer] Unknown encoder in preference list: {encoder}")
-
-        # If ALL encoders in preference list failed, hard fail
-        raise FinalizerError(
-            "[Finalizer] FATAL: No usable video encoder found. "
-            f"Tried: {self.encoder_preference}. "
-            "Ensure ffmpeg is installed with h264_nvenc or libx264 support."
-        )
-
     def _interpolate(
         self,
         input_path: Path,
         output_path: Path,
-        encoder: str,
         encoder_args: list
     ) -> bool:
         """
@@ -357,7 +612,6 @@ class Finalizer:
         self,
         input_path: Path,
         output_path: Path,
-        encoder: str,
         encoder_args: list
     ) -> bool:
         """
@@ -464,26 +718,25 @@ class Finalizer:
                 for vid in videos:
                     f.write(f"file '{vid.resolve()}'\n")
 
-            for codec in [self.preferred_codec, 'libx264']:
-                cmd = [
-                    'ffmpeg', '-y',
-                    '-f', 'concat',
-                    '-safe', '0',
-                    '-i', str(concat_file),
-                    '-c:v', codec,
-                    '-crf', str(self.output_quality),
-                    '-pix_fmt', 'yuv420p',
-                    str(self.final_output_path)
-                ]
+            encoder = self._get_or_detect_encoder()
+            encoder_args = self._get_encoder_args(encoder, self.output_quality)
 
-                result = subprocess.run(cmd, capture_output=True, text=True)
+            cmd = [
+                'ffmpeg', '-y',
+                '-f', 'concat',
+                '-safe', '0',
+                '-i', str(concat_file),
+                *encoder_args,
+                str(self.final_output_path)
+            ]
 
-                if result.returncode == 0 and self.final_output_path.exists():
-                    logger.info(f"[Finalizer] Re-encode concat succeeded with {codec}")
-                    return True
+            result = subprocess.run(cmd, capture_output=True, text=True)
 
-                logger.warning(f"[Finalizer] Re-encode with {codec} failed: {result.stderr[:200]}")
+            if result.returncode == 0 and self.final_output_path.exists():
+                logger.info(f"[Finalizer] Re-encode concat succeeded with {encoder}")
+                return True
 
+            logger.warning(f"[Finalizer] Re-encode with {encoder} failed: {result.stderr[:200]}")
             return False
 
         finally:

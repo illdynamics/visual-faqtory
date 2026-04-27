@@ -2,7 +2,86 @@ import numpy as np
 from PIL import Image, ImageFilter
 from typing import Tuple
 from scipy.ndimage import convolve
-from scipy.ndimage import convolve # Import convolve
+
+
+def calculate_frame_similarity(
+    image_a_path: str,
+    image_b_path: str,
+    *,
+    size: Tuple[int, int] = (128, 72),
+) -> float:
+    """
+    Compute a lightweight continuity score in the range [0, 1].
+
+    The original metric leaned heavily on grayscale structure, which made it too
+    forgiving for "same silhouette, totally soupified texture/color" failures.
+    For reinjected animation endpoints we want something stricter, so the score
+    now blends:
+      - luminance correlation
+      - edge correlation
+      - RGB color similarity
+      - a tiny perceptual dHash agreement check
+
+    1.0 means "very similar", 0.0 means "wildly different".
+    """
+    try:
+        with Image.open(image_a_path) as img_a, Image.open(image_b_path) as img_b:
+            a_rgb = img_a.convert('RGB').resize(size, Image.Resampling.BICUBIC)
+            b_rgb = img_b.convert('RGB').resize(size, Image.Resampling.BICUBIC)
+
+            a = a_rgb.convert('L')
+            b = b_rgb.convert('L')
+
+            a_arr = np.asarray(a, dtype=np.float32) / 255.0
+            b_arr = np.asarray(b, dtype=np.float32) / 255.0
+
+            # Base luminance correlation.
+            a_vec = a_arr.flatten() - float(a_arr.mean())
+            b_vec = b_arr.flatten() - float(b_arr.mean())
+            denom = (np.linalg.norm(a_vec) * np.linalg.norm(b_vec)) + 1e-8
+            luminance_corr = float(np.dot(a_vec, b_vec) / denom)
+
+            # Edge correlation helps catch structure drift even when colors mutate.
+            a_edges = np.asarray(a.filter(ImageFilter.FIND_EDGES), dtype=np.float32) / 255.0
+            b_edges = np.asarray(b.filter(ImageFilter.FIND_EDGES), dtype=np.float32) / 255.0
+            ae_vec = a_edges.flatten() - float(a_edges.mean())
+            be_vec = b_edges.flatten() - float(b_edges.mean())
+            edge_denom = (np.linalg.norm(ae_vec) * np.linalg.norm(be_vec)) + 1e-8
+            edge_corr = float(np.dot(ae_vec, be_vec) / edge_denom)
+
+            # Color drift matters for continuity too. Soup can preserve outline while
+            # melting the palette, so include a lightweight RGB mean absolute error.
+            a_rgb_arr = np.asarray(a_rgb.resize((64, 36), Image.Resampling.BICUBIC), dtype=np.float32) / 255.0
+            b_rgb_arr = np.asarray(b_rgb.resize((64, 36), Image.Resampling.BICUBIC), dtype=np.float32) / 255.0
+            color_mae = float(np.mean(np.abs(a_rgb_arr - b_rgb_arr)))
+            color_score = max(0.0, min(1.0, 1.0 - color_mae))
+
+            # Tiny perceptual hash agreement for extra protection against obvious
+            # texture/layout soup while staying dependency-light.
+            def _dhash_bits(img: Image.Image, hash_size: int = 8) -> np.ndarray:
+                gray = img.convert('L').resize((hash_size + 1, hash_size), Image.Resampling.BICUBIC)
+                arr = np.asarray(gray, dtype=np.float32)
+                return (arr[:, 1:] > arr[:, :-1]).astype(np.uint8).flatten()
+
+            hash_a = _dhash_bits(a_rgb)
+            hash_b = _dhash_bits(b_rgb)
+            hash_score = float(np.mean(hash_a == hash_b))
+
+            # Convert [-1, 1] correlations to [0, 1].
+            luminance_score = max(0.0, min(1.0, (luminance_corr + 1.0) / 2.0))
+            edge_score = max(0.0, min(1.0, (edge_corr + 1.0) / 2.0))
+
+            # Blend. Keep structure primary, but make room for color/hash so the
+            # continuity guard stops rubber-stamping chromatic soup.
+            return float(
+                (0.35 * luminance_score)
+                + (0.25 * edge_score)
+                + (0.25 * color_score)
+                + (0.15 * hash_score)
+            )
+    except Exception as e:
+        print(f"Error calculating frame similarity for {image_a_path} vs {image_b_path}: {e}")
+        return 0.0
 
 def calculate_blur(image_path: str) -> float:
     """

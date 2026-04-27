@@ -12,7 +12,7 @@ Responsibilities:
   4. Analyze the visual output using LLM
   5. Suggest subtle creative variations for next cycle
 
-Part of QonQrete Visual FaQtory v0.5.6-beta
+Part of Visual FaQtory v0.5.6-beta
 """
 
 import json
@@ -33,7 +33,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-INSPEQTOR_SYSTEM_PROMPT = """You are InspeQtor, a visual evolution specialist for the QonQrete Visual FaQtory.
+INSPEQTOR_SYSTEM_PROMPT = """You are InspeQtor, a visual evolution specialist for the Visual FaQtory.
 
 You operate in INNOVATIVE mode - thinking outside the box while keeping changes SUBTLE.
 

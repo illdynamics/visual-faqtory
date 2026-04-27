@@ -1,0 +1,44 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# vf-srt-watcher.service.example
+# Visual FaQtory SRT A/B Watcher — systemd unit
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Install:
+#   apt-get install -y ffmpeg inotify-tools
+#   cp ops/systemd/vf-srt-watcher.service.example /etc/systemd/system/vf-srt-watcher.service
+#   cp vf-obs-watcher-srt-endpoints.env.example /opt/visual-faqtory/vf-obs-watcher-srt-endpoints.env
+#   # Edit the .env file with your settings
+#   # Optional: set VF_CONFIG_FILE there if you do NOT want the default worqspace/config.yaml
+#   systemctl daemon-reload
+#   systemctl enable --now vf-srt-watcher
+#
+# Part of Visual FaQtory v0.9.0-beta
+
+[Unit]
+Description=Visual FaQtory SRT A/B Playout Watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+StartLimitIntervalSec=0
+Type=simple
+User=vfaq
+Group=vfaq
+WorkingDirectory=/opt/visual-faqtory
+EnvironmentFile=/opt/visual-faqtory/vf-obs-watcher-srt-endpoints.env
+# Example override when your active generator config is not worqspace/config.yaml:
+# Environment=VF_CONFIG_FILE=/opt/visual-faqtory/worqspace/config-live.yaml
+ExecStartPre=/opt/visual-faqtory/vf-obs-watcher-srt-endpoints.sh --smoke-check
+# Optional operator preflight against a known clip before first show:
+# ExecStartPre=/usr/bin/env bash -lc "/opt/visual-faqtory/vf-obs-watcher-srt-endpoints.sh --validate-file /opt/visual-faqtory/run/videos/sample.mp4"
+ExecStart=/opt/visual-faqtory/vf-obs-watcher-srt-endpoints.sh
+TimeoutStopSec=15
+Restart=always
+RestartSec=5
+KillMode=control-group
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -18,7 +18,7 @@ Mode handling:
   - IMAGE mode: requires base_image_path, feed to img2img → img2vid
   - VIDEO mode: extract frame from video → treat as IMAGE mode
 
-Part of QonQrete Visual FaQtory v0.5.6-beta
+Part of Visual FaQtory v0.5.6-beta
 """
 import os
 import time
@@ -30,7 +30,7 @@ from typing import Optional, Dict, Any
 from .visual_briq import VisualBriq, BriqStatus, InputMode
 from .backends import (
     create_backend, GenerationRequest, GenerationResult,
-    GeneratorBackend, FatalConfigError
+    GeneratorBackend, FatalConfigError, get_backend_type_for_capability, extract_backend_config
 )
 
 logger = logging.getLogger(__name__)
@@ -58,18 +58,18 @@ class ConstruQtor:
             self.backend = backend
         else:
             # Merge lora config into backend config if present at top-level
-            backend_config = config.get('backend', {'type': 'mock'}).copy()
-            lora_cfg = config.get('lora')
+            backend_config = extract_backend_config(config)
+            lora_cfg = backend_config.get('lora')
             if lora_cfg:
-                backend_config['lora'] = lora_cfg
                 try:
                     enabled = bool(lora_cfg.get('enabled', False))
                 except Exception:
                     enabled = False
                 if enabled:
-                    if backend_config.get('type', '').lower() != 'comfyui':
+                    image_backend_type = get_backend_type_for_capability(backend_config, 'image')
+                    if image_backend_type != 'comfyui':
                         raise FatalConfigError(
-                            "LoRA enabled but backend type is not 'comfyui'. "
+                            "LoRA enabled but image backend type is not 'comfyui'. "
                             "Set backend: comfyui or disable lora.enabled."
                         )
             self.backend = create_backend(backend_config)
