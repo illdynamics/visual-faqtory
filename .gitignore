@@ -1,0 +1,108 @@
+# Secrets
+*.env
+**/*.env
+
+# temprun
+*run
+**run/*
+
+# saved runs
+*saved-runs
+**/saved-runs/*
+
+# base stuff
+**/base_images*
+**/base_audio*
+**/base_videos*
+
+# Generated agent/runtime artifacts
+**/bloq.d/*
+**/tasq.d/*
+**/exeq.d/*
+**/reqap.d/*
+**/qodeyard/*
+**/sqrapyard/*
+**/struqture/*
+worqspace/qage_*/
+worqspace/sqrapyard*
+worqspace/struqture*
+
+# Saved run outputs (kept local by default)
+worqspace/qonstructions/*
+!worqspace/qonstructions/.gitkeep
+worqspace/provider-live-logs*/
+worqspace/audit/ai_payloads/
+worqspace/audit/ai_payloads/**
+
+# timewalQer runtime data
+**/.qonqrete/timewalqer/snapshots/*
+**/.qonqrete/timewalqer/backups/*
+**/.qonqrete/timewalqer/*.json
+**/.qonqrete/timewalqer.pause
+
+# Python caches and test artifacts
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+**/.pytest_cache/
+.ruff_cache/
+**/.ruff_cache/
+.mypy_cache/
+**/.mypy_cache/
+.tox/
+**/.tox/
+.nox/
+**/.nox/
+.coverage
+coverage.xml
+*.pyc
+*.pyo
+*.pyd
+
+# Python build artifacts
+build/
+dist/
+*.egg-info/
+
+# Node junk
+node_modules/
+**/node_modules/
+.npm/
+**/.npm/
+.yarn/cache/
+**/.yarn/cache/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# VSCode extension generated output
+vscode-extension/out/
+vscode-extension/dist/
+vscode-extension/*.vsix
+vscode-extension/node_modules/
+vscode-extension/build/
+
+# IntelliJ plugin generated output
+intellij-plugin/build/
+intellij-plugin/.gradle/
+intellij-plugin/out/
+intellij-plugin/node_modules/
+
+# IDE/system junk
+.idea/
+**/.idea/
+.DS_Store
+**/.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Local env helpers
+.venv/
+**/.venv/
+.tool-versions
+**/.tool-versions
+
+# Config backups
+**/.config_backup/*

@@ -32,7 +32,7 @@ morph_backend:
   type: venice
 
 input:
-  mode: text
+  mode: image
 
 venice:
   api_key: ${VENICE_API_KEY}
@@ -50,10 +50,10 @@ venice:
   strict_model_validation: false
 
   models:
-    text2img: gpt-image-2
-    img2img: gpt-image-2
-    text2vid: ovi-image-to-video
-    img2vid: ovi-image-to-video
+    text2img: seedream-v4
+    img2img: seedream-v4
+    text2vid: grok-imagine-text-to-video-private
+    img2vid: grok-imagine-image-to-video-private
 
   image:
     width: 1280
@@ -62,12 +62,12 @@ venice:
     steps: 8
     negative_prompt: ""
     hide_watermark: true
-    safe_mode: true
+    safe_mode: false
 
   video:
     resolution: 720p
     aspect_ratio: "16:9"
-    negative_prompt: low resolution, error, worst quality, low quality, defects
+    negative_prompt: ""
     audio: false
 
     # Per-operation overrides — omit any field to inherit the global above.
@@ -103,7 +103,7 @@ paragraph_story:
   video_fps: 12
   seed_base: 1337
   rolling_window: true
-  require_morph: false
+  require_morph: true
   enable_loop_closure: true
   img2img_denoise_min: 0.35
   img2img_denoise_max: 0.55
