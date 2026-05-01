@@ -108,6 +108,44 @@ class VisualFaQtoryConfigTests(unittest.TestCase):
         self.assertEqual(story_config.img2vid_duration_sec, 10.0)
         self.assertEqual(story_config.venice_config['video']['duration_seconds'], 10)
 
+    def test_build_story_config_respects_yaml_reinject_when_cli_not_set(self):
+        config = {
+            'backend': {'type': 'mock'},
+            'paragraph_story': {'reinject': False},
+            'input': {'mode': 'text'},
+            'finalizer': {'enabled': False},
+        }
+        (self.worqspace_dir / 'config.yaml').write_text(yaml.safe_dump(config, sort_keys=False), encoding='utf-8')
+
+        vf = VisualFaQtory(
+            worqspace_dir=self.worqspace_dir,
+            run_dir=self.temp_dir / 'run_reinject_yaml',
+            dry_run=True,
+            project_name='reinject-yaml',
+            reinject=None,
+        )
+        story_config = vf._build_story_config()
+        self.assertFalse(story_config.reinject)
+
+    def test_build_story_config_cli_reinject_override_wins(self):
+        config = {
+            'backend': {'type': 'mock'},
+            'paragraph_story': {'reinject': True},
+            'input': {'mode': 'text'},
+            'finalizer': {'enabled': False},
+        }
+        (self.worqspace_dir / 'config.yaml').write_text(yaml.safe_dump(config, sort_keys=False), encoding='utf-8')
+
+        vf = VisualFaQtory(
+            worqspace_dir=self.worqspace_dir,
+            run_dir=self.temp_dir / 'run_reinject_cli',
+            dry_run=True,
+            project_name='reinject-cli',
+            reinject=False,
+        )
+        story_config = vf._build_story_config()
+        self.assertFalse(story_config.reinject)
+
 
 if __name__ == '__main__':
     unittest.main()

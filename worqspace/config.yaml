@@ -121,7 +121,21 @@ paragraph_story:
   # ── Other paragraph_story options (commented = use defaults) ──────────────
   # video_frames: null                          # Override frame count (else derived)
   # timing_authority: null                      # frames | duration | fps
-  reinject: true                              # img2img keyframe every cycle
+  reinject: true                          # img2img keyframe every cycle
+  smart_reinject_enabled: true           # Async prefetch keyframe for next cycle
+  smart_reinject_every_n_cycles: 1        # 1 = every eligible cycle
+  smart_reinject_use_morph: true          # true = first/last morph, false = i2v from prefetched frame
+#  smart_reinject_similarity_guard_enabled: true
+#  smart_reinject_similarity_threshold: 0.42
+#  smart_reinject_wait_timeout_sec: 0      # 0 = never wait for late prefetch
+#  smart_reinject_sync_fallback: false     # true = fallback to old sync require_morph path
+#  smart_reinject_denoise_min: 0.25
+#  smart_reinject_denoise_max: 0.45
+#  smart_reinject_prompt_prefix: "Preserve the source image strongly. Make a subtle evolved keyframe for the next visual beat. Keep composition, identity, palette, lighting, and major shapes stable. Avoid large scene changes."
+  # For smart async reinject, lower denoise is safer:
+  # smart_reinject_denoise_min: 0.25
+  # smart_reinject_denoise_max: 0.45
+
   # continuity_guard_enabled: true              # Retry overly-drifted videos
   # continuity_similarity_threshold: 0.42       # 0..1 stricter for conditioned video
   # continuity_morph_similarity_threshold: 0.86 # Morph endpoints must land closer

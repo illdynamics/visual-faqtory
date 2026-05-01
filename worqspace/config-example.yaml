@@ -137,6 +137,19 @@ paragraph_story:
   require_morph: true                     # Force first/last-frame morph each cycle
   enable_loop_closure: true               # Final clip transitions back to cycle 1 anchor
   reinject: true                          # img2img keyframe every cycle
+  smart_reinject_enabled: false           # Async prefetch keyframe for next cycle
+  smart_reinject_every_n_cycles: 1        # 1 = every eligible cycle
+  smart_reinject_use_morph: true          # true = first/last morph, false = i2v from prefetched frame
+  smart_reinject_similarity_guard_enabled: true
+  smart_reinject_similarity_threshold: 0.42
+  smart_reinject_wait_timeout_sec: 0      # 0 = never wait for late prefetch
+  smart_reinject_sync_fallback: false     # true = fallback to old sync require_morph path
+  smart_reinject_denoise_min: 0.25
+  smart_reinject_denoise_max: 0.45
+  smart_reinject_prompt_prefix: "Preserve the source image strongly. Make a subtle evolved keyframe for the next visual beat. Keep composition, identity, palette, lighting, and major shapes stable. Avoid large scene changes."
+  # For smart async reinject, lower denoise is safer:
+  # smart_reinject_denoise_min: 0.25
+  # smart_reinject_denoise_max: 0.45
   img2img_denoise_min: 0.55               # Lower bound of per-cycle denoise jitter
   img2img_denoise_max: 0.88               # Upper bound of per-cycle denoise jitter
   continuity_guard_enabled: true          # Retry overly-drifted conditioned videos

@@ -62,9 +62,10 @@ import logging
 import os
 import random
 import shutil
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from vfaq.timing import TimingResolver
 from vfaq.finalizer import Finalizer # Import Finalizer
 
@@ -116,6 +117,8 @@ class SlidingStoryConfig:
         enable_loop_closure: When true, generate a final loop-closure clip
                              that transitions from the last frame back to the
                              cycle-1 anchor frame.
+        smart_reinject_*:    Optional async reinject controls (Venice-first).
+                             Disabled by default to preserve v0.9.2 behavior.
     """
     max_paragraphs: int = 4
     img2vid_duration_sec: Optional[float] = None
@@ -134,6 +137,19 @@ class SlidingStoryConfig:
     veo_config: Dict[str, any] | None = None  # Veo-specific config (v0.6.0-beta)
     venice_config: Dict[str, any] | None = None  # Venice config (v0.7.1-beta)
     enable_loop_closure: bool = False  # Generate final loop-closure clip (v0.6.0-beta)
+    smart_reinject_enabled: bool = False
+    smart_reinject_every_n_cycles: int = 1
+    smart_reinject_use_morph: bool = True
+    smart_reinject_similarity_guard_enabled: bool = True
+    smart_reinject_similarity_threshold: float = 0.42
+    smart_reinject_wait_timeout_sec: float = 0.0
+    smart_reinject_sync_fallback: bool = False
+    smart_reinject_denoise_min: Optional[float] = None
+    smart_reinject_denoise_max: Optional[float] = None
+    smart_reinject_prompt_prefix: str = (
+        "Preserve the source image strongly. Make a subtle evolved keyframe for the next visual beat. "
+        "Keep composition, identity, palette, lighting, and major shapes stable. Avoid large scene changes."
+    )
     continuity_guard_enabled: bool = True  # Retry overly drifted conditioned videos
     continuity_similarity_threshold: float = 0.42  # 0..1, higher is stricter for generic conditioned video
     continuity_morph_similarity_threshold: float = 0.86  # Morph endpoints should land much closer to the target keyframe
@@ -141,6 +157,207 @@ class SlidingStoryConfig:
     continuity_ffmpeg_fallback_enabled: bool = True  # Replace unrecoverable soup with a sane fallback clip
     continuity_ffmpeg_fallback_min_similarity: float = 0.32  # Legacy soft-accept floor for non-morph paths
     continuity_force_fallback_for_morph: bool = True  # Never propagate a weak morph endpoint into the next cycle
+
+
+@dataclass
+class _SmartReinjectPrefetch:
+    future: Future
+    source_cycle_idx: int
+    target_cycle_idx: int
+    source_image_path: Path
+    atom_id: str
+    denoise_strength: float
+    prompt_preview: str
+
+
+@dataclass
+class _SmartReinjectState:
+    enabled: bool = False
+    executor: Optional[ThreadPoolExecutor] = None
+    image_backend: Optional[Any] = None
+    pending: Optional[_SmartReinjectPrefetch] = None
+    warned_end_frame_morph_disabled: bool = False
+    warned_morph_capability_failure: bool = False
+
+
+def _normalize_smart_reinject_interval(raw_value: Any) -> int:
+    try:
+        return max(1, int(raw_value))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _should_schedule_smart_reinject(
+    *,
+    state: _SmartReinjectState,
+    config: SlidingStoryConfig,
+    cycle_idx: int,
+    total_cycles: int,
+    effective_reinject: bool,
+    crowd_active: bool,
+    source_image_path: Optional[Path],
+) -> bool:
+    if not state.enabled:
+        return False
+    if not effective_reinject:
+        return False
+    if crowd_active:
+        return False
+    if cycle_idx >= total_cycles:
+        return False
+    if source_image_path is None or not source_image_path.exists():
+        return False
+    if state.pending and not state.pending.future.done():
+        logger.info(
+            "[SlidingStory/SmartReinject] Previous prefetch still running "
+            f"(target cycle {state.pending.target_cycle_idx}) — skip new schedule."
+        )
+        return False
+    every_n = _normalize_smart_reinject_interval(config.smart_reinject_every_n_cycles)
+    return ((cycle_idx - 1) % every_n) == 0
+
+
+def _start_smart_reinject_prefetch(
+    *,
+    state: _SmartReinjectState,
+    cycle_idx: int,
+    target_cycle_idx: int,
+    source_image_path: Path,
+    prompt: str,
+    seed: int,
+    denoise_strength: float,
+    width: int,
+    height: int,
+    output_dir: Path,
+) -> bool:
+    if not state.enabled or state.executor is None or state.image_backend is None:
+        return False
+    atom_id = f"smart_reinject_{cycle_idx:03d}_for_{target_cycle_idx:03d}"
+    req = GenerationRequest(
+        prompt=prompt,
+        negative_prompt="",
+        seed=seed,
+        mode=InputMode.IMAGE,
+        init_image_path=source_image_path,
+        denoise_strength=denoise_strength,
+        width=width,
+        height=height,
+        output_dir=output_dir,
+        atom_id=atom_id,
+    )
+    future = state.executor.submit(state.image_backend.generate_image, req)
+    state.pending = _SmartReinjectPrefetch(
+        future=future,
+        source_cycle_idx=cycle_idx,
+        target_cycle_idx=target_cycle_idx,
+        source_image_path=source_image_path,
+        atom_id=atom_id,
+        denoise_strength=denoise_strength,
+        prompt_preview=prompt[:220],
+    )
+    logger.info(
+        "[SlidingStory/SmartReinject] Scheduled async prefetch "
+        f"{atom_id} ({source_image_path.name} -> cycle {target_cycle_idx})"
+    )
+    return True
+
+
+def _collect_smart_reinject_prefetch(
+    *,
+    state: _SmartReinjectState,
+    cycle_idx: int,
+    keyframes_dir: Path,
+    wait_timeout_sec: float,
+) -> Optional[Dict[str, Any]]:
+    pending = state.pending
+    if not pending:
+        return None
+
+    if pending.target_cycle_idx != cycle_idx:
+        if pending.future.done():
+            try:
+                result = pending.future.result()
+                if result and result.image_path and result.image_path.exists():
+                    logger.info(
+                        "[SlidingStory/SmartReinject] Discarding stale prefetch "
+                        f"{pending.atom_id} (ready for cycle {pending.target_cycle_idx}, now cycle {cycle_idx})"
+                    )
+            except Exception as e:
+                logger.warning(f"[SlidingStory/SmartReinject] Stale prefetch failed: {e}")
+            finally:
+                state.pending = None
+        return None
+
+    timeout = max(0.0, float(wait_timeout_sec or 0.0))
+    if not pending.future.done():
+        if timeout <= 0.0:
+            logger.info(
+                "[SlidingStory/SmartReinject] Prefetch not ready for cycle "
+                f"{cycle_idx} and wait_timeout=0 — continuing without waiting."
+            )
+            return None
+        try:
+            pending.future.result(timeout=timeout)
+        except FutureTimeoutError:
+            logger.info(
+                "[SlidingStory/SmartReinject] Prefetch still not ready after "
+                f"{timeout:.2f}s for cycle {cycle_idx} — continuing without waiting."
+            )
+            return None
+        except Exception as e:
+            logger.warning(f"[SlidingStory/SmartReinject] Prefetch failed for cycle {cycle_idx}: {e}")
+            state.pending = None
+            return None
+
+    try:
+        result = pending.future.result()
+    except Exception as e:
+        logger.warning(f"[SlidingStory/SmartReinject] Prefetch result failed for cycle {cycle_idx}: {e}")
+        state.pending = None
+        return None
+
+    state.pending = None
+    if not (result and result.success and result.image_path and result.image_path.exists()):
+        logger.warning(
+            f"[SlidingStory/SmartReinject] Prefetch returned no usable keyframe for cycle {cycle_idx}"
+        )
+        return None
+
+    target_path = keyframes_dir / f"smart_reinject_target_{cycle_idx:03d}.png"
+    try:
+        if result.image_path != target_path:
+            shutil.move(str(result.image_path), str(target_path))
+        else:
+            target_path = result.image_path
+    except Exception as e:
+        logger.warning(f"[SlidingStory/SmartReinject] Failed to materialize prefetch keyframe: {e}")
+        return None
+
+    logger.info(
+        "[SlidingStory/SmartReinject] Prefetch ready for cycle "
+        f"{cycle_idx} from cycle {pending.source_cycle_idx}: {target_path.name}"
+    )
+    return {
+        "keyframe_path": target_path,
+        "source_cycle_idx": pending.source_cycle_idx,
+        "atom_id": pending.atom_id,
+        "denoise_strength": pending.denoise_strength,
+        "prompt_preview": pending.prompt_preview,
+    }
+
+
+def _shutdown_smart_reinject_state(state: _SmartReinjectState) -> None:
+    if not state.executor:
+        return
+    try:
+        if state.pending and not state.pending.future.done():
+            state.pending.future.cancel()
+        state.executor.shutdown(wait=False, cancel_futures=True)
+    except Exception as e:
+        logger.warning(f"[SlidingStory/SmartReinject] Executor shutdown warning: {e}")
+    finally:
+        state.pending = None
+        state.executor = None
 
 def _parse_story_file(story_path: Path) -> List[str]:
     """Parse a plain text story file into paragraphs.
@@ -750,6 +967,24 @@ def run_sliding_story(
     morph_is_ltx = morph_backend_type == 'ltx_video'
     morph_is_venice = morph_backend_type == 'venice'
     resolved_backend_cfgs = resolve_capability_backend_configs(backend_cfg)
+    smart_reinject_requested = bool(getattr(config, "smart_reinject_enabled", False))
+    smart_reinject_state = _SmartReinjectState(enabled=bool(is_venice and smart_reinject_requested))
+    if smart_reinject_requested and not is_venice:
+        logger.info(
+            "[SlidingStory/SmartReinject] smart_reinject_enabled=true but video backend is not Venice; "
+            "feature is currently Venice-first and will be ignored."
+        )
+    if smart_reinject_state.enabled:
+        try:
+            image_cap_cfg = resolve_capability_backend_configs(backend_cfg).get("image", {})
+            smart_reinject_state.image_backend = create_backend(image_cap_cfg or {})
+            smart_reinject_state.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="smart_reinject")
+            logger.info("[SlidingStory/SmartReinject] Async prefetch enabled.")
+        except Exception as e:
+            smart_reinject_state.enabled = False
+            smart_reinject_state.executor = None
+            smart_reinject_state.image_backend = None
+            logger.warning(f"[SlidingStory/SmartReinject] Failed to initialize async prefetch backend: {e}")
 
     def get_capability_setting(capability: str, key: str, default=None):
         cap_cfg = resolved_backend_cfgs.get(capability, {})
@@ -977,6 +1212,14 @@ def run_sliding_story(
             "video_prompt_preview": video_stage_prompt[:500],
             "motion_prompt_used": bool(motion_prompt_text),
         }
+        if smart_reinject_state.enabled:
+            briq_data.update({
+                "smart_reinject_enabled": True,
+                "smart_reinject_used": False,
+                "smart_reinject_similarity": None,
+                "smart_reinject_keyframe": None,
+                "smart_reinject_source_cycle": None,
+            })
 
         # Record crowd control state in briq (includes visual reset telemetry)
         if crowd_client is not None:
@@ -1349,6 +1592,24 @@ def run_sliding_story(
             # backend attaches it as a `reference_image_urls` payload field
             # (subject to model support).
             crowd_reference_paths: Optional[List[Path]] = None
+            smart_enabled = smart_reinject_state.enabled
+            smart_prefetch = None
+            smart_prefetched_keyframe: Optional[Path] = None
+            smart_prefetched_valid = False
+            smart_similarity_score: Optional[float] = None
+            smart_schedule_source_image: Optional[Path] = None
+            smart_next_window_prompt: Optional[str] = None
+            if smart_enabled and cycle_idx > 1:
+                smart_prefetch = _collect_smart_reinject_prefetch(
+                    state=smart_reinject_state,
+                    cycle_idx=cycle_idx,
+                    keyframes_dir=keyframes_dir,
+                    wait_timeout_sec=float(getattr(config, "smart_reinject_wait_timeout_sec", 0.0) or 0.0),
+                )
+                if smart_prefetch:
+                    smart_prefetched_keyframe = Path(smart_prefetch["keyframe_path"])
+                    briq_data["smart_reinject_keyframe"] = str(smart_prefetched_keyframe)
+                    briq_data["smart_reinject_source_cycle"] = int(smart_prefetch["source_cycle_idx"])
 
             if cycle_idx == 1:
                 if base_image_path and base_image_path.exists() and not crowd_replace_active:
@@ -1393,7 +1654,75 @@ def run_sliding_story(
                         )
                         briq_data["input_mode"] = "text"
             else:
-                if effective_require_morph and last_frame_path and last_frame_path.exists():
+                smart_mode_applied = False
+                if (
+                    smart_enabled
+                    and smart_prefetched_keyframe
+                    and smart_prefetched_keyframe.exists()
+                    and last_frame_path
+                    and last_frame_path.exists()
+                ):
+                    smart_prefetched_valid = True
+                    if bool(getattr(config, "smart_reinject_similarity_guard_enabled", True)):
+                        try:
+                            smart_similarity_score = calculate_frame_similarity(
+                                str(last_frame_path),
+                                str(smart_prefetched_keyframe),
+                            )
+                            briq_data["smart_reinject_similarity"] = smart_similarity_score
+                            smart_threshold = float(getattr(config, "smart_reinject_similarity_threshold", 0.42))
+                            if smart_similarity_score < smart_threshold:
+                                smart_prefetched_valid = False
+                                briq_data["smart_reinject_rejected_keyframe"] = str(smart_prefetched_keyframe)
+                                briq_data["smart_reinject_rejected_reason"] = (
+                                    f"similarity<{smart_threshold:.3f}"
+                                )
+                                logger.info(
+                                    "[SlidingStory/SmartReinject] Rejected prefetched keyframe "
+                                    f"for cycle {cycle_idx}: similarity={smart_similarity_score:.3f} "
+                                    f"< threshold={smart_threshold:.3f}"
+                                )
+                        except Exception as e:
+                            smart_prefetched_valid = False
+                            briq_data["smart_reinject_rejected_keyframe"] = str(smart_prefetched_keyframe)
+                            briq_data["smart_reinject_rejected_reason"] = f"similarity_error:{e}"
+                            logger.warning(
+                                f"[SlidingStory/SmartReinject] Similarity guard failed for cycle {cycle_idx}: {e}"
+                            )
+
+                    if smart_prefetched_valid:
+                        if bool(getattr(config, "smart_reinject_use_morph", True)):
+                            if not bool(venice_cfg_dict.get("enable_end_frame_morph", True)):
+                                if not smart_reinject_state.warned_end_frame_morph_disabled:
+                                    logger.warning(
+                                        "[SlidingStory/SmartReinject] smart_reinject_use_morph=true but "
+                                        "venice.enable_end_frame_morph=false. Falling back to image_to_video."
+                                    )
+                                    smart_reinject_state.warned_end_frame_morph_disabled = True
+                            else:
+                                venice_mode_str = "smart_async_first_last_frame"
+                                image_for_venice = last_frame_path
+                                end_image_for_venice = smart_prefetched_keyframe
+                                briq_data["input_mode"] = "image"
+                                briq_data.setdefault("paths", {})
+                                briq_data["paths"]["start_image"] = str(last_frame_path)
+                                briq_data["paths"]["keyframe"] = str(smart_prefetched_keyframe)
+                                briq_data["smart_reinject_used"] = True
+                                smart_mode_applied = True
+                                smart_schedule_source_image = smart_prefetched_keyframe
+                        else:
+                            venice_mode_str = "smart_async_image_to_video"
+                            image_for_venice = smart_prefetched_keyframe
+                            briq_data["input_mode"] = "image"
+                            briq_data.setdefault("paths", {})
+                            briq_data["paths"]["start_image"] = str(smart_prefetched_keyframe)
+                            briq_data["smart_reinject_used"] = True
+                            smart_mode_applied = True
+                            smart_schedule_source_image = smart_prefetched_keyframe
+
+                if not smart_mode_applied and effective_require_morph and last_frame_path and last_frame_path.exists() and (
+                    (not smart_enabled) or bool(getattr(config, "smart_reinject_sync_fallback", False))
+                ):
                     rng = random.Random(random_seed_base + cycle_idx * 10007)
                     denoise = rng.uniform(config.img2img_denoise_min, config.img2img_denoise_max)
                     briq_data["denoise"] = denoise
@@ -1435,7 +1764,7 @@ def run_sliding_story(
                         venice_mode_str = "image_to_video"
                         image_for_venice = last_frame_path
                         briq_data["input_mode"] = "image"
-                elif crowd_use_reference_mode:
+                elif not smart_mode_applied and crowd_use_reference_mode:
                     # v0.9.1 — crowd_inject_source_mode == "as_reference":
                     # cycle is text_to_video with the previous lastframe sent
                     # as a REFERENCE image (when the model supports it). The
@@ -1457,7 +1786,7 @@ def run_sliding_story(
                             f"[SlidingStory/Venice] Cycle {cycle_idx}: text_to_video "
                             f"(crowd as_reference, no prior frame to use as reference)"
                         )
-                elif last_frame_path and last_frame_path.exists():
+                elif not smart_mode_applied and last_frame_path and last_frame_path.exists():
                     venice_mode_str = "image_to_video"
                     image_for_venice = last_frame_path
                     briq_data["input_mode"] = "image"
@@ -1468,7 +1797,7 @@ def run_sliding_story(
                         )
                     else:
                         logger.info(f"[SlidingStory/Venice] Cycle {cycle_idx}: image_to_video from last frame")
-                else:
+                elif not smart_mode_applied:
                     venice_mode_str = "text_to_video"
                     briq_data["input_mode"] = "text"
                     logger.info(f"[SlidingStory/Venice] Cycle {cycle_idx}: text_to_video (no prior frame)")
@@ -1496,13 +1825,94 @@ def run_sliding_story(
                 # into payload["reference_image_urls"] when the model supports it.
                 reference_image_paths=crowd_reference_paths,
             )
+            if smart_enabled:
+                if smart_schedule_source_image is None:
+                    if image_for_venice and image_for_venice.exists():
+                        smart_schedule_source_image = image_for_venice
+                    elif last_frame_path and last_frame_path.exists():
+                        smart_schedule_source_image = last_frame_path
 
-            if venice_mode_str == "first_last_frame" and image_for_venice and end_image_for_venice:
+                if cycle_idx < total_cycles:
+                    next_window_indices = windows[cycle_idx]
+                    next_stacked_prompt = "\n\n".join(paragraphs[i - 1] for i in next_window_indices)
+                    smart_prefix = str(getattr(config, "smart_reinject_prompt_prefix", "") or "").strip()
+                    smart_next_window_prompt = (
+                        f"{smart_prefix}\n\n{next_stacked_prompt}" if smart_prefix else next_stacked_prompt
+                    )
+
+                    denoise_min = (
+                        float(config.smart_reinject_denoise_min)
+                        if config.smart_reinject_denoise_min is not None
+                        else float(config.img2img_denoise_min)
+                    )
+                    denoise_max = (
+                        float(config.smart_reinject_denoise_max)
+                        if config.smart_reinject_denoise_max is not None
+                        else float(config.img2img_denoise_max)
+                    )
+                    if denoise_min > denoise_max:
+                        denoise_min, denoise_max = denoise_max, denoise_min
+                    smart_rng = random.Random(random_seed_base + cycle_idx * 10007 + 731)
+                    smart_denoise = smart_rng.uniform(denoise_min, denoise_max)
+
+                    if _should_schedule_smart_reinject(
+                        state=smart_reinject_state,
+                        config=config,
+                        cycle_idx=cycle_idx,
+                        total_cycles=total_cycles,
+                        effective_reinject=effective_reinject,
+                        crowd_active=crowd_active,
+                        source_image_path=smart_schedule_source_image,
+                    ):
+                        scheduled = _start_smart_reinject_prefetch(
+                            state=smart_reinject_state,
+                            cycle_idx=cycle_idx,
+                            target_cycle_idx=cycle_idx + 1,
+                            source_image_path=smart_schedule_source_image,
+                            prompt=smart_next_window_prompt,
+                            seed=seed + 100000 + cycle_idx,
+                            denoise_strength=smart_denoise,
+                            width=get_capability_setting('image', 'width', 1280),
+                            height=get_capability_setting('image', 'height', 720),
+                            output_dir=keyframes_dir,
+                        )
+                        if scheduled:
+                            briq_data["smart_reinject_scheduled"] = True
+                            briq_data["smart_reinject_scheduled_for_cycle"] = cycle_idx + 1
+                            briq_data["smart_reinject_schedule_source"] = str(smart_schedule_source_image)
+                            briq_data["smart_reinject_prefetch_denoise"] = smart_denoise
+                            briq_data["smart_reinject_prompt_preview"] = smart_next_window_prompt[:220]
+                    else:
+                        briq_data["smart_reinject_scheduled"] = False
+
+            if venice_mode_str in {"first_last_frame", "smart_async_first_last_frame"} and image_for_venice and end_image_for_venice:
                 vid_result = backend.generate_morph_video(
                     vid_req,
                     start_image_path=image_for_venice,
                     end_image_path=end_image_for_venice,
                 )
+                if (
+                    venice_mode_str == "smart_async_first_last_frame"
+                    and not (vid_result and vid_result.success and vid_result.video_path and vid_result.video_path.exists())
+                    and image_for_venice
+                ):
+                    fallback_error = getattr(vid_result, "error", "unknown error")
+                    if not smart_reinject_state.warned_morph_capability_failure:
+                        logger.warning(
+                            "[SlidingStory/SmartReinject] Morph call failed for prefetched keyframe; "
+                            "falling back to image_to_video from last frame."
+                        )
+                        smart_reinject_state.warned_morph_capability_failure = True
+                    logger.warning(
+                        f"[SlidingStory/SmartReinject] Morph fallback reason (cycle {cycle_idx}): {fallback_error}"
+                    )
+                    vid_result = backend.generate_video(
+                        vid_req,
+                        source_image=image_for_venice,
+                    )
+                    venice_mode_str = "smart_async_first_last_frame_fallback_i2v"
+                    briq_data["smart_reinject_used"] = False
+                    briq_data["smart_reinject_fallback_reason"] = str(fallback_error)
             else:
                 vid_result = backend.generate_video(
                     vid_req,
@@ -1511,6 +1921,7 @@ def run_sliding_story(
 
             if not (vid_result and vid_result.success and vid_result.video_path and vid_result.video_path.exists()):
                 error_msg = getattr(vid_result, 'error', 'unknown error')
+                _shutdown_smart_reinject_state(smart_reinject_state)
                 raise RuntimeError(f"[Venice] Video generation failed in cycle {cycle_idx}: {error_msg}")
 
             video_name = f"video_{cycle_idx:03d}.mp4"
@@ -1855,6 +2266,8 @@ def run_sliding_story(
         # ── Checkpoint callback (v0.6.1-beta) ────────────────────────────
         if checkpoint_callback:
             checkpoint_callback(cycle_idx, last_frame_path, current_cycle_video_path, anchor_frame_path)
+
+    _shutdown_smart_reinject_state(smart_reinject_state)
 
     # ═══════════════════════════════════════════════════════════════════════
     # LOOP CLOSURE (v0.6.0-beta: Veo, v0.6.7-beta: +LTX-Video)

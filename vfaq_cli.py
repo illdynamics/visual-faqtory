@@ -145,10 +145,11 @@ def cmd_run(args):
         else:
             logger.info(f"[CLI] Config already at {config_dest}, no copy needed")
 
-    # Determine reinject state
-    reinject = True  # Default ON
-    if args.no_reinject:
-        reinject = False
+    # Determine reinject override state:
+    #   None  -> use paragraph_story.reinject from YAML
+    #   True  -> force reinject on
+    #   False -> force reinject off
+    reinject = args.reinject
 
     config_override = {}
     if args.backend:
@@ -344,12 +345,12 @@ def _add_run_args(parser):
     parser.add_argument('--resume', '-r', action='store_true', default=False,
                         help='Resume from last checkpoint (requires existing run/)')
 
-    # Reinject control — default ON (note: -r is now --resume, reinject has no short flag)
+    # Reinject control (note: -r is now --resume, reinject has no short flag)
     reinject_group = parser.add_mutually_exclusive_group()
-    reinject_group.add_argument('--reinject', action='store_true', default=True,
-                                help='Enable reinject mode (default: ON)')
-    reinject_group.add_argument('--no-reinject', '-R', action='store_true', default=False,
-                                help='Disable reinject mode')
+    reinject_group.add_argument('--reinject', dest='reinject', action='store_true', default=None,
+                                help='Force-enable reinject mode (overrides config)')
+    reinject_group.add_argument('--no-reinject', '-R', dest='reinject', action='store_false',
+                                help='Disable reinject mode (hard override)')
 
     parser.add_argument('--mode', choices=['text', 'image', 'video'],
                         help='Override input mode')

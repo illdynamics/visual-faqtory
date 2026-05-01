@@ -107,6 +107,19 @@ paragraph_story:
   enable_loop_closure: true
   img2img_denoise_min: 0.35
   img2img_denoise_max: 0.55
+  smart_reinject_enabled: false
+  smart_reinject_every_n_cycles: 1
+  smart_reinject_use_morph: true
+  smart_reinject_similarity_guard_enabled: true
+  smart_reinject_similarity_threshold: 0.42
+  smart_reinject_wait_timeout_sec: 0
+  smart_reinject_sync_fallback: false
+  smart_reinject_denoise_min: null
+  smart_reinject_denoise_max: null
+  smart_reinject_prompt_prefix: "Preserve the source image strongly. Make a subtle evolved keyframe for the next visual beat. Keep composition, identity, palette, lighting, and major shapes stable. Avoid large scene changes."
+  # For smart async reinject, lower denoise is safer:
+  # smart_reinject_denoise_min: 0.25
+  # smart_reinject_denoise_max: 0.45
 
 finalizer:
   enabled: true

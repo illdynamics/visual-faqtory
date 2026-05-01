@@ -172,7 +172,7 @@ class VisualFaQtory:
         run_dir: str | Path = "./run",
         config_override: Optional[Dict[str, Any]] = None,
         project_name: Optional[str] = None,
-        reinject: bool = True,
+        reinject: Optional[bool] = None,
         mode_override: Optional[str] = None,
         dry_run: bool = False,
         resume: bool = False,
@@ -180,7 +180,8 @@ class VisualFaQtory:
         self.worqspace_dir = Path(worqspace_dir).resolve()
         self.run_dir = Path(run_dir).resolve()
         self.project_name = project_name
-        self.reinject = reinject
+        self._reinject_override = reinject
+        self.reinject = True
         self.mode_override = mode_override
         self.dry_run = dry_run
         self.resume = resume
@@ -198,6 +199,7 @@ class VisualFaQtory:
 
         # Load config
         self.config = self._load_config(config_override or {})
+        self._resolve_reinject_setting()
 
         # Detect inputs
         self.base_image = None
@@ -207,6 +209,16 @@ class VisualFaQtory:
 
         # Determine effective mode
         self.mode = self._determine_mode()
+
+    def _resolve_reinject_setting(self) -> bool:
+        """Resolve reinject from config, with optional CLI hard override."""
+        ps = self.config.get("paragraph_story", {})
+        cfg_reinject = bool(ps.get("reinject", True)) if isinstance(ps, dict) else True
+        if self._reinject_override is None:
+            self.reinject = cfg_reinject
+        else:
+            self.reinject = bool(self._reinject_override)
+        return self.reinject
 
     def _load_config(self, override: Dict[str, Any]) -> Dict[str, Any]:
         """Load config.yaml and apply overrides."""
@@ -354,6 +366,19 @@ class VisualFaQtory:
             backend_config=bc,
             finalizer_config=self.config.get("finalizer", {}), # New
             reinject=self.reinject,
+            smart_reinject_enabled=ps.get("smart_reinject_enabled", False),
+            smart_reinject_every_n_cycles=ps.get("smart_reinject_every_n_cycles", 1),
+            smart_reinject_use_morph=ps.get("smart_reinject_use_morph", True),
+            smart_reinject_similarity_guard_enabled=ps.get("smart_reinject_similarity_guard_enabled", True),
+            smart_reinject_similarity_threshold=ps.get("smart_reinject_similarity_threshold", 0.42),
+            smart_reinject_wait_timeout_sec=ps.get("smart_reinject_wait_timeout_sec", 0),
+            smart_reinject_sync_fallback=ps.get("smart_reinject_sync_fallback", False),
+            smart_reinject_denoise_min=ps.get("smart_reinject_denoise_min"),
+            smart_reinject_denoise_max=ps.get("smart_reinject_denoise_max"),
+            smart_reinject_prompt_prefix=ps.get(
+                "smart_reinject_prompt_prefix",
+                "Preserve the source image strongly. Make a subtle evolved keyframe for the next visual beat. Keep composition, identity, palette, lighting, and major shapes stable. Avoid large scene changes.",
+            ),
             crowd_control_config=self.config.get("crowd_control", {}),
             veo_config=veo_section,
             venice_config=venice_section,
@@ -550,6 +575,7 @@ class VisualFaQtory:
                 logger.info("[Resume] Loading config EXCLUSIVELY from run/meta/config.yaml (frozen snapshot)")
                 try:
                     self.config = yaml.safe_load(meta_config.read_text()) or {}
+                    self._resolve_reinject_setting()
                 except Exception as e:
                     logger.warning(f"[Resume] Failed to load meta config: {e} — falling back to worqspace")
             else:
