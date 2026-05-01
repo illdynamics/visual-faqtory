@@ -1,5 +1,67 @@
 # Release Notes
 
+## v0.9.2-beta
+
+### Feature: OBS A/B swap is now ALIGNED to clip end (default)
+
+`obs-swap.py` and `vf-obs-watcher-same-machine.sh` now wait for the
+currently-visible clip to finish naturally before revealing the new one,
+instead of jumping mid-clip. This keeps live visuals on-beat and avoids
+the "halfway-through-the-loop" jump the immediate-prewarm behaviour caused.
+
+**Aligned flow** (default):
+
+1. Keep current slot Y on top, viewable.
+2. Enable target slot X underneath Y, force media reload, then **park X at
+   cursor=0 + STOP + PAUSE** so it doesn't visibly play under the curtain.
+3. Turn OFF looping on Y so it ends naturally.
+4. Wait for Y to report `OBS_MEDIA_STATE_ENDED` (or `duration - cursor <=
+   end_threshold_ms`), up to `OBS_MAX_WAIT_CURRENT_SEC` (default 180).
+   Fail-open on timeout — a live show is more important than a perfect
+   wait.
+5. At the boundary: turn ON looping on X, **STOP + cursor=0 + RESTART**
+   so it's guaranteed to start from frame 0 even if parking left state
+   behind, wait until X reports PLAYING (up to `OBS_PREWARM_SEC`).
+6. Disable Y, move X to top (z=0).
+7. Restore Y to safe inactive state: looping ON (so it loops cleanly when
+   it next becomes active), STOP (so it doesn't keep ticking under the
+   new visible target).
+
+**Legacy immediate swap** still available via `--immediate` or
+`OBS_SWAP_MODE=immediate` for anyone who wants the old behaviour back.
+
+### New env vars / CLI flags
+
+  - `OBS_MAX_WAIT_CURRENT_SEC` (default 180) — max seconds to wait for the
+    current clip to end before fail-open.
+  - `OBS_END_THRESHOLD_MS` (default 200) — "effectively ended" cursor
+    margin for backup completion detection.
+  - `OBS_SWAP_MODE` (default `aligned`) — `aligned` | `immediate`.
+  - `obs-swap.py --max-wait-current SECONDS`
+  - `obs-swap.py --end-threshold-ms MS`
+  - `obs-swap.py --aligned` (default) / `obs-swap.py --immediate` (legacy)
+
+### Watcher robustness
+
+  - `vf-obs-watcher-same-machine.sh` now uses `flock -n` so two inotify
+    events can't overlap a swap. If a swap is already in progress, the
+    new event is dropped (the file is already in the inactive slot, so
+    when the running swap reaches its boundary it sees the latest file
+    automatically).
+  - `.active_slot` is updated only AFTER `obs-swap.py` exits 0 — a
+    crashed or fail-opened swap leaves state untouched so the next file
+    routes correctly.
+  - Manual test checklist printed on startup so you don't have to dig
+    for it.
+
+### Assumption
+
+The OBS media-source loop setting key is `looping` (canonical name in
+obs-studio's ffmpeg_source plugin). If your OBS build uses a different
+key, override `LOOPING_KEY` at the top of `obs-swap.py`.
+
+---
+
 ## v0.9.1-beta
 
 ### Fix: per-cycle pingpong silently did nothing without interpolation

@@ -184,7 +184,7 @@ audio:
 #
 # ═══════════════════════════════════════════════════════════════════════════════
 crowd_control:
-  enabled: true                        # Set true to activate crowd prompt injection
+  enabled: false                        # Set true to activate crowd prompt injection
   base_url: "http://10.20.30.22:8000/visuals"  # Where the generator reaches the server
   pop_token: "Setyup34Setyup34Setyup34Setyup34"    # Bearer token for /api/next endpoint
   timeout_seconds: 1.0                  # HTTP timeout for generator→server calls
