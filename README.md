@@ -1,7 +1,7 @@
 # Visual FaQtory v0.9.0-beta
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 ![Repo Views](https://komarev.com/ghpvc/?username=illdynamics-visual-faqtory&label=Repo+Views&color=blue)
-![Splash](vfaq/visual-faqtory.png)
+![Splash](vfaq/visual-faqtory.jpg)
 
 Automated long-form AI visual generation pipeline for music, DJ sets, and experimental audiovisual projects.
 

@@ -25,7 +25,7 @@
 set -euo pipefail
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INTERP_DIR="$BASE_DIR/run/videos_interpolated"
+INTERP_DIR="$BASE_DIR/run/videos"
 OBS_DIR="$BASE_DIR/run/obs"
 STATE_FILE="$OBS_DIR/.active_slot"
 

@@ -11,9 +11,9 @@
 **/saved-runs/*
 
 # base stuff
-**/base_images*
-**/base_audio*
-**/base_videos*
+**/base_images/*
+**/base_audio/*
+**/base_videos/*
 
 # Generated agent/runtime artifacts
 **/bloq.d/*

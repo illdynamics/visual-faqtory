@@ -4,7 +4,7 @@ HOST = "127.0.0.1"
 PORT = 4455
 PASSWORD = "Setyup34!"
 
-SCENE = "Ill Dynamics - Live on Cyndicut Radio"
+SCENE = "Ill Dynamics - Live on SkankOut"
 
 cl = ReqClient(host=HOST, port=PORT, password=PASSWORD)
 

@@ -1,5 +1,144 @@
 # Release Notes
 
+## v0.9.1-beta
+
+### Fix: per-cycle pingpong silently did nothing without interpolation
+
+`Finalizer._process_cycle_video()` early-returned the unchanged input when
+`per_cycle_interpolation: false`, even if `per_cycle_pingpong: true`. Pingpong
+is now fully independent of interpolation — any of the four combinations
+(neither / pingpong-only / interpolation-only / both) work as expected.
+
+When pingpong runs, the produced clip is forward + reverse-without-seam-frame
+(perfect-loop shape), preserving fps. End-to-end ffmpeg verification: a 2s
+input becomes a 4s output with the correct frame count, all combinations
+verified.
+
+### Fix: lastframe extraction looped on itself when pingpong was on
+
+When pingpong is applied to a cycle clip, the clip's actual final frame
+equals its first frame (it ran forward then reversed). The previous engine
+extracted the lastframe from the pingpong'd file, so the next cycle re-used
+the *start* of the previous cycle's content — visually looping on itself
+instead of progressing.
+
+The engine now extracts the lastframe from the **original pre-pingpong
+video** when `per_cycle_pingpong: true`, so the next cycle picks up from the
+true end-of-content frame. Verified: pingpong-last vs source-first mean
+pixel diff ≈ 0.36, vs source-last ≈ 21.77. Without the fix the engine was
+reading the (essentially identical to source-first) frame.
+
+### Feature: `post_run_pingpong` + `post_run_interpolation` (independent stages)
+
+Post-stitch finalizer stages are now independently controllable via
+`finalizer.post_run_pingpong` and `finalizer.post_run_interpolation`. The
+master `enabled` flag still gates everything.
+
+  - `enabled: true` + `post_run_interpolation: true` (default when unset) +
+    `post_run_pingpong: false` → legacy: minterpolate + upscale →
+    `final_60fps_1080p.mp4`
+  - `enabled: true` + `post_run_pingpong: true` +
+    `post_run_interpolation: false` → mirror final master into perfect loop →
+    `final_pingpong.mp4`
+  - `enabled: true` + both true → pingpong feeds into interpolation +
+    upscale → `final_60fps_1080p.mp4`
+
+Backwards compatible: configs that only set `enabled: true` continue to
+behave exactly as before (interpolation + upscale, no pingpong).
+
+### Feature: `crowd_control.inject_source_mode` (audience prompt routing)
+
+New config field controls *how* an audience-injected prompt drives the next
+cycle, independent of `inject_mode` (which only controls what TEXT goes in):
+
+  - `inject_source_mode: "as_image_source"` (default) — IMG2VID with
+    previous lastframe as the SOURCE image. Hard visual continuity from
+    cycle N-1.
+  - `inject_source_mode: "as_reference"` — TEXT2VID with previous lastframe
+    as a REFERENCE image (when the model supports `reference_image_urls`).
+    Audience prompt is the primary visual driver; lastframe acts as a soft
+    style/identity tether.
+
+`inject_mode` (append/replace) is now orthogonal — append concatenates
+audience text onto the story window, replace uses audience text alone. Any
+of the four combinations from the spec work as designed.
+
+`reinject` and `require_morph` are auto-suppressed during crowd-driven
+cycles (in either source mode) so the audience prompt isn't diluted by an
+img2img remix of the prior frame.
+
+### Backend: Venice now honors per-request `reference_image_paths`
+
+`VeniceBackend._build_video_payload` previously only consumed the static
+`venice.video.reference_image_urls` list from config. It now ALSO accepts
+per-request `Path` objects passed via `GenerationRequest.reference_image_paths`,
+data-URLs them, and merges with any static URLs. Required for the new
+`as_reference` crowd mode but generally useful for any caller wanting to
+attach a per-call reference image. If the model doesn't support reference
+images, both sources are dropped with a log warning.
+
+### Config
+
+- `worqspace/config.yaml`: `post_run_pingpong` + `post_run_interpolation`
+  documented as commented-out reference (no behaviour change). New
+  `crowd_control.inject_source_mode: "as_image_source"` set explicitly.
+- `worqspace/config.example.yaml`: both new flags fully populated with
+  inline docs.
+
+---
+
+## v0.9.0-beta (patch)
+
+### Fix: Venice aspect_ratio "107:60" HTTP 400 invalid_enum_value
+
+**Symptom**
+```
+[Venice] Image generation failed: Venice API error HTTP 400:
+  aspect_ratio: Invalid enum value. Expected 'auto' | '1:1' | '3:2' | '16:9'
+  | '21:9' | '9:16' | '2:3' | '3:4' | '4:5', received '107:60'
+[SlidingStory/Venice] Evolved keyframe failed, falling back to image_to_video
+```
+
+**Root cause**
+`_aspect_ratio_from_dims()` in `vfaq/venice_backend.py` returned the raw
+GCD-reduced ratio of the requested pixel dimensions (e.g. 856×480 →
+`107:60`, since `gcd(856, 480) = 8`). Mathematically correct, but Venice's
+`/image/edit` and `/video/queue` endpoints accept `aspect_ratio` only from
+a fixed enum. As a secondary issue, the `venice.image.aspect_ratio` config
+key was silently ignored — `VeniceConfig` had no field for it, so even with
+the value set in YAML the code fell through to the broken GCD path.
+
+**Fix**
+1. New `_snap_aspect_ratio()` helper snaps any aspect-ratio string to the
+   nearest Venice-valid enum value via log-distance (so 856:480 → 16:9, not
+   3:2).
+2. `_aspect_ratio_from_dims()` now routes through the snapper — it can no
+   longer return an invalid value.
+3. `VeniceConfig` gains `image_aspect_ratio` + `image_resolution` fields,
+   and `from_dict()` parses them from `venice.image.aspect_ratio` /
+   `venice.image.resolution`.
+4. New `_select_image_aspect_ratio()` mirrors `_select_aspect_ratio()` for
+   the image endpoint: per-request → config → snapped pixel-dim fallback.
+5. `_edit_image` now uses the new selector instead of calling
+   `_aspect_ratio_from_dims` directly.
+6. Defence-in-depth: `_queue_video_request` gains an `aspect_ratio_snapped`
+   retry branch mirroring the existing `resolution_snapped` / duration
+   logic — if a future model rejects an aspect_ratio with
+   `invalid_enum_value`, we snap to the nearest of the model-supplied
+   options and retry once.
+
+**Config cleanup**
+- Removed dead `width / height / aspect_ratio / resolution` keys from the
+  top-level `backend / image_backend / video_backend / morph_backend`
+  blocks (they are not consumed when `type: venice`; only
+  `venice.image.*` / `venice.video.*` are read).
+- `worqspace/config.yaml` annotated with commented-out reference for every
+  available parameter — no behaviour changes vs prior version.
+- Added `worqspace/config.example.yaml` — fully-filled reference config
+  with every available parameter set.
+
+---
+
 ## v0.9.0-beta
 
 ### Major: Backend cleanup, log consolidation, branding update

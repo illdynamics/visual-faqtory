@@ -769,6 +769,14 @@ def run_sliding_story(
         finalizer_config=finalizer_cfg
     )
     per_cycle_interpolation_enabled = finalizer_cfg.get('per_cycle_interpolation', False)
+    # v0.9.1: pingpong is now independent of interpolation. The flag controls
+    # whether _process_cycle_video should be called at all (either stage on
+    # is enough), AND whether the LAST FRAME for the next cycle's morph must
+    # be extracted from the ORIGINAL (pre-pingpong) video — because the
+    # pingpong'd video's actual last frame == its first frame, which would
+    # make subsequent cycles loop on themselves.
+    per_cycle_pingpong_enabled = finalizer_cfg.get('per_cycle_pingpong', False)
+    per_cycle_processing_enabled = per_cycle_interpolation_enabled or per_cycle_pingpong_enabled
     per_cycle_interpolate_fps = finalizer_cfg.get('interpolate_fps', 30) # Default to 30 as per spec
 
     # Resolve timing parameters
@@ -856,13 +864,21 @@ def run_sliding_story(
             cc_config = CrowdControlConfig.from_dict(crowd_cc_cfg)
             crowd_client = CrowdClient(cc_config)
             crowd_inject_mode = cc_config.inject_mode
+            crowd_inject_source_mode = cc_config.inject_source_mode
             crowd_inject_label = cc_config.inject_label
-            logger.info("[SlidingStory] Crowd Control enabled — will check queue each cycle")
+            logger.info(
+                f"[SlidingStory] Crowd Control enabled — inject_mode={crowd_inject_mode}, "
+                f"inject_source_mode={crowd_inject_source_mode}"
+            )
         except Exception as e:
             logger.warning(f"[SlidingStory] Crowd Control init failed (continuing without): {e}")
             crowd_client = None
+            crowd_inject_mode = "append"
+            crowd_inject_source_mode = "as_image_source"
+            crowd_inject_label = "Audience mutation request"
     else:
         crowd_inject_mode = "append"
+        crowd_inject_source_mode = "as_image_source"
         crowd_inject_label = "Audience mutation request"
 
     for cycle_idx, window_indices in enumerate(windows, start=1):
@@ -894,16 +910,50 @@ def run_sliding_story(
 
         video_stage_prompt = _build_video_stage_prompt(stacked_prompt, motion_prompt_text)
 
-        # ── Crowd Replace visual reset flags ─────────────────────────────
-        # When inject_mode=="replace", force a full TEXT2IMG visual reset so
-        # the previous last-frame visuals don't bleed into the new prompt.
-        crowd_replace_active = bool(crowd_prompt_used and crowd_inject_mode == "replace")
-        effective_reinject = config.reinject and not crowd_replace_active
+        # ── Crowd-driven cycle flow flags (v0.9.1) ────────────────────────
+        # The crowd-injected cycle is driven by inject_source_mode:
+        #
+        #   "as_image_source"  → IMG2VID with lastframe as init/source image.
+        #     The audience prompt drives motion/content; the lastframe gives
+        #     hard visual continuity from the previous cycle. This is what
+        #     the user wants in spec examples 1 and 2.
+        #
+        #   "as_reference"     → TEXT2VID with lastframe as a reference image
+        #     (when the model supports reference_image_urls). The audience
+        #     prompt is the primary driver; the lastframe becomes a soft
+        #     style/identity tether. This is what the user wants in spec
+        #     examples 3 and 4.
+        #
+        # `inject_mode` (append vs replace) is now ORTHOGONAL to source mode
+        # and only affects WHAT TEXT goes into the prompt — story+crowd vs
+        # crowd-only. It NO LONGER forces a text2img visual reset.
+        crowd_active = bool(crowd_prompt_used)
+        crowd_use_reference_mode = (
+            crowd_active and crowd_inject_source_mode == "as_reference"
+        )
+        # Reinject (img2img keyframe) is suppressed during a crowd-driven
+        # cycle in EITHER source mode — the audience prompt is meant to
+        # drive the new cycle, not be diluted by an img2img remix of the
+        # prior frame. Morph is similarly suppressed: the goal is mutation,
+        # not seamless transition.
+        effective_reinject = config.reinject and not crowd_active
         effective_require_morph = config.require_morph and effective_reinject
-        if crowd_replace_active:
+        if crowd_active:
             logger.info(
-                "[SlidingStory] Crowd REPLACE visual reset: TEXT2IMG keyframe "
-                "(reinject overridden)"
+                f"[SlidingStory] Crowd-driven cycle: source_mode={crowd_inject_source_mode}, "
+                f"inject_mode={crowd_inject_mode} "
+                f"(reinject + morph suppressed for this cycle)"
+            )
+        # Legacy alias kept for downstream code paths that still check it,
+        # but its meaning is narrowed: True only in the old "replace + reset"
+        # combination, which now requires both crowd_active AND the
+        # as_reference mode (the only path that ditches the lastframe as
+        # source). For as_image_source we keep using img2vid with lastframe.
+        crowd_replace_active = crowd_use_reference_mode
+        if crowd_use_reference_mode:
+            logger.info(
+                "[SlidingStory] Crowd cycle (as_reference): TEXT2VID with previous "
+                "lastframe as REFERENCE image"
             )
 
         # Determine unique atom_id for this cycle
@@ -1209,18 +1259,27 @@ def run_sliding_story(
 
             current_cycle_video_path = video_path
 
-            # Per-cycle interpolation (shared with ComfyUI path)
-            if per_cycle_interpolation_enabled:
+            # Per-cycle interpolation/pingpong (shared with ComfyUI path).
+            # v0.9.1: also runs when only pingpong is enabled.
+            if per_cycle_processing_enabled:
                 interpolated_video_path = finalizer._process_cycle_video(
                     video_path, resolved_fps
                 )
                 if interpolated_video_path:
                     current_cycle_video_path = interpolated_video_path
 
-            # Extract last frame
+            # Extract last frame.
+            # When pingpong is on, current_cycle_video_path's actual last frame
+            # equals its FIRST frame (it ran forward then backward), which would
+            # make the next cycle visually loop. Extract from the original
+            # pre-pingpong video instead — that frame is the true "end of new
+            # visual content" for this cycle.
+            lastframe_source = (
+                video_path if per_cycle_pingpong_enabled else current_cycle_video_path
+            )
             lastframe_name = f"lastframe_{cycle_idx:03d}.png"
             lastframe_path = keyframes_dir / lastframe_name
-            _extract_last_frame_ffmpeg(current_cycle_video_path, lastframe_path)
+            _extract_last_frame_ffmpeg(lastframe_source, lastframe_path)
             last_frame_path = lastframe_path
             final_video_paths.append(current_cycle_video_path)
 
@@ -1283,6 +1342,13 @@ def run_sliding_story(
 
             text2vid_dur = _op_duration('text2vid')
             img2vid_dur  = _op_duration('img2vid')
+
+            # v0.9.1 — when crowd_use_reference_mode is active and a prior
+            # lastframe exists, this list is populated with [last_frame_path]
+            # and forwarded into vid_req.reference_image_paths so the venice
+            # backend attaches it as a `reference_image_urls` payload field
+            # (subject to model support).
+            crowd_reference_paths: Optional[List[Path]] = None
 
             if cycle_idx == 1:
                 if base_image_path and base_image_path.exists() and not crowd_replace_active:
@@ -1369,17 +1435,39 @@ def run_sliding_story(
                         venice_mode_str = "image_to_video"
                         image_for_venice = last_frame_path
                         briq_data["input_mode"] = "image"
-                elif crowd_replace_active:
+                elif crowd_use_reference_mode:
+                    # v0.9.1 — crowd_inject_source_mode == "as_reference":
+                    # cycle is text_to_video with the previous lastframe sent
+                    # as a REFERENCE image (when the model supports it). The
+                    # audience prompt (replace mode) or audience prompt
+                    # appended to the story window (append mode) drives the
+                    # visual content; the reference acts as a soft style /
+                    # identity tether rather than hard frame continuity.
                     venice_mode_str = "text_to_video"
                     briq_data["input_mode"] = "text"
-                    logger.info(
-                        f"[SlidingStory/Venice] Cycle {cycle_idx}: text_to_video (crowd replace reset)"
-                    )
+                    if last_frame_path and last_frame_path.exists():
+                        crowd_reference_paths = [last_frame_path]
+                        logger.info(
+                            f"[SlidingStory/Venice] Cycle {cycle_idx}: text_to_video "
+                            f"(crowd as_reference, lastframe attached as REFERENCE image)"
+                        )
+                    else:
+                        crowd_reference_paths = None
+                        logger.info(
+                            f"[SlidingStory/Venice] Cycle {cycle_idx}: text_to_video "
+                            f"(crowd as_reference, no prior frame to use as reference)"
+                        )
                 elif last_frame_path and last_frame_path.exists():
                     venice_mode_str = "image_to_video"
                     image_for_venice = last_frame_path
                     briq_data["input_mode"] = "image"
-                    logger.info(f"[SlidingStory/Venice] Cycle {cycle_idx}: image_to_video from last frame")
+                    if crowd_active and crowd_inject_source_mode == "as_image_source":
+                        logger.info(
+                            f"[SlidingStory/Venice] Cycle {cycle_idx}: image_to_video "
+                            f"from last frame (crowd as_image_source)"
+                        )
+                    else:
+                        logger.info(f"[SlidingStory/Venice] Cycle {cycle_idx}: image_to_video from last frame")
                 else:
                     venice_mode_str = "text_to_video"
                     briq_data["input_mode"] = "text"
@@ -1403,6 +1491,10 @@ def run_sliding_story(
                 video_frames=resolved_frames,
                 video_prompt=video_stage_prompt,
                 motion_prompt=motion_prompt_text or None,
+                # v0.9.1 — crowd as_reference mode passes lastframe via
+                # reference_image_paths; venice backend will translate this
+                # into payload["reference_image_urls"] when the model supports it.
+                reference_image_paths=crowd_reference_paths,
             )
 
             if venice_mode_str == "first_last_frame" and image_for_venice and end_image_for_venice:
@@ -1428,16 +1520,23 @@ def run_sliding_story(
             logger.info(f"[SlidingStory/Venice] Generated video → {video_path}")
 
             current_cycle_video_path = video_path
-            if per_cycle_interpolation_enabled:
+            if per_cycle_processing_enabled:
                 interpolated_video_path = finalizer._process_cycle_video(
                     video_path, resolved_fps
                 )
                 if interpolated_video_path:
                     current_cycle_video_path = interpolated_video_path
 
+            # When pingpong is on, extract last frame from the original
+            # (pre-pingpong) video — its actual last frame is the true "end
+            # of new visual content". The pingpong'd video's last frame
+            # equals its first frame, which would loop the story.
+            lastframe_source = (
+                video_path if per_cycle_pingpong_enabled else current_cycle_video_path
+            )
             lastframe_name = f"lastframe_{cycle_idx:03d}.png"
             lastframe_path = keyframes_dir / lastframe_name
-            _extract_last_frame_ffmpeg(current_cycle_video_path, lastframe_path)
+            _extract_last_frame_ffmpeg(lastframe_source, lastframe_path)
 
             # ── Post-resize extracted frame to configured target dims ──────────
             # Seedance (and some other img2vid models) output a fixed native
@@ -1577,23 +1676,28 @@ def run_sliding_story(
 
             current_cycle_video_path = video_path # Default to raw backend video
 
-            if per_cycle_interpolation_enabled:
+            if per_cycle_processing_enabled:
                 interpolated_video_path = finalizer._process_cycle_video(
                     video_path, resolved_fps
                 )
                 if interpolated_video_path:
                     current_cycle_video_path = interpolated_video_path
-                    logger.info(f"[SlidingStory] Using interpolated video → {current_cycle_video_path}")
+                    logger.info(f"[SlidingStory] Using processed video → {current_cycle_video_path}")
                 else:
                     logger.warning(
-                        f"[SlidingStory] Per-cycle interpolation failed for {video_path.name}. "
+                        f"[SlidingStory] Per-cycle processing failed for {video_path.name}. "
                         "Falling back to raw backend video."
                     )
             
-            # Extract last frame from the current_cycle_video_path (interpolated or raw)
+            # Extract last frame. When pingpong is on, take it from the
+            # original (pre-pingpong) video so subsequent cycles don't loop
+            # on themselves (pingpong's last frame == its first frame).
+            lastframe_source = (
+                video_path if per_cycle_pingpong_enabled else current_cycle_video_path
+            )
             lastframe_name = f"lastframe_{cycle_idx:03d}.png"
             lastframe_path = keyframes_dir / lastframe_name
-            _extract_last_frame_ffmpeg(current_cycle_video_path, lastframe_path)
+            _extract_last_frame_ffmpeg(lastframe_source, lastframe_path)
             last_frame_path = lastframe_path
             if cycle_idx == 1 and not anchor_frame_path and keyframe_path.exists():
                 anchor_frame_path = keyframes_dir / "anchor_frame_001.png"
@@ -1722,23 +1826,27 @@ def run_sliding_story(
 
         current_cycle_video_path = video_path # Default to raw backend video
 
-        if per_cycle_interpolation_enabled:
+        if per_cycle_processing_enabled:
             interpolated_video_path = finalizer._process_cycle_video(
                 video_path, resolved_fps
             )
             if interpolated_video_path:
                 current_cycle_video_path = interpolated_video_path
-                logger.info(f"[SlidingStory] Using interpolated video → {current_cycle_video_path}")
+                logger.info(f"[SlidingStory] Using processed video → {current_cycle_video_path}")
             else:
                 logger.warning(
-                    f"[SlidingStory] Per-cycle interpolation failed for {video_path.name}. "
+                    f"[SlidingStory] Per-cycle processing failed for {video_path.name}. "
                     "Falling back to raw backend video."
                 )
 
-        # Extract last frame from the current_cycle_video_path (interpolated or raw)
+        # Extract last frame. When pingpong is on, take it from the original
+        # (pre-pingpong) video so subsequent cycles don't loop on themselves.
+        lastframe_source = (
+            video_path if per_cycle_pingpong_enabled else current_cycle_video_path
+        )
         lastframe_name = f"lastframe_{cycle_idx:03d}.png"
         lastframe_path = keyframes_dir / lastframe_name
-        _extract_last_frame_ffmpeg(current_cycle_video_path, lastframe_path)
+        _extract_last_frame_ffmpeg(lastframe_source, lastframe_path)
         last_frame_path = lastframe_path
         final_video_paths.append(current_cycle_video_path)
         briq_data["paths"]["video"] = str(current_cycle_video_path)

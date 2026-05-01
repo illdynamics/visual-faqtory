@@ -207,11 +207,89 @@ def _expand_env_placeholder(value: Any) -> Any:
     return os.environ.get(env_name, value)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Venice API valid aspect ratios.
+#
+# Venice's /image/edit and /video/queue endpoints accept aspect_ratio only as
+# a value from this fixed enum. Any GCD-reduced ratio computed from raw pixel
+# dimensions (e.g. 856×480 → 107:60) is rejected with HTTP 400
+# invalid_enum_value.
+#
+# We exclude "auto" from the snap set so numeric ratios always map to a
+# concrete enum value; "auto" is still a valid value to pass through if the
+# user sets it explicitly in config.
+# ─────────────────────────────────────────────────────────────────────────────
+_VENICE_VALID_ASPECT_RATIOS: Tuple[str, ...] = (
+    "1:1", "3:2", "16:9", "21:9", "9:16", "2:3", "3:4", "4:5",
+)
+_VENICE_VALID_ASPECT_RATIOS_INCL_AUTO: Tuple[str, ...] = ("auto",) + _VENICE_VALID_ASPECT_RATIOS
+
+
+def _ar_to_float(ar: Any) -> Optional[float]:
+    """Parse 'W:H' → W/H float. Returns None on malformed input or W/H<=0."""
+    try:
+        s = str(ar or "").strip()
+        if ":" not in s:
+            return None
+        num_s, den_s = s.split(":", 1)
+        num = float(num_s)
+        den = float(den_s)
+        if den <= 0 or num <= 0:
+            return None
+        return num / den
+    except (TypeError, ValueError):
+        return None
+
+
+def _snap_aspect_ratio(
+    ar: Any,
+    valid: Tuple[str, ...] = _VENICE_VALID_ASPECT_RATIOS,
+) -> str:
+    """
+    Snap an arbitrary aspect-ratio string ('107:60', '16:9', '1.78', etc.) to
+    the nearest Venice-valid enum value by minimum |log(ratio)| distance.
+
+    Log-distance is used so 856:480 (1.7833) correctly maps to 16:9 (1.7777)
+    rather than to a coincidentally-closer-by-linear-distance value like 3:2.
+
+    Returns:
+        - The input unchanged (case-normalised) if it is already a valid enum.
+        - "auto" passed through if explicitly given.
+        - The nearest valid value otherwise.
+        - "16:9" as a final fallback if the input is unparseable.
+    """
+    s = str(ar or "").strip().lower()
+    if not s:
+        return "16:9"
+    # Pass-through "auto" if the caller explicitly asked for it.
+    if s == "auto":
+        return "auto"
+    # Already-valid enum value (case-insensitive match).
+    for v in valid:
+        if s == v.lower():
+            return v
+    target = _ar_to_float(s)
+    if target is None or target <= 0:
+        return "16:9"
+    return min(
+        valid,
+        key=lambda v: abs(math.log(_ar_to_float(v) or 1.0) - math.log(target)),
+    )
+
+
 def _aspect_ratio_from_dims(width: int, height: int) -> str:
+    """
+    Compute the closest Venice-valid aspect-ratio enum value for the given
+    pixel dimensions.
+
+    NOTE (v0.9.0-beta fix): prior versions returned the GCD-reduced ratio
+    (e.g. 856×480 → '107:60'), which Venice rejects with HTTP 400
+    invalid_enum_value. We now snap to the nearest enum value via
+    _snap_aspect_ratio() using log-distance so 856×480 → '16:9' as expected.
+    """
     if width <= 0 or height <= 0:
         return "16:9"
-    g = math.gcd(int(width), int(height)) or 1
-    return f"{int(width) // g}:{int(height) // g}"
+    return _snap_aspect_ratio(f"{int(width)}:{int(height)}")
 
 
 def _seconds_from_duration_token(token: str) -> Optional[float]:
@@ -261,6 +339,11 @@ class VeniceConfig:
     safe_mode: bool = True
     image_negative_prompt: str = ""
     image_lora_strength: Optional[int] = None
+    # Aspect ratio + resolution for the image endpoints.
+    # image_aspect_ratio is consumed by /image/edit (img2img). When unset the
+    # backend snaps the request's pixel dims to the nearest valid Venice enum.
+    image_aspect_ratio: Optional[str] = None
+    image_resolution: Optional[str] = None
 
     video_model_text_to_video: str = "wan-2.5-preview-text-to-video"
     video_model_image_to_video: str = "wan-2.1-pro-image-to-video"
@@ -311,6 +394,14 @@ class VeniceConfig:
             data.setdefault("hide_watermark", image.get("hide_watermark"))
             data.setdefault("safe_mode", image.get("safe_mode"))
             data.setdefault("image_lora_strength", image.get("lora_strength"))
+            # v0.9.0-beta: aspect_ratio for /image/edit and resolution for parity.
+            # Stringify aspect_ratio so unquoted YAML "16:9" → int 969 doesn't break.
+            _img_ar = image.get("aspect_ratio")
+            if _img_ar is not None:
+                data.setdefault("image_aspect_ratio", str(_img_ar))
+            _img_res = image.get("resolution")
+            if _img_res is not None:
+                data.setdefault("image_resolution", str(_img_res))
 
         if video:
             if video.get("duration_seconds") is not None:
@@ -566,7 +657,7 @@ class VeniceBackend(GeneratorBackend):
             "model": model,
             "prompt": request.prompt,
             "image": self._raw_base64_for_file(source_path),
-            "aspect_ratio": request.aspect_ratio or _aspect_ratio_from_dims(*self._resolve_image_dimensions(request)),
+            "aspect_ratio": self._select_image_aspect_ratio(request),
         }
 
         spinner = _LiveSpinner("img2img", model)
@@ -789,21 +880,41 @@ class VeniceBackend(GeneratorBackend):
         default_seconds = _seconds_from_duration_token(self.venice_cfg.video_duration)
         return _duration_token(default_seconds if default_seconds is not None else 5.0)
 
+    def _select_image_aspect_ratio(self, request: GenerationRequest) -> str:
+        """
+        Resolve the aspect_ratio used for the /image/edit endpoint.
+
+        Priority:
+          1. request.aspect_ratio (per-request explicit value)
+          2. venice.image.aspect_ratio (from config — image_aspect_ratio)
+          3. nearest-valid snap of the resolved image pixel dimensions
+
+        Always returns a Venice-valid enum value (or "auto" if explicitly set
+        upstream), never a raw GCD ratio like "107:60".
+        """
+        if request.aspect_ratio:
+            return _snap_aspect_ratio(str(request.aspect_ratio))
+        cfg_ar = self.venice_cfg.image_aspect_ratio
+        if cfg_ar:
+            return _snap_aspect_ratio(str(cfg_ar))
+        width, height = self._resolve_image_dimensions(request)
+        return _aspect_ratio_from_dims(width, height)
+
     def _select_aspect_ratio(self, request: GenerationRequest, op: str = "text2vid") -> str:
         # Per-request explicit value always wins.
         if request.aspect_ratio:
-            return str(request.aspect_ratio)
+            return _snap_aspect_ratio(str(request.aspect_ratio))
         # Per-op override.
         op_override = (
             self.venice_cfg.text2vid_aspect_ratio if op == "text2vid"
             else self.venice_cfg.img2vid_aspect_ratio
         )
         if op_override:
-            return str(op_override)
+            return _snap_aspect_ratio(str(op_override))
         # Global default. Always str() — YAML parses unquoted 16:9 as int 969.
         ar = self.venice_cfg.video_aspect_ratio
         if ar:
-            return str(ar)
+            return _snap_aspect_ratio(str(ar))
         return _aspect_ratio_from_dims(request.width, request.height)
 
     def _select_resolution(self, request: GenerationRequest, op: str = "text2vid") -> str:
@@ -995,11 +1106,45 @@ class VeniceBackend(GeneratorBackend):
             payload["image_url"] = self._data_url_for_file(resized)
 
         supports_reference_images = self._supports_video_field(model_info, "reference_image_urls")
-        if self.venice_cfg.video_reference_image_urls:
+        # v0.9.1 — combine sources for reference images:
+        #   1. Per-request paths (request.reference_image_paths), e.g. crowd
+        #      as_reference mode forwarding the previous lastframe.
+        #   2. Static config URLs (venice.video.reference_image_urls).
+        # Per-request paths are converted to data URLs so models that accept
+        # `reference_image_urls` can ingest local files directly. If the
+        # model doesn't support reference images at all, we drop both.
+        per_request_ref_paths = list(getattr(request, "reference_image_paths", None) or [])
+        per_request_ref_paths = [Path(p) for p in per_request_ref_paths if p]
+        per_request_ref_paths = [p for p in per_request_ref_paths if p.exists()]
+        static_ref_urls = list(self.venice_cfg.video_reference_image_urls or [])
+
+        if per_request_ref_paths or static_ref_urls:
             if supports_reference_images is not False:
-                payload["reference_image_urls"] = list(self.venice_cfg.video_reference_image_urls)
+                merged_refs: List[str] = []
+                # Per-request paths first — typically more contextual (e.g.
+                # the prior lastframe in a crowd-driven cycle).
+                for p in per_request_ref_paths:
+                    try:
+                        merged_refs.append(self._data_url_for_file(p))
+                    except Exception as e:
+                        logger.warning(
+                            f"[Venice] Skipping unreadable reference image {p}: {e}"
+                        )
+                merged_refs.extend(static_ref_urls)
+                if merged_refs:
+                    payload["reference_image_urls"] = merged_refs
+                    if per_request_ref_paths:
+                        logger.debug(
+                            f"[Venice] Attached {len(per_request_ref_paths)} per-request "
+                            f"reference image(s) + {len(static_ref_urls)} static URL(s)"
+                        )
             else:
                 omitted_fields.append("reference_image_urls")
+                if per_request_ref_paths:
+                    logger.info(
+                        f"[Venice] Model {model} does not support reference_image_urls — "
+                        f"dropping {len(per_request_ref_paths)} per-request reference image(s)"
+                    )
 
         if end_image_path is not None:
             supports_end_image = self._supports_video_field(model_info, "end_image_url")
@@ -1272,6 +1417,12 @@ class VeniceBackend(GeneratorBackend):
         duration_snapped: bool = False
         # Track whether we already snapped the resolution to avoid infinite loops.
         resolution_snapped: bool = False
+        # Track whether we already snapped the aspect_ratio to avoid infinite loops.
+        # (v0.9.0-beta) Defence-in-depth — the request-builder already snaps
+        # aspect_ratio to a Venice-valid enum value, but if a future model
+        # narrows the accepted set further this lets us recover gracefully
+        # instead of bubbling up an HTTP 400.
+        aspect_ratio_snapped: bool = False
 
         while True:
             response = self._request_raw("POST", "/video/queue", json=effective_payload)
@@ -1348,6 +1499,45 @@ class VeniceBackend(GeneratorBackend):
                             effective_payload["resolution"] = nearest
                             break
                     if resolution_snapped:
+                        signature = self._queue_payload_signature(effective_payload)
+                        if signature not in attempted_payload_signatures:
+                            attempted_payload_signatures.add(signature)
+                            continue
+
+                # ── Aspect ratio snap-to-nearest ──────────────────────────────
+                # (v0.9.0-beta) Same logic as duration / resolution: when
+                # Venice rejects aspect_ratio with invalid_enum_value and
+                # provides the accepted options, snap to the nearest valid
+                # value (by log-ratio distance) and retry once.
+                if not aspect_ratio_snapped and "aspect_ratio" in effective_payload:
+                    for issue in issues:
+                        path = issue.get("path") or []
+                        code = str(issue.get("code") or "")
+                        options = list(issue.get("options") or [])
+                        if path and str(path[0]) == "aspect_ratio" and code == "invalid_enum_value" and options:
+                            current_raw = effective_payload.get("aspect_ratio", "")
+                            # Filter out non-numeric options like "auto" for distance comparison.
+                            numeric_options = [o for o in options if _ar_to_float(o) is not None]
+                            target_f = _ar_to_float(current_raw)
+                            if numeric_options and target_f is not None and target_f > 0:
+                                nearest = min(
+                                    numeric_options,
+                                    key=lambda t: abs(
+                                        math.log(_ar_to_float(t) or 1.0) - math.log(target_f)
+                                    ),
+                                )
+                            elif numeric_options:
+                                nearest = numeric_options[0]
+                            else:
+                                nearest = options[0]
+                            aspect_ratio_snapped = True
+                            logger.warning(
+                                f"[Venice] Aspect ratio '{current_raw}' not accepted by model "
+                                f"(valid: {options}). Snapping to nearest: '{nearest}'"
+                            )
+                            effective_payload["aspect_ratio"] = nearest
+                            break
+                    if aspect_ratio_snapped:
                         signature = self._queue_payload_signature(effective_payload)
                         if signature not in attempted_payload_signatures:
                             attempted_payload_signatures.add(signature)

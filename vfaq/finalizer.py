@@ -68,9 +68,15 @@ class Finalizer:
         # Ensure cfg is defined from finalizer_config
         cfg = finalizer_config or {}
 
-        # Per-cycle interpolation config
+        # ─────────────────────────────────────────────────────────────────────
+        # Per-cycle processing toggles
+        # ─────────────────────────────────────────────────────────────────────
+        # Prior versions tied per_cycle_pingpong to per_cycle_interpolation —
+        # turning pingpong on without also enabling interpolation silently did
+        # nothing because _process_cycle_video early-returned. v0.9.1+ treats
+        # them as fully independent: either, both, or neither can be enabled.
         self.per_cycle_interpolation = cfg.get('per_cycle_interpolation', False)
-        self.per_cycle_pingpong = cfg.get('per_cycle_pingpong', False)  # New config for pingpong
+        self.per_cycle_pingpong = cfg.get('per_cycle_pingpong', False)
 
         # Backwards-compatible FPS knobs:
         # - Prefer explicit per-cycle key
@@ -79,15 +85,43 @@ class Finalizer:
         if self.per_cycle_interpolate_fps is None:
             self.per_cycle_interpolate_fps = cfg.get('interpolate_fps', 30)
 
-        if self.per_cycle_interpolation:
+        # Output dir is now needed if EITHER per-cycle stage is enabled,
+        # since pingpong-only output also goes there.
+        if self.per_cycle_interpolation or self.per_cycle_pingpong:
             self.videos_interpolated_dir = self.project_dir / "videos_interpolated"
             self.videos_interpolated_dir.mkdir(parents=True, exist_ok=True)
-            logger.info(f"[Finalizer] Per-cycle interpolation enabled. Output dir: {self.videos_interpolated_dir}")
+            stages = []
+            if self.per_cycle_pingpong:
+                stages.append("PINGPONG")
+            if self.per_cycle_interpolation:
+                stages.append("INTERPOLATION")
+            logger.info(
+                f"[Finalizer] Per-cycle stages enabled: {' + '.join(stages)}. "
+                f"Output dir: {self.videos_interpolated_dir}"
+            )
         else:
             self.videos_interpolated_dir = None
 
-        # Post-stitch finalizer config
+        # ─────────────────────────────────────────────────────────────────────
+        # Post-stitch (post-run) finalizer config
+        # ─────────────────────────────────────────────────────────────────────
+        # `enabled` is the master switch. When true, post-run interpolation
+        # AND upscale run by default. The newer `post_run_interpolation` and
+        # `post_run_pingpong` flags allow turning each stage on/off
+        # independently of the master switch.
+        #
+        # If `post_run_interpolation` is unset, it inherits from `enabled`
+        # (legacy behaviour). `post_run_pingpong` defaults to false.
         self.finalizer_enabled = cfg.get('enabled', False)
+
+        # Treat absence-of-key as "inherit from enabled" so users who only set
+        # finalizer.enabled keep getting interpolation + upscale like before.
+        if 'post_run_interpolation' in cfg:
+            self.post_run_interpolation = bool(cfg.get('post_run_interpolation'))
+        else:
+            self.post_run_interpolation = self.finalizer_enabled
+
+        self.post_run_pingpong = bool(cfg.get('post_run_pingpong', False))
 
         # Keep post-stitch FPS independent from per-cycle interpolation.
         # Users can override with post_interpolate_fps.
@@ -299,28 +333,46 @@ class Finalizer:
         
     def _process_cycle_video(self, input_path: Path, input_fps: float) -> Optional[Path]:
         """
-        Performs per-cycle video processing (interpolation, optionally with pingpong).
+        Performs per-cycle video processing.
+
+        v0.9.1 change: pingpong and interpolation are now independent stages.
+        Possible combinations:
+
+          * pingpong=False, interp=False  → returns input_path unchanged
+          * pingpong=False, interp=True   → interpolation only (legacy)
+          * pingpong=True,  interp=False  → pingpong only (NEW — was broken)
+          * pingpong=True,  interp=True   → pingpong + interpolation in one ffmpeg call
+
+        IMPORTANT — last-frame extraction:
+        When pingpong is applied, the produced video plays forward then in
+        reverse, so its actual final frame == its first frame. Callers that
+        need the "last frame of new visual content" for the next cycle MUST
+        extract from the original (pre-pingpong) video at `input_path`, not
+        from the path this method returns. The engine handles this via the
+        `pingpong_was_applied` flag returned alongside.
 
         Args:
-            input_path: Path to the raw SVD video file.
-            input_fps: The original FPS of the input video (resolved_fps from GenerationRequest).
+            input_path: Path to the raw backend video file.
+            input_fps: Original FPS of the input video.
 
         Returns:
-            Path to the processed video, or None if processing fails.
+            Path to the processed video, or input_path unchanged if neither
+            stage is enabled, or None if processing fails.
         """
-        if not self.per_cycle_interpolation:
-            return input_path # Skip processing if disabled
+        # Fast path: nothing to do.
+        if not (self.per_cycle_pingpong or self.per_cycle_interpolation):
+            return input_path
 
         if not input_path.exists():
             logger.error(f"[Finalizer] Cannot process cycle: Input video not found at {input_path}")
             return None
 
         output_dir = self.videos_interpolated_dir
-        if not output_dir: # Should not happen if per_cycle_interpolation is true
-            logger.error("[Finalizer] videos_interpolated_dir is not set for per-cycle interpolation.")
+        if not output_dir:
+            logger.error("[Finalizer] videos_interpolated_dir is not set for per-cycle processing.")
             return None
         output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Output path: run/videos_interpolated/<same base name>.mp4
         output_path = output_dir / input_path.name
         temp_output_path = output_path.with_name(f"{output_path.stem}.tmp{output_path.suffix}")
@@ -330,12 +382,14 @@ class Finalizer:
         encoder = self._get_or_detect_encoder()
         encoder_args = self._get_encoder_args(encoder, self.per_cycle_quality)
 
-        filter_complex_str = ""
-        target_fps = self.per_cycle_interpolate_fps
+        target_fps = self.per_cycle_interpolate_fps if self.per_cycle_interpolation else input_fps
 
-        if self.per_cycle_pingpong:
-            logger.info(f"[Finalizer] Performing per-cycle PINGPONG + INTERPOLATION on {input_path.name} to {target_fps}fps...")
-            # Normalize input timestamp before pingpong and interpolation
+        # ── Build filter_complex per stage combination ──
+        if self.per_cycle_pingpong and self.per_cycle_interpolation:
+            logger.info(
+                f"[Finalizer] Per-cycle PINGPONG + INTERPOLATION on {input_path.name} "
+                f"→ {target_fps}fps..."
+            )
             filter_complex_str = (
                 f"[0:v]setpts=PTS-STARTPTS[v0];"
                 f"[v0]split=2[vf][vr];"
@@ -343,12 +397,23 @@ class Finalizer:
                 f"[vf][vr2]concat=n=2:v=1:a=0,"
                 f"minterpolate=fps={target_fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1"
             )
-        else: # Only interpolation
-            logger.info(f"[Finalizer] Performing per-cycle INTERPOLATION on {input_path.name} to {target_fps}fps...")
+        elif self.per_cycle_pingpong:
+            logger.info(f"[Finalizer] Per-cycle PINGPONG on {input_path.name}...")
+            # Forward + reversed (without re-emitting the seam frame), no fps change.
+            filter_complex_str = (
+                f"[0:v]setpts=PTS-STARTPTS[v0];"
+                f"[v0]split=2[vf][vr];"
+                f"[vr]reverse,select='not(eq(n,0))'[vr2];"
+                f"[vf][vr2]concat=n=2:v=1:a=0"
+            )
+        else:  # interpolation-only
+            logger.info(f"[Finalizer] Per-cycle INTERPOLATION on {input_path.name} → {target_fps}fps...")
             filter_complex_str = (
                 f"minterpolate=fps={target_fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1"
             )
-        
+
+        # When pingpong is on without interpolation, target_fps == input_fps so
+        # we still pin a CFR rate; it just matches the source.
         cmd = [
             'ffmpeg', '-y',
             '-fflags', '+genpts',
@@ -361,14 +426,24 @@ class Finalizer:
             '-movflags', '+faststart',
             str(temp_output_path)
         ]
-        
+
         logger.debug(f"[Finalizer] Per-cycle Processing cmd: {' '.join(cmd)}")
-        
+
         try:
             result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=300
             )
-            if result.returncode == 0 and self._processed_video_is_usable(input_path, temp_output_path, float(target_fps)):
+            # Skip the "fps looks wrong" check when only pingpong'ing — we
+            # didn't change fps, only doubled the frame count, and the helper
+            # would (correctly) bail out because it assumed fps changed.
+            usable = (
+                result.returncode == 0
+                and (
+                    not self.per_cycle_interpolation
+                    or self._processed_video_is_usable(input_path, temp_output_path, float(target_fps))
+                )
+            )
+            if usable and result.returncode == 0:
                 temp_output_path.replace(output_path)
                 logger.info(f"[Finalizer] Cycle processing SUCCESS: {output_path}")
                 return output_path
@@ -468,15 +543,23 @@ class Finalizer:
 
     def run_post_stitch_finalizer(self) -> Optional[Path]:
         """
-        Run the post-stitch finalizer: interpolation → upscale → encode.
+        Run the post-stitch finalizer pipeline. Stages are independent:
+
+          1. (optional) post-run pingpong   — driven by `post_run_pingpong`
+          2. (optional) post-run interpolation → upscale  — driven by
+             `post_run_interpolation` (which inherits from `enabled` if unset)
 
         This MUST only be called ONCE, AFTER final stitching is complete.
         It NEVER modifies the base stitched master (final_output.mp4).
 
         Returns:
-            Path to final_60fps_1080p.mp4 or None if skipped/failed.
+            Path to final_60fps_1080p.mp4 (or pingpong-only output) when
+            anything ran, or None if the master switch is off / nothing
+            useful to do.
         """
-        # ── Guard: finalizer disabled ──
+        # ── Master guard ──────────────────────────────────────────────────
+        # The master `enabled` switch still gates everything. Users wanting
+        # only pingpong can do so with: enabled: true + post_run_interpolation: false.
         if not self.finalizer_enabled:
             logger.info("[Finalizer] Post-stitch finalizer is DISABLED in config. Skipping.")
             return None
@@ -489,6 +572,14 @@ class Finalizer:
             )
             return None
 
+        # ── Guard: nothing to do? ──
+        if not (self.post_run_pingpong or self.post_run_interpolation):
+            logger.info(
+                "[Finalizer] post_run_pingpong=false AND post_run_interpolation=false. "
+                "Nothing to do post-stitch."
+            )
+            return None
+
         # ── Guard: already completed (idempotent / no double-run) ──
         if self.final_deliverable_path.exists():
             logger.info(
@@ -497,11 +588,18 @@ class Finalizer:
             )
             return self.final_deliverable_path
 
+        active_stages = []
+        if self.post_run_pingpong:
+            active_stages.append("PINGPONG")
+        if self.post_run_interpolation:
+            active_stages.append("INTERPOLATION + UPSCALE")
         logger.info("=" * 60)
         logger.info("[Finalizer] POST-STITCH FINALIZER STARTING")
         logger.info(f"  Input:  {self.final_output_path}")
-        logger.info(f"  Target: {self.interpolate_fps}fps → "
-                     f"{self.upscale_width}x{self.upscale_height}")
+        logger.info(f"  Stages: {' → '.join(active_stages)}")
+        if self.post_run_interpolation:
+            logger.info(f"  Target: {self.interpolate_fps}fps → "
+                        f"{self.upscale_width}x{self.upscale_height}")
         logger.info("=" * 60)
 
         # ── Detect best encoder ──
@@ -509,41 +607,83 @@ class Finalizer:
         encoder_args = self._get_encoder_args(encoder, self.finalizer_crf)
         logger.info(f"[Finalizer] Encoder selected: {encoder}")
 
-        # ── STEP 1: Interpolation (8fps → 60fps) ──
-        logger.info(f"[Finalizer] STEP 1/2: Interpolating to {self.interpolate_fps}fps...")
-        interp_success = self._interpolate(
-            input_path=self.final_output_path,
-            output_path=self._interpolated_temp_path,
-            encoder_args=encoder_args
-        )
+        # ── STAGE: Pingpong (optional, runs first to feed downstream stages) ──
+        # Output to a sibling path so the base master stays untouched.
+        post_pingpong_path = self.project_dir / "_temp_post_pingpong.mp4"
+        active_input_path = self.final_output_path
+        if self.post_run_pingpong:
+            logger.info("[Finalizer] STAGE: post-run PINGPONG...")
+            ok = self._post_run_pingpong(
+                input_path=self.final_output_path,
+                output_path=post_pingpong_path,
+                encoder_args=encoder_args,
+            )
+            if not ok:
+                logger.error("[Finalizer] Post-run pingpong FAILED.")
+                self._cleanup_temp()
+                if post_pingpong_path.exists():
+                    post_pingpong_path.unlink(missing_ok=True)
+                return None
+            logger.info("[Finalizer] Post-run pingpong SUCCESS ✓")
+            active_input_path = post_pingpong_path
+            # Standalone pingpong-only output (no interpolation/upscale): keep
+            # the file as the deliverable.
+            if not self.post_run_interpolation:
+                pingpong_deliverable = self.project_dir / "final_pingpong.mp4"
+                # Move temp → deliverable
+                if pingpong_deliverable.exists():
+                    pingpong_deliverable.unlink(missing_ok=True)
+                post_pingpong_path.rename(pingpong_deliverable)
+                self._log_video_info(pingpong_deliverable, label="POST-RUN PINGPONG OUTPUT")
+                logger.info("=" * 60)
+                logger.info("[Finalizer] POST-STITCH FINALIZER COMPLETE (pingpong only)")
+                logger.info(f"  Base master:  {self.final_output_path}")
+                logger.info(f"  Deliverable:  {pingpong_deliverable}")
+                logger.info("=" * 60)
+                return pingpong_deliverable
 
-        if not interp_success:
-            logger.error("[Finalizer] Interpolation FAILED. Post-stitch finalizer aborted.")
-            self._cleanup_temp()
-            return None
+        # ── STAGE: Interpolation + Upscale (optional) ──
+        if self.post_run_interpolation:
+            logger.info(f"[Finalizer] STAGE: post-run INTERPOLATION → {self.interpolate_fps}fps...")
+            interp_success = self._interpolate(
+                input_path=active_input_path,
+                output_path=self._interpolated_temp_path,
+                encoder_args=encoder_args
+            )
 
-        logger.info("[Finalizer] Interpolation SUCCESS ✓")
+            if not interp_success:
+                logger.error("[Finalizer] Interpolation FAILED. Post-stitch finalizer aborted.")
+                self._cleanup_temp()
+                if post_pingpong_path.exists():
+                    post_pingpong_path.unlink(missing_ok=True)
+                return None
 
-        # ── STEP 2: Upscale (1024×576 → 1920×1080) ──
-        logger.info(
-            f"[Finalizer] STEP 2/2: Upscaling to "
-            f"{self.upscale_width}x{self.upscale_height}..."
-        )
-        upscale_success = self._upscale(
-            input_path=self._interpolated_temp_path,
-            output_path=self.final_deliverable_path,
-            encoder_args=encoder_args
-        )
+            logger.info("[Finalizer] Interpolation SUCCESS ✓")
 
-        if not upscale_success:
-            logger.error("[Finalizer] Upscale FAILED. Post-stitch finalizer aborted.")
-            self._cleanup_temp()
-            return None
+            logger.info(
+                f"[Finalizer] STAGE: post-run UPSCALE → "
+                f"{self.upscale_width}x{self.upscale_height}..."
+            )
+            upscale_success = self._upscale(
+                input_path=self._interpolated_temp_path,
+                output_path=self.final_deliverable_path,
+                encoder_args=encoder_args
+            )
 
-        logger.info("[Finalizer] Upscale SUCCESS ✓")
+            if not upscale_success:
+                logger.error("[Finalizer] Upscale FAILED. Post-stitch finalizer aborted.")
+                self._cleanup_temp()
+                if post_pingpong_path.exists():
+                    post_pingpong_path.unlink(missing_ok=True)
+                return None
 
-        # ── Cleanup temp interpolated file ──
+            logger.info("[Finalizer] Upscale SUCCESS ✓")
+
+        # ── Cleanup ──
         self._cleanup_temp()
+        if post_pingpong_path.exists():
+            # If pingpong fed into interpolation, the temp can go now.
+            post_pingpong_path.unlink(missing_ok=True)
 
         # ── Log deliverable info ──
         self._log_video_info(self.final_deliverable_path, label="FINAL DELIVERABLE")
@@ -555,6 +695,57 @@ class Finalizer:
         logger.info("=" * 60)
 
         return self.final_deliverable_path
+
+    def _post_run_pingpong(
+        self,
+        input_path: Path,
+        output_path: Path,
+        encoder_args: list,
+    ) -> bool:
+        """
+        Apply pingpong (forward + reverse-without-seam-frame) to the
+        post-stitch master, producing a perfect-loop double-length video.
+        FPS is preserved.
+        """
+        if not input_path.exists():
+            logger.error(f"[Finalizer] Post-run pingpong: input not found at {input_path}")
+            return False
+
+        filter_complex_str = (
+            f"[0:v]setpts=PTS-STARTPTS[v0];"
+            f"[v0]split=2[vf][vr];"
+            f"[vr]reverse,select='not(eq(n,0))'[vr2];"
+            f"[vf][vr2]concat=n=2:v=1:a=0"
+        )
+        cmd = [
+            'ffmpeg', '-y',
+            '-fflags', '+genpts',
+            '-i', str(input_path),
+            '-filter_complex', filter_complex_str,
+            '-an',
+            '-fps_mode', 'cfr',
+            *encoder_args,
+            '-movflags', '+faststart',
+            str(output_path),
+        ]
+        logger.debug(f"[Finalizer] Post-run pingpong cmd: {' '.join(cmd)}")
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+            if result.returncode == 0 and output_path.exists():
+                size_mb = output_path.stat().st_size / (1024 * 1024)
+                logger.info(f"[Finalizer] Post-run pingpong file: {output_path} ({size_mb:.1f} MB)")
+                return True
+            logger.error(
+                f"[Finalizer] Post-run pingpong FAILED (rc={result.returncode}): "
+                f"{result.stderr}"
+            )
+            return False
+        except subprocess.TimeoutExpired:
+            logger.error("[Finalizer] Post-run pingpong timed out")
+            return False
+        except Exception as e:
+            logger.error(f"[Finalizer] Post-run pingpong error: {e}")
+            return False
 
     # ──────────────────────────────────────────────────────────────────────────
     # Post-stitch internal methods

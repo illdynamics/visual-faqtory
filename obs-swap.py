@@ -42,14 +42,14 @@ logging.basicConfig(
 HOST     = os.environ.get("OBS_HOST",     "127.0.0.1")
 PORT     = int(os.environ.get("OBS_PORT", "4455"))
 PASSWORD = os.environ.get("OBS_PASSWORD", "Setyup34!")
-SCENE    = os.environ.get("OBS_SCENE",    "Ill Dynamics - Live on Cyndicut Radio")
+SCENE    = os.environ.get("OBS_SCENE",    "Ill Dynamics - Live on SkankOut")
 
 # Source names — keep consistent with your OBS setup
 SOURCE_A = "Live-Visuals-A"
 SOURCE_B = "Live-Visuals-B"
 
-ID_A = 8
-ID_B = 9
+ID_A = 7
+ID_B = 8
 
 DEFAULT_PREWARM_SEC = float(os.environ.get("OBS_PREWARM_SEC", "0.8"))
 
