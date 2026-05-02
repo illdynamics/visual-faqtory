@@ -125,6 +125,8 @@ crowd_control:
   timeout_seconds: 1.0                  # HTTP timeout for generator→server calls
   inject_label: "Audience mutation request"  # Label injected into the prompt
   inject_mode: "replace"                 # append = add to story | replace = override story
+  inject_source_mode: "as_reference"     # as_image_source | as_reference
+  carryover_cycles: 0                    # 0 = current only, 1 = +next cycle, 2 = +next two cycles
   max_chars: 300                        # Max prompt length from viewers
   rate_limit_seconds: 180               # 1 submission per IP per this many seconds
   max_queue: 100                        # Max pending prompts in queue

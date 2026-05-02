@@ -832,6 +832,13 @@ class VisualFaQtory:
             )
         except KeyboardInterrupt:
             logger.info("\n[FaQtory] Run interrupted by user")
+            try:
+                from vfaq.sliding_story_engine import shutdown_active_smart_reinject_workers
+                shutdown_active_smart_reinject_workers(reason="interrupt")
+            except Exception as shutdown_error:
+                logger.warning(
+                    f"[FaQtory] Smart reinject shutdown during interrupt reported: {shutdown_error}"
+                )
             self._write_run_state(
                 "interrupted", start_time,
                 cycles_planned=total_cycles,
@@ -844,6 +851,13 @@ class VisualFaQtory:
             )
             raise
         except Exception as e:
+            try:
+                from vfaq.sliding_story_engine import shutdown_active_smart_reinject_workers
+                shutdown_active_smart_reinject_workers(reason="error")
+            except Exception as shutdown_error:
+                logger.warning(
+                    f"[FaQtory] Smart reinject shutdown after failure reported: {shutdown_error}"
+                )
             logger.error(f"[FaQtory] Run failed at cycle ~{self._cycles_completed + 1}: {e}")
             self._write_run_state(
                 "failed", start_time,

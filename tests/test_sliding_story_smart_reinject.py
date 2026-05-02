@@ -12,7 +12,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from vfaq.backends import GenerationResult
-from vfaq.sliding_story_engine import SlidingStoryConfig, run_sliding_story
+from vfaq.sliding_story_engine import (
+    SlidingStoryConfig,
+    run_sliding_story,
+    shutdown_active_smart_reinject_workers,
+)
 
 
 _MINIMAL_PNG = bytes([
@@ -56,6 +60,8 @@ class _RecordingBackend:
         self.video_calls = []
         self.morph_calls = []
         self.image_calls = []
+        self.video_requests = []
+        self.morph_requests = []
         self._lock = threading.Lock()
 
     def _record(self, kind: str, atom_id: str, **kwargs):
@@ -97,11 +103,22 @@ class _RecordingBackend:
 
     def generate_video(self, request, source_image):
         self.video_call_times.append(time.time())
-        self.video_calls.append((request.atom_id, str(source_image) if source_image else None))
+        source_str = str(source_image) if source_image else None
+        self.video_calls.append((request.atom_id, source_str))
+        self.video_requests.append(
+            {
+                "atom_id": request.atom_id,
+                "source": source_str,
+                "prompt": request.prompt,
+                "video_prompt": request.video_prompt,
+            }
+        )
         self._record(
             "generate_video",
             request.atom_id,
-            source=str(source_image) if source_image else None,
+            source=source_str,
+            prompt=request.prompt[:160] if request.prompt else "",
+            video_prompt=request.video_prompt[:160] if request.video_prompt else "",
         )
         video_path = self._video_path(request.output_dir, request.atom_id)
         return GenerationResult(
@@ -112,11 +129,22 @@ class _RecordingBackend:
 
     def generate_morph_video(self, request, start_image_path, end_image_path):
         self.morph_calls.append((request.atom_id, str(start_image_path), str(end_image_path)))
+        self.morph_requests.append(
+            {
+                "atom_id": request.atom_id,
+                "start_image": str(start_image_path),
+                "end_image": str(end_image_path),
+                "prompt": request.prompt,
+                "video_prompt": request.video_prompt,
+            }
+        )
         self._record(
             "generate_morph_video",
             request.atom_id,
             start=str(start_image_path),
             end=str(end_image_path),
+            prompt=request.prompt[:160] if request.prompt else "",
+            video_prompt=request.video_prompt[:160] if request.video_prompt else "",
         )
         video_path = self._video_path(request.output_dir, request.atom_id)
         return GenerationResult(
@@ -127,6 +155,55 @@ class _RecordingBackend:
 
     def check_availability(self):
         return True, "ok"
+
+
+class _ReferenceStripThenI2VBackend(_RecordingBackend):
+    """Simulates Venice stripping reference_image_urls then succeeding on i2v fallback."""
+
+    def generate_video(self, request, source_image):
+        if source_image is None and getattr(request, "reference_image_paths", None):
+            self.video_call_times.append(time.time())
+            self.video_calls.append((request.atom_id, None))
+            self.video_requests.append(
+                {
+                    "atom_id": request.atom_id,
+                    "source": None,
+                    "prompt": request.prompt,
+                    "video_prompt": request.video_prompt,
+                }
+            )
+            self._record(
+                "generate_video",
+                request.atom_id,
+                source=None,
+                prompt=request.prompt[:160] if request.prompt else "",
+                video_prompt=request.video_prompt[:160] if request.video_prompt else "",
+            )
+            video_path = self._video_path(request.output_dir, request.atom_id + "_ref_attempt")
+            return GenerationResult(
+                success=True,
+                video_path=video_path,
+                metadata={
+                    "backend": self.name,
+                    "operation": "video",
+                    "response": {
+                        "stripped_retry_fields": ["reference_image_urls"],
+                        "accepted_optional_fields": [],
+                    },
+                },
+            )
+        return super().generate_video(request, source_image)
+
+
+class _InterruptingBackend(_RecordingBackend):
+    def __init__(self, name: str, interrupt_atom_id: str):
+        super().__init__(name)
+        self.interrupt_atom_id = interrupt_atom_id
+
+    def generate_video(self, request, source_image):
+        if request.atom_id == self.interrupt_atom_id:
+            raise KeyboardInterrupt
+        return super().generate_video(request, source_image)
 
 
 class _FakeCrowdClient:
@@ -161,6 +238,9 @@ class SmartReinjectSlidingStoryTests(unittest.TestCase):
         text_to_video_first_cycle: bool = True,
         enable_end_frame_morph: bool = True,
         crowd_enabled: bool = False,
+        crowd_inject_mode: str = "append",
+        crowd_inject_source_mode: str = "as_image_source",
+        crowd_carryover_cycles: int = 0,
     ) -> SlidingStoryConfig:
         venice_cfg = {
             "text_to_video_first_cycle": text_to_video_first_cycle,
@@ -192,7 +272,17 @@ class SmartReinjectSlidingStoryTests(unittest.TestCase):
             finalizer_config={"enabled": False, "per_cycle_interpolation": False, "per_cycle_pingpong": False},
             reinject=True,
             venice_config=venice_cfg,
-            crowd_control_config=({"enabled": True} if crowd_enabled else {"enabled": False}),
+            crowd_control_config=(
+                {
+                    "enabled": True,
+                    "inject_mode": crowd_inject_mode,
+                    "inject_source_mode": crowd_inject_source_mode,
+                    "inject_label": "Audience mutation request",
+                    "carryover_cycles": crowd_carryover_cycles,
+                }
+                if crowd_enabled
+                else {"enabled": False}
+            ),
             smart_reinject_enabled=smart_enabled,
             smart_reinject_every_n_cycles=1,
             smart_reinject_use_morph=smart_use_morph,
@@ -253,10 +343,12 @@ class SmartReinjectSlidingStoryTests(unittest.TestCase):
         )
 
         if crowd_prompts is not None:
+            cc_cfg_dict = dict(config.crowd_control_config or {})
             fake_cfg = SimpleNamespace(
-                inject_mode="append",
-                inject_source_mode="as_image_source",
-                inject_label="Audience mutation request",
+                inject_mode=str(cc_cfg_dict.get("inject_mode", "append")),
+                inject_source_mode=str(cc_cfg_dict.get("inject_source_mode", "as_image_source")),
+                inject_label=str(cc_cfg_dict.get("inject_label", "Audience mutation request")),
+                carryover_cycles=int(cc_cfg_dict.get("carryover_cycles", 0)),
             )
             fake_client = _FakeCrowdClient(crowd_prompts)
             fake_pkg = types.ModuleType("vfaq.crowd_control")
@@ -310,7 +402,7 @@ class SmartReinjectSlidingStoryTests(unittest.TestCase):
         cycle2_morph_idx = next(i for i, e in enumerate(main.events) if e["atom_id"] == "video_002" and e["kind"] == "generate_morph_video")
         self.assertLess(cycle2_image_idx, cycle2_morph_idx)
         self.assertEqual(len(main.morph_calls), 1)
-        self.assertNotIn("smart_reinject_enabled", self._briq(run_dir, 2))
+        self.assertFalse(self._briq(run_dir, 2).get("smart_reinject_enabled"))
 
         config_no_morph = self._make_story_config(require_morph=False, smart_enabled=False, text_to_video_first_cycle=True)
         main_no_morph = _RecordingBackend("main_nomorph")
@@ -373,7 +465,11 @@ class SmartReinjectSlidingStoryTests(unittest.TestCase):
         self.assertTrue(start_path.endswith("lastframe_001.png"))
         self.assertTrue(end_path.endswith("smart_reinject_target_002.png"))
         self.assertFalse(any(atom == "cycle_002_kf" for atom in main.image_calls))
-        self.assertTrue(self._briq(run_dir, 2).get("smart_reinject_used"))
+        cycle2 = self._briq(run_dir, 2)
+        self.assertTrue(cycle2.get("smart_reinject_used"))
+        self.assertTrue(cycle2.get("smart_reinject_schedule_allowed"))
+        self.assertTrue(cycle2.get("smart_reinject_consume_allowed"))
+        self.assertIsNone(cycle2.get("smart_reinject_skip_reason"))
 
     def test_similarity_guard_reject_falls_back_to_image_to_video(self):
         config = self._make_story_config(
@@ -440,7 +536,104 @@ class SmartReinjectSlidingStoryTests(unittest.TestCase):
         cycle2_video = [v for v in main.video_calls if v[0] == "video_002"][0]
         self.assertTrue(cycle2_video[1].endswith("lastframe_001.png"))
 
-    def test_crowd_cycle_suppresses_smart_prefetch_schedule(self):
+    def test_wait_timeout_zero_marks_prefetch_stale_and_allows_reschedule(self):
+        config = self._make_story_config(
+            require_morph=False,
+            smart_enabled=True,
+            text_to_video_first_cycle=False,
+            smart_wait_timeout_sec=0,
+        )
+        main = _RecordingBackend("main")
+        async_image = _RecordingBackend("async", image_delay=1.0)
+        run_dir, _ = self._run_story(
+            run_name="smart_stale_missed_target",
+            config=config,
+            main_backend=main,
+            async_backend=async_image,
+            max_cycles=3,
+        )
+        cycle2 = self._briq(run_dir, 2)
+        self.assertTrue(cycle2.get("smart_reinject_pending_detected"))
+        self.assertTrue(cycle2.get("smart_reinject_missed_target_cycle"))
+        self.assertTrue(cycle2.get("smart_reinject_scheduled"))
+
+    def test_append_mode_resolves_prompt_with_labeled_crowd_block(self):
+        config = self._make_story_config(
+            require_morph=False,
+            smart_enabled=False,
+            crowd_enabled=True,
+            crowd_inject_mode="append",
+            crowd_inject_source_mode="as_image_source",
+        )
+        main = _RecordingBackend("main")
+        crowd_text = "crowd add shimmering paper koi"
+        run_dir, _ = self._run_story(
+            run_name="crowd_append_prompt_resolution",
+            config=config,
+            main_backend=main,
+            max_cycles=1,
+            crowd_prompts=[crowd_text],
+        )
+        cycle1_request = [r for r in main.video_requests if r["atom_id"] == "video_001"][0]
+        self.assertIn("Para one.", cycle1_request["prompt"])
+        self.assertIn("[AUDIENCE MUTATION REQUEST]", cycle1_request["prompt"])
+        self.assertIn(crowd_text, cycle1_request["prompt"])
+        cycle1 = self._briq(run_dir, 1)
+        self.assertEqual(cycle1.get("requested_inject_mode"), "append")
+        self.assertEqual(cycle1.get("crowd_prompt_origin"), "fresh")
+        self.assertEqual(cycle1.get("authoritative_prompt_route"), "crowd_main_route")
+
+    def test_replace_mode_resolves_prompt_to_crowd_only(self):
+        config = self._make_story_config(
+            require_morph=False,
+            smart_enabled=False,
+            crowd_enabled=True,
+            crowd_inject_mode="replace",
+            crowd_inject_source_mode="as_image_source",
+        )
+        main = _RecordingBackend("main")
+        crowd_text = "crowd replace with molten chrome owls"
+        run_dir, _ = self._run_story(
+            run_name="crowd_replace_prompt_resolution",
+            config=config,
+            main_backend=main,
+            max_cycles=1,
+            crowd_prompts=[crowd_text],
+        )
+        cycle1_request = [r for r in main.video_requests if r["atom_id"] == "video_001"][0]
+        self.assertEqual(cycle1_request["prompt"], crowd_text)
+        self.assertNotIn("Para one.", cycle1_request["prompt"])
+        cycle1 = self._briq(run_dir, 1)
+        self.assertEqual(cycle1.get("requested_inject_mode"), "replace")
+        self.assertEqual(cycle1.get("crowd_prompt_origin"), "fresh")
+
+    def test_crowd_prompt_carryover_replays_for_configured_cycles(self):
+        config = self._make_story_config(
+            require_morph=False,
+            smart_enabled=False,
+            crowd_enabled=True,
+            crowd_inject_mode="append",
+            crowd_inject_source_mode="as_image_source",
+            crowd_carryover_cycles=1,
+        )
+        main = _RecordingBackend("main")
+        crowd_text = "carry this mutation into next beat"
+        run_dir, _ = self._run_story(
+            run_name="crowd_prompt_carryover",
+            config=config,
+            main_backend=main,
+            max_cycles=2,
+            crowd_prompts=[crowd_text],
+        )
+        cycle2_request = [r for r in main.video_requests if r["atom_id"] == "video_002"][0]
+        self.assertIn(crowd_text, cycle2_request["prompt"])
+        cycle1 = self._briq(run_dir, 1)
+        cycle2 = self._briq(run_dir, 2)
+        self.assertEqual(cycle1.get("crowd_prompt_origin"), "fresh")
+        self.assertEqual(cycle2.get("crowd_prompt_origin"), "carryover")
+        self.assertEqual(cycle2.get("crowd_carryover_remaining"), 0)
+
+    def test_crowd_cycle_pauses_smart_schedule_for_current_cycle_only(self):
         config = self._make_story_config(
             require_morph=False,
             smart_enabled=True,
@@ -449,7 +642,7 @@ class SmartReinjectSlidingStoryTests(unittest.TestCase):
         )
         main = _RecordingBackend("main")
         async_image = _RecordingBackend("async")
-        self._run_story(
+        run_dir, _ = self._run_story(
             run_name="smart_crowd_suppression",
             config=config,
             main_backend=main,
@@ -458,6 +651,156 @@ class SmartReinjectSlidingStoryTests(unittest.TestCase):
             crowd_prompts=["mutate this cycle"],
         )
         self.assertEqual(async_image.image_calls, [])
+        cycle1 = self._briq(run_dir, 1)
+        cycle2 = self._briq(run_dir, 2)
+        self.assertTrue(cycle1.get("crowd_active"))
+        self.assertFalse(cycle1.get("smart_reinject_schedule_allowed"))
+        self.assertFalse(cycle1.get("smart_reinject_consume_allowed"))
+        self.assertFalse(cycle1.get("smart_reinject_apply_allowed"))
+        self.assertEqual(cycle1.get("smart_reinject_skip_reason"), "crowd_prompt_active")
+        self.assertFalse(cycle1.get("smart_reinject_scheduled"))
+        self.assertTrue(config.smart_reinject_enabled)
+        self.assertFalse(cycle2.get("crowd_active"))
+        self.assertTrue(cycle2.get("smart_reinject_schedule_allowed"))
+        self.assertTrue(cycle2.get("smart_reinject_consume_allowed"))
+        self.assertTrue(cycle2.get("smart_reinject_apply_allowed"))
+
+    def test_crowd_cycle_discards_pending_prefetch_and_skips_consumption(self):
+        config = self._make_story_config(
+            require_morph=False,
+            smart_enabled=True,
+            text_to_video_first_cycle=False,
+            crowd_enabled=True,
+            smart_wait_timeout_sec=0,
+        )
+        main = _RecordingBackend("main")
+        async_image = _RecordingBackend("async", image_delay=1.0)
+        run_dir, _ = self._run_story(
+            run_name="smart_crowd_discard_pending",
+            config=config,
+            main_backend=main,
+            async_backend=async_image,
+            max_cycles=2,
+            crowd_prompts=[None, "crowd cycle two prompt"],
+        )
+        cycle2 = self._briq(run_dir, 2)
+        self.assertTrue(cycle2.get("crowd_active"))
+        self.assertFalse(cycle2.get("smart_reinject_consume_allowed"))
+        self.assertTrue(cycle2.get("smart_reinject_pending_detected"))
+        self.assertTrue(cycle2.get("smart_reinject_discarded_due_to_crowd"))
+        self.assertFalse(cycle2.get("smart_reinject_used"))
+        self.assertEqual(cycle2.get("smart_reinject_skip_reason"), "crowd_prompt_active")
+        cycle2_video = [v for v in main.video_calls if v[0] == "video_002"][0]
+        self.assertTrue(cycle2_video[1].endswith("lastframe_001.png"))
+        self.assertNotIn("smart_reinject_target_002.png", cycle2_video[1])
+        self.assertTrue(config.smart_reinject_enabled)
+
+    def test_smart_reinject_resumes_after_crowd_cycle(self):
+        config = self._make_story_config(
+            require_morph=False,
+            smart_enabled=True,
+            text_to_video_first_cycle=False,
+            crowd_enabled=True,
+            smart_wait_timeout_sec=0,
+        )
+        main = _RecordingBackend("main")
+        async_image = _RecordingBackend("async")
+        run_dir, _ = self._run_story(
+            run_name="smart_resume_after_crowd",
+            config=config,
+            main_backend=main,
+            async_backend=async_image,
+            max_cycles=4,
+            crowd_prompts=[None, "crowd cycle two prompt"],
+        )
+        cycle2 = self._briq(run_dir, 2)
+        cycle3 = self._briq(run_dir, 3)
+        self.assertTrue(cycle2.get("crowd_active"))
+        self.assertFalse(cycle2.get("smart_reinject_schedule_allowed"))
+        self.assertFalse(cycle2.get("smart_reinject_consume_allowed"))
+        self.assertEqual(cycle2.get("smart_reinject_skip_reason"), "crowd_prompt_active")
+        self.assertFalse(cycle3.get("crowd_active"))
+        self.assertTrue(cycle3.get("smart_reinject_schedule_allowed"))
+        self.assertTrue(cycle3.get("smart_reinject_consume_allowed"))
+        self.assertTrue(cycle3.get("smart_reinject_scheduled"))
+        self.assertIn("smart_reinject_003_for_004", async_image.image_calls)
+        self.assertNotIn("smart_reinject_002_for_003", async_image.image_calls)
+
+    def test_crowd_prompt_still_reaches_video_route_when_smart_paused(self):
+        config = self._make_story_config(
+            require_morph=False,
+            smart_enabled=True,
+            text_to_video_first_cycle=False,
+            crowd_enabled=True,
+            smart_wait_timeout_sec=0,
+        )
+        main = _RecordingBackend("main")
+        async_image = _RecordingBackend("async", image_delay=1.0)
+        crowd_text = "crowd tiger made of glass and rain"
+        run_dir, _ = self._run_story(
+            run_name="smart_crowd_prompt_reaches_video",
+            config=config,
+            main_backend=main,
+            async_backend=async_image,
+            max_cycles=2,
+            crowd_prompts=[None, crowd_text],
+        )
+        cycle2_video_request = [r for r in main.video_requests if r["atom_id"] == "video_002"][0]
+        self.assertIn(crowd_text, cycle2_video_request["prompt"])
+        self.assertIn(crowd_text, cycle2_video_request["video_prompt"])
+        self.assertTrue(cycle2_video_request["source"].endswith("lastframe_001.png"))
+        cycle2 = self._briq(run_dir, 2)
+        self.assertFalse(cycle2.get("smart_reinject_used"))
+        self.assertEqual(cycle2.get("smart_reinject_skip_reason"), "crowd_prompt_active")
+
+    def test_as_reference_unsupported_falls_back_to_as_image_source_with_truthful_metadata(self):
+        config = self._make_story_config(
+            require_morph=False,
+            smart_enabled=False,
+            text_to_video_first_cycle=False,
+            crowd_enabled=True,
+            crowd_inject_mode="append",
+            crowd_inject_source_mode="as_reference",
+        )
+        main = _ReferenceStripThenI2VBackend("main")
+        run_dir, _ = self._run_story(
+            run_name="crowd_as_reference_fallback_to_i2v",
+            config=config,
+            main_backend=main,
+            max_cycles=2,
+            crowd_prompts=[None, "crowd crystal lotus in stormlight"],
+        )
+        cycle2 = self._briq(run_dir, 2)
+        self.assertEqual(cycle2.get("requested_inject_source_mode"), "as_reference")
+        self.assertEqual(cycle2.get("actual_inject_source_mode"), "as_image_source")
+        self.assertTrue(cycle2.get("reference_images_requested"))
+        self.assertFalse(cycle2.get("reference_images_accepted"))
+        self.assertTrue(cycle2.get("reference_images_stripped_by_retry"))
+        self.assertTrue(cycle2.get("as_reference_fallback_to_image_source"))
+        cycle2_calls = [v for v in main.video_calls if v[0] == "video_002"]
+        self.assertEqual(len(cycle2_calls), 2)
+        self.assertIsNone(cycle2_calls[0][1])
+        self.assertTrue(cycle2_calls[1][1].endswith("lastframe_001.png"))
+
+    def test_interrupt_cleanup_helper_shuts_down_active_prefetch_workers(self):
+        config = self._make_story_config(
+            require_morph=False,
+            smart_enabled=True,
+            text_to_video_first_cycle=False,
+            smart_wait_timeout_sec=0,
+        )
+        main = _InterruptingBackend("main", interrupt_atom_id="video_002")
+        async_image = _RecordingBackend("async", image_delay=1.5)
+        with self.assertRaises(KeyboardInterrupt):
+            self._run_story(
+                run_name="smart_interrupt_cleanup",
+                config=config,
+                main_backend=main,
+                async_backend=async_image,
+                max_cycles=3,
+            )
+        shutdown_active_smart_reinject_workers(reason="interrupt")
+        shutdown_active_smart_reinject_workers(reason="interrupt")
 
     def test_briq_metadata_contains_smart_fields_for_scheduled_used_and_rejected(self):
         use_cfg = self._make_story_config(

@@ -199,6 +199,7 @@ crowd_control:
   inject_label: "Audience mutation request"   # Label injected into the prompt
   inject_mode: "append"                   # append | replace
   inject_source_mode: "as_image_source"   # as_image_source | as_reference
+  carryover_cycles: 0                     # 0 = current only, 1 = +next cycle, 2 = +next two cycles
                                           #
                                           # as_image_source (default):
                                           #   IMG2VID with previous lastframe as

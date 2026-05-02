@@ -198,7 +198,7 @@ audio:
 #
 # ═══════════════════════════════════════════════════════════════════════════════
 crowd_control:
-  enabled: false                        # Set true to activate crowd prompt injection
+  enabled: true                        # Set true to activate crowd prompt injection
   base_url: "http://10.20.30.22:8000/visuals"  # Where the generator reaches the server
   pop_token: "Setyup34Setyup34Setyup34Setyup34"    # Bearer token for /api/next endpoint
   timeout_seconds: 1.0                  # HTTP timeout for generator→server calls
@@ -218,7 +218,8 @@ crowd_control:
   #
   # `inject_mode` is orthogonal: append = paragraph + audience text, replace
   # = audience text only. Source mode is independent of that.
-  inject_source_mode: "as_image_source"
+  inject_source_mode: "as_reference"
+  carryover_cycles: 0                  # 0 = current only, 1 = +next cycle, 2 = +next two cycles
   max_chars: 300                        # Max prompt length from viewers
   rate_limit_seconds: 60               # 1 submission per IP per this many seconds
   max_queue: 100                        # Max pending prompts in queue

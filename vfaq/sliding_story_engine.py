@@ -62,8 +62,9 @@ import logging
 import os
 import random
 import shutil
+import threading
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from vfaq.timing import TimingResolver
@@ -84,6 +85,8 @@ from .backends import (
 from .image_metrics import calculate_frame_similarity
 
 logger = logging.getLogger(__name__)
+_ACTIVE_SMART_REINJECT_STATES: List["_SmartReinjectState"] = []
+_ACTIVE_SMART_REINJECT_STATES_LOCK = threading.Lock()
 
 
 def _write_briq_json(briqs_dir: Path, cycle_idx: int, data: dict) -> None:
@@ -176,8 +179,20 @@ class _SmartReinjectState:
     executor: Optional[ThreadPoolExecutor] = None
     image_backend: Optional[Any] = None
     pending: Optional[_SmartReinjectPrefetch] = None
+    abandoned_prefetches: List[_SmartReinjectPrefetch] = field(default_factory=list)
     warned_end_frame_morph_disabled: bool = False
     warned_morph_capability_failure: bool = False
+
+
+@dataclass
+class ResolvedCyclePrompt:
+    base_story_prompt: str
+    crowd_prompt: Optional[str]
+    crowd_prompt_origin: str
+    inject_mode: str
+    inject_source_mode: str
+    resolved_main_prompt: str
+    crowd_active: bool
 
 
 def _normalize_smart_reinject_interval(raw_value: Any) -> int:
@@ -185,6 +200,151 @@ def _normalize_smart_reinject_interval(raw_value: Any) -> int:
         return max(1, int(raw_value))
     except (TypeError, ValueError):
         return 1
+
+
+def _normalize_crowd_carryover_cycles(raw_value: Any) -> int:
+    try:
+        return max(0, int(raw_value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _resolve_cycle_prompt(
+    *,
+    base_story_prompt: str,
+    crowd_prompt: Optional[str],
+    crowd_prompt_origin: str,
+    inject_mode: str,
+    inject_source_mode: str,
+    inject_label: str,
+) -> ResolvedCyclePrompt:
+    normalized_mode = str(inject_mode or "append").strip().lower() or "append"
+    if normalized_mode not in {"append", "replace"}:
+        normalized_mode = "append"
+    normalized_source_mode = str(inject_source_mode or "as_image_source").strip().lower() or "as_image_source"
+    if normalized_source_mode not in {"as_image_source", "as_reference"}:
+        normalized_source_mode = "as_image_source"
+
+    crowd_text = str(crowd_prompt or "").strip()
+    if not crowd_text:
+        return ResolvedCyclePrompt(
+            base_story_prompt=base_story_prompt,
+            crowd_prompt=None,
+            crowd_prompt_origin="none",
+            inject_mode=normalized_mode,
+            inject_source_mode=normalized_source_mode,
+            resolved_main_prompt=base_story_prompt,
+            crowd_active=False,
+        )
+
+    if normalized_mode == "replace":
+        resolved_main_prompt = crowd_text
+    else:
+        label = str(inject_label or "Audience mutation request").strip().upper() or "AUDIENCE MUTATION REQUEST"
+        resolved_main_prompt = base_story_prompt + "\n\n[" + label + "]\n" + crowd_text
+
+    return ResolvedCyclePrompt(
+        base_story_prompt=base_story_prompt,
+        crowd_prompt=crowd_text,
+        crowd_prompt_origin=crowd_prompt_origin if crowd_prompt_origin in {"fresh", "carryover"} else "fresh",
+        inject_mode=normalized_mode,
+        inject_source_mode=normalized_source_mode,
+        resolved_main_prompt=resolved_main_prompt,
+        crowd_active=True,
+    )
+
+
+def _safe_unlink(path: Optional[Path]) -> None:
+    try:
+        if path and path.exists():
+            path.unlink()
+    except Exception:
+        pass
+
+
+def _abandon_smart_reinject_prefetch(
+    *,
+    state: _SmartReinjectState,
+    prefetch: _SmartReinjectPrefetch,
+    reason: str,
+    cycle_idx: Optional[int] = None,
+) -> None:
+    if prefetch.future.done():
+        try:
+            result = prefetch.future.result()
+            if result and getattr(result, "image_path", None):
+                _safe_unlink(Path(result.image_path))
+        except Exception as e:
+            logger.warning(
+                f"[SlidingStory/SmartReinject] Prefetch {prefetch.atom_id} "
+                f"finished with error while abandoning ({reason}): {e}"
+            )
+        return
+
+    cancelled = False
+    try:
+        cancelled = bool(prefetch.future.cancel())
+    except Exception as e:
+        logger.warning(
+            f"[SlidingStory/SmartReinject] Could not cancel pending prefetch "
+            f"{prefetch.atom_id} ({reason}): {e}"
+        )
+
+    if cancelled:
+        logger.info(
+            "[SlidingStory/SmartReinject] Cancelled pending prefetch "
+            f"{prefetch.atom_id} ({reason})."
+        )
+        return
+
+    state.abandoned_prefetches.append(prefetch)
+    suffix = f" for cycle {cycle_idx}" if cycle_idx is not None else ""
+    logger.info(
+        "[SlidingStory/SmartReinject] Prefetch "
+        f"{prefetch.atom_id}{suffix} marked stale/abandoned ({reason}) and will be ignored on completion."
+    )
+
+
+def _reap_abandoned_smart_reinject_prefetches(state: _SmartReinjectState) -> None:
+    if not state.abandoned_prefetches:
+        return
+    remaining: List[_SmartReinjectPrefetch] = []
+    for prefetch in state.abandoned_prefetches:
+        if not prefetch.future.done():
+            remaining.append(prefetch)
+            continue
+        try:
+            result = prefetch.future.result()
+            if result and getattr(result, "image_path", None):
+                _safe_unlink(Path(result.image_path))
+                logger.info(
+                    "[SlidingStory/SmartReinject] Discarded late abandoned prefetch "
+                    f"{prefetch.atom_id} after completion."
+                )
+        except Exception as e:
+            logger.warning(
+                f"[SlidingStory/SmartReinject] Abandoned prefetch {prefetch.atom_id} failed: {e}"
+            )
+    state.abandoned_prefetches = remaining
+
+
+def _register_smart_reinject_state(state: _SmartReinjectState) -> None:
+    with _ACTIVE_SMART_REINJECT_STATES_LOCK:
+        if state not in _ACTIVE_SMART_REINJECT_STATES:
+            _ACTIVE_SMART_REINJECT_STATES.append(state)
+
+
+def _unregister_smart_reinject_state(state: _SmartReinjectState) -> None:
+    with _ACTIVE_SMART_REINJECT_STATES_LOCK:
+        if state in _ACTIVE_SMART_REINJECT_STATES:
+            _ACTIVE_SMART_REINJECT_STATES.remove(state)
+
+
+def shutdown_active_smart_reinject_workers(reason: str = "interrupt") -> None:
+    with _ACTIVE_SMART_REINJECT_STATES_LOCK:
+        states = list(_ACTIVE_SMART_REINJECT_STATES)
+    for state in states:
+        _shutdown_smart_reinject_state(state, reason=reason)
 
 
 def _should_schedule_smart_reinject(
@@ -197,6 +357,7 @@ def _should_schedule_smart_reinject(
     crowd_active: bool,
     source_image_path: Optional[Path],
 ) -> bool:
+    _reap_abandoned_smart_reinject_prefetches(state)
     if not state.enabled:
         return False
     if not effective_reinject:
@@ -269,6 +430,7 @@ def _collect_smart_reinject_prefetch(
     keyframes_dir: Path,
     wait_timeout_sec: float,
 ) -> Optional[Dict[str, Any]]:
+    _reap_abandoned_smart_reinject_prefetches(state)
     pending = state.pending
     if not pending:
         return None
@@ -278,6 +440,7 @@ def _collect_smart_reinject_prefetch(
             try:
                 result = pending.future.result()
                 if result and result.image_path and result.image_path.exists():
+                    _safe_unlink(Path(result.image_path))
                     logger.info(
                         "[SlidingStory/SmartReinject] Discarding stale prefetch "
                         f"{pending.atom_id} (ready for cycle {pending.target_cycle_idx}, now cycle {cycle_idx})"
@@ -294,6 +457,17 @@ def _collect_smart_reinject_prefetch(
             logger.info(
                 "[SlidingStory/SmartReinject] Prefetch not ready for cycle "
                 f"{cycle_idx} and wait_timeout=0 — continuing without waiting."
+            )
+            _abandon_smart_reinject_prefetch(
+                state=state,
+                prefetch=pending,
+                reason="missed_target_wait_timeout_zero",
+                cycle_idx=cycle_idx,
+            )
+            state.pending = None
+            logger.info(
+                "[SlidingStory/SmartReinject] Smart prefetch missed target cycle; "
+                "marked stale and will be ignored on completion."
             )
             return None
         try:
@@ -346,18 +520,64 @@ def _collect_smart_reinject_prefetch(
     }
 
 
-def _shutdown_smart_reinject_state(state: _SmartReinjectState) -> None:
-    if not state.executor:
+def _discard_pending_smart_reinject_for_cycle(
+    *,
+    state: _SmartReinjectState,
+    cycle_idx: int,
+    reason: str,
+) -> bool:
+    pending = state.pending
+    if pending is None or pending.target_cycle_idx != cycle_idx:
+        return False
+
+    _abandon_smart_reinject_prefetch(
+        state=state,
+        prefetch=pending,
+        reason=reason,
+        cycle_idx=cycle_idx,
+    )
+    state.pending = None
+    logger.info(
+        "[SlidingStory/SmartReinject] Discarded pending prefetch "
+        f"{pending.atom_id} for cycle {cycle_idx} ({reason})."
+    )
+    return True
+
+
+def _shutdown_smart_reinject_state(state: _SmartReinjectState, reason: str = "normal") -> None:
+    _reap_abandoned_smart_reinject_prefetches(state)
+    if not state.executor and not state.pending and not state.abandoned_prefetches:
+        _unregister_smart_reinject_state(state)
         return
+    if reason == "interrupt":
+        logger.info(
+            "[SlidingStory/SmartReinject] Interrupt received: cancelling/abandoning "
+            "smart reinject prefetch workers."
+        )
     try:
-        if state.pending and not state.pending.future.done():
-            state.pending.future.cancel()
-        state.executor.shutdown(wait=False, cancel_futures=True)
+        if state.pending is not None:
+            _abandon_smart_reinject_prefetch(
+                state=state,
+                prefetch=state.pending,
+                reason="shutdown_interrupt" if reason == "interrupt" else "shutdown",
+            )
+            state.pending = None
+        for prefetch in list(state.abandoned_prefetches):
+            if not prefetch.future.done():
+                try:
+                    prefetch.future.cancel()
+                except Exception:
+                    pass
+        if state.executor:
+            state.executor.shutdown(wait=False, cancel_futures=True)
     except Exception as e:
         logger.warning(f"[SlidingStory/SmartReinject] Executor shutdown warning: {e}")
     finally:
         state.pending = None
+        state.abandoned_prefetches = []
         state.executor = None
+        _unregister_smart_reinject_state(state)
+        logger.info("[SlidingStory/SmartReinject] Smart reinject executor shutdown complete.")
 
 def _parse_story_file(story_path: Path) -> List[str]:
     """Parse a plain text story file into paragraphs.
@@ -979,6 +1199,7 @@ def run_sliding_story(
             image_cap_cfg = resolve_capability_backend_configs(backend_cfg).get("image", {})
             smart_reinject_state.image_backend = create_backend(image_cap_cfg or {})
             smart_reinject_state.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="smart_reinject")
+            _register_smart_reinject_state(smart_reinject_state)
             logger.info("[SlidingStory/SmartReinject] Async prefetch enabled.")
         except Exception as e:
             smart_reinject_state.enabled = False
@@ -1092,6 +1313,7 @@ def run_sliding_story(
     # Initialize Crowd Control client (fail-open: errors return None)
     crowd_client = None
     crowd_cc_cfg = config.crowd_control_config or {}
+    crowd_carryover_cycles = 0
     if crowd_cc_cfg.get("enabled", False):
         try:
             from vfaq.crowd_control.models import CrowdControlConfig
@@ -1101,9 +1323,17 @@ def run_sliding_story(
             crowd_inject_mode = cc_config.inject_mode
             crowd_inject_source_mode = cc_config.inject_source_mode
             crowd_inject_label = cc_config.inject_label
+            crowd_carryover_cycles = _normalize_crowd_carryover_cycles(
+                getattr(cc_config, "carryover_cycles", 0)
+            )
+            if "inject_source_mode" not in crowd_cc_cfg:
+                logger.info(
+                    "[SlidingStory] crowd_control.inject_source_mode not explicitly set; "
+                    f"defaulting to '{crowd_inject_source_mode}'."
+                )
             logger.info(
                 f"[SlidingStory] Crowd Control enabled — inject_mode={crowd_inject_mode}, "
-                f"inject_source_mode={crowd_inject_source_mode}"
+                f"inject_source_mode={crowd_inject_source_mode}, carryover_cycles={crowd_carryover_cycles}"
             )
         except Exception as e:
             logger.warning(f"[SlidingStory] Crowd Control init failed (continuing without): {e}")
@@ -1111,37 +1341,59 @@ def run_sliding_story(
             crowd_inject_mode = "append"
             crowd_inject_source_mode = "as_image_source"
             crowd_inject_label = "Audience mutation request"
+            crowd_carryover_cycles = 0
     else:
         crowd_inject_mode = "append"
         crowd_inject_source_mode = "as_image_source"
         crowd_inject_label = "Audience mutation request"
+        crowd_carryover_cycles = 0
 
+    crowd_carryover_prompt: Optional[str] = None
+    crowd_carryover_remaining = 0
     for cycle_idx, window_indices in enumerate(windows, start=1):
+        _reap_abandoned_smart_reinject_prefetches(smart_reinject_state)
         # ── Resume: skip already-completed cycles ─────────────────────────
         if cycle_idx < start_cycle:
             continue
 
         logger.info(f"[SlidingStory] Cycle \033[92m{cycle_idx}\033[0m/{total_cycles} — window paragraphs {window_indices}")
-        # Concatenate paragraphs as stacked prompt; join with two newlines for clarity
-        stacked_prompt = "\n\n".join(paragraphs[i - 1] for i in window_indices)
-        logger.debug(f"[SlidingStory] Stacked prompt:\n{stacked_prompt}")
+        # Concatenate paragraphs as the base story prompt; crowd resolution
+        # happens once via ResolvedCyclePrompt so all downstream paths use the
+        # same authoritative prompt object.
+        base_story_prompt = "\n\n".join(paragraphs[i - 1] for i in window_indices)
+        logger.debug(f"[SlidingStory] Stacked prompt:\n{base_story_prompt}")
 
         # ── Crowd Control: check queue and inject if available ───────────
-        crowd_prompt_used = None
+        crowd_prompt_used: Optional[str] = None
+        crowd_prompt_origin = "none"
         if crowd_client is not None:
             try:
-                crowd_prompt_used = crowd_client.pop_next()
-                if crowd_prompt_used:
-                    if crowd_inject_mode == "replace":
-                        logger.info(f"[SlidingStory] Crowd REPLACE: overriding story prompt")
-                        stacked_prompt = crowd_prompt_used
-                    else:  # append (default)
-                        label = crowd_inject_label.upper()
-                        stacked_prompt = stacked_prompt + "\n\n[" + label + "]\n" + crowd_prompt_used
-                        logger.info(f"[SlidingStory] Crowd APPEND: injected audience prompt")
+                fresh_prompt = crowd_client.pop_next()
+                if fresh_prompt:
+                    crowd_prompt_used = str(fresh_prompt).strip()
+                    crowd_prompt_origin = "fresh"
+                    crowd_carryover_prompt = crowd_prompt_used if crowd_carryover_cycles > 0 else None
+                    crowd_carryover_remaining = crowd_carryover_cycles
+                elif crowd_carryover_prompt and crowd_carryover_remaining > 0:
+                    crowd_prompt_used = crowd_carryover_prompt
+                    crowd_prompt_origin = "carryover"
+                    crowd_carryover_remaining = max(0, crowd_carryover_remaining - 1)
+                    if crowd_carryover_remaining <= 0:
+                        crowd_carryover_prompt = None
             except Exception as e:
                 logger.warning(f"[SlidingStory] Crowd Control error (fail-open): {e}")
                 crowd_prompt_used = None
+                crowd_prompt_origin = "none"
+
+        resolved_cycle_prompt = _resolve_cycle_prompt(
+            base_story_prompt=base_story_prompt,
+            crowd_prompt=crowd_prompt_used,
+            crowd_prompt_origin=crowd_prompt_origin,
+            inject_mode=crowd_inject_mode,
+            inject_source_mode=crowd_inject_source_mode,
+            inject_label=crowd_inject_label,
+        )
+        stacked_prompt = resolved_cycle_prompt.resolved_main_prompt
 
         video_stage_prompt = _build_video_stage_prompt(stacked_prompt, motion_prompt_text)
 
@@ -1162,9 +1414,15 @@ def run_sliding_story(
         # `inject_mode` (append vs replace) is now ORTHOGONAL to source mode
         # and only affects WHAT TEXT goes into the prompt — story+crowd vs
         # crowd-only. It NO LONGER forces a text2img visual reset.
-        crowd_active = bool(crowd_prompt_used)
+        crowd_active = bool(resolved_cycle_prompt.crowd_active)
         crowd_use_reference_mode = (
-            crowd_active and crowd_inject_source_mode == "as_reference"
+            crowd_active and resolved_cycle_prompt.inject_source_mode == "as_reference"
+        )
+        smart_reinject_schedule_allowed_for_cycle = bool(
+            smart_reinject_state.enabled and not crowd_active
+        )
+        smart_reinject_consume_allowed_for_cycle = bool(
+            smart_reinject_state.enabled and not crowd_active
         )
         # Reinject (img2img keyframe) is suppressed during a crowd-driven
         # cycle in EITHER source mode — the audience prompt is meant to
@@ -1175,10 +1433,15 @@ def run_sliding_story(
         effective_require_morph = config.require_morph and effective_reinject
         if crowd_active:
             logger.info(
-                f"[SlidingStory] Crowd-driven cycle: source_mode={crowd_inject_source_mode}, "
-                f"inject_mode={crowd_inject_mode} "
+                f"[SlidingStory] Crowd-driven cycle: source_mode={resolved_cycle_prompt.inject_source_mode}, "
+                f"inject_mode={resolved_cycle_prompt.inject_mode}, origin={resolved_cycle_prompt.crowd_prompt_origin} "
                 f"(reinject + morph suppressed for this cycle)"
             )
+            if smart_reinject_state.enabled:
+                logger.info(
+                    "[SlidingStory/SmartReinject] Crowd prompt active: smart reinject "
+                    "scheduling/consumption/application disabled for this cycle."
+                )
         # Legacy alias kept for downstream code paths that still check it,
         # but its meaning is narrowed: True only in the old "replace + reset"
         # combination, which now requires both crowd_active AND the
@@ -1201,7 +1464,8 @@ def run_sliding_story(
         briq_data = {
             "cycle_index": cycle_idx,
             "paragraph_window": {"start": window_indices[0], "end": window_indices[-1]},
-            "paragraph_text": stacked_prompt[:500],
+            "paragraph_text": base_story_prompt[:500],
+            "resolved_main_prompt_preview": stacked_prompt[:500],
             "seed": seed,
             "input_mode": "text",
             "reinject": config.reinject,
@@ -1211,31 +1475,55 @@ def run_sliding_story(
             "morph_backend_type": morph_backend_type,
             "video_prompt_preview": video_stage_prompt[:500],
             "motion_prompt_used": bool(motion_prompt_text),
+            "crowd_active": crowd_active,
+            "crowd_prompt_used": resolved_cycle_prompt.crowd_prompt,
+            "crowd_prompt_origin": resolved_cycle_prompt.crowd_prompt_origin,
+            "crowd_carryover_remaining": crowd_carryover_remaining,
+            "requested_inject_mode": resolved_cycle_prompt.inject_mode,
+            "requested_inject_source_mode": resolved_cycle_prompt.inject_source_mode,
+            "authoritative_prompt_route": "crowd_main_route" if crowd_active else "story_main_route",
+            "smart_reinject_enabled": bool(smart_reinject_state.enabled),
+            "smart_reinject_schedule_allowed": smart_reinject_schedule_allowed_for_cycle,
+            "smart_reinject_consume_allowed": smart_reinject_consume_allowed_for_cycle,
+            "smart_reinject_apply_allowed": smart_reinject_consume_allowed_for_cycle,
+            "smart_reinject_pending_detected": False,
+            "smart_reinject_discarded_due_to_crowd": False,
+            "smart_reinject_missed_target_cycle": False,
+            "smart_reinject_paused_due_to_crowd": bool(crowd_active and smart_reinject_state.enabled),
+            "smart_reinject_skip_reason": (
+                "crowd_prompt_active" if crowd_active and smart_reinject_state.enabled else None
+            ),
+            "smart_reinject_used": False,
+            "smart_reinject_similarity": None,
         }
         if smart_reinject_state.enabled:
             briq_data.update({
-                "smart_reinject_enabled": True,
-                "smart_reinject_used": False,
-                "smart_reinject_similarity": None,
                 "smart_reinject_keyframe": None,
                 "smart_reinject_source_cycle": None,
             })
 
         # Record crowd control state in briq (includes visual reset telemetry)
         if crowd_client is not None:
-            if crowd_prompt_used:
+            if resolved_cycle_prompt.crowd_prompt:
                 briq_data["crowd_control"] = {
                     "used": True,
-                    "prompt_preview": crowd_prompt_used[:120],
-                    "inject_mode": crowd_inject_mode,
+                    "prompt_preview": resolved_cycle_prompt.crowd_prompt[:120],
+                    "prompt_origin": resolved_cycle_prompt.crowd_prompt_origin,
+                    "inject_mode": resolved_cycle_prompt.inject_mode,
+                    "inject_source_mode": resolved_cycle_prompt.inject_source_mode,
                     "visual_reset": crowd_replace_active,
                     "effective_reinject": effective_reinject,
+                    "carryover_remaining": crowd_carryover_remaining,
                 }
             else:
                 briq_data["crowd_control"] = {
                     "used": False,
+                    "prompt_origin": "none",
+                    "inject_mode": resolved_cycle_prompt.inject_mode,
+                    "inject_source_mode": resolved_cycle_prompt.inject_source_mode,
                     "visual_reset": False,
                     "effective_reinject": effective_reinject,
+                    "carryover_remaining": crowd_carryover_remaining,
                 }
 
         # ═══════════════════════════════════════════════════════════════════
@@ -1592,6 +1880,14 @@ def run_sliding_story(
             # backend attaches it as a `reference_image_urls` payload field
             # (subject to model support).
             crowd_reference_paths: Optional[List[Path]] = None
+            requested_inject_source_mode = (
+                resolved_cycle_prompt.inject_source_mode if crowd_active else "none"
+            )
+            actual_inject_source_mode = requested_inject_source_mode if crowd_active else "none"
+            reference_images_requested = bool(crowd_active and requested_inject_source_mode == "as_reference")
+            reference_images_accepted = False
+            reference_images_stripped_by_retry = False
+            as_reference_fallback_to_image_source = False
             smart_enabled = smart_reinject_state.enabled
             smart_prefetch = None
             smart_prefetched_keyframe: Optional[Path] = None
@@ -1600,16 +1896,44 @@ def run_sliding_story(
             smart_schedule_source_image: Optional[Path] = None
             smart_next_window_prompt: Optional[str] = None
             if smart_enabled and cycle_idx > 1:
-                smart_prefetch = _collect_smart_reinject_prefetch(
-                    state=smart_reinject_state,
-                    cycle_idx=cycle_idx,
-                    keyframes_dir=keyframes_dir,
-                    wait_timeout_sec=float(getattr(config, "smart_reinject_wait_timeout_sec", 0.0) or 0.0),
+                pending = smart_reinject_state.pending
+                pending_for_cycle = bool(
+                    pending is not None and pending.target_cycle_idx == cycle_idx
                 )
-                if smart_prefetch:
-                    smart_prefetched_keyframe = Path(smart_prefetch["keyframe_path"])
-                    briq_data["smart_reinject_keyframe"] = str(smart_prefetched_keyframe)
-                    briq_data["smart_reinject_source_cycle"] = int(smart_prefetch["source_cycle_idx"])
+                if pending_for_cycle:
+                    briq_data["smart_reinject_pending_detected"] = True
+
+                if not smart_reinject_consume_allowed_for_cycle:
+                    if pending_for_cycle:
+                        if _discard_pending_smart_reinject_for_cycle(
+                            state=smart_reinject_state,
+                            cycle_idx=cycle_idx,
+                            reason="crowd_prompt_active",
+                        ):
+                            briq_data["smart_reinject_discarded_due_to_crowd"] = True
+                            logger.info(
+                                "[SlidingStory/SmartReinject] Crowd prompt active for this cycle; "
+                                "pending smart prefetch was discarded and will not be consumed."
+                            )
+                else:
+                    wait_timeout = float(getattr(config, "smart_reinject_wait_timeout_sec", 0.0) or 0.0)
+                    smart_prefetch = _collect_smart_reinject_prefetch(
+                        state=smart_reinject_state,
+                        cycle_idx=cycle_idx,
+                        keyframes_dir=keyframes_dir,
+                        wait_timeout_sec=wait_timeout,
+                    )
+                    if (
+                        pending_for_cycle
+                        and smart_prefetch is None
+                        and wait_timeout <= 0.0
+                        and smart_reinject_state.pending is None
+                    ):
+                        briq_data["smart_reinject_missed_target_cycle"] = True
+                    if smart_prefetch:
+                        smart_prefetched_keyframe = Path(smart_prefetch["keyframe_path"])
+                        briq_data["smart_reinject_keyframe"] = str(smart_prefetched_keyframe)
+                        briq_data["smart_reinject_source_cycle"] = int(smart_prefetch["source_cycle_idx"])
 
             if cycle_idx == 1:
                 if base_image_path and base_image_path.exists() and not crowd_replace_active:
@@ -1653,10 +1977,14 @@ def run_sliding_story(
                             "falling back to text_to_video"
                         )
                         briq_data["input_mode"] = "text"
+                if crowd_active and requested_inject_source_mode == "as_reference":
+                    # Cycle 1 has no previous lastframe to attach as reference.
+                    actual_inject_source_mode = "text_only_fallback"
             else:
                 smart_mode_applied = False
                 if (
-                    smart_enabled
+                    smart_reinject_consume_allowed_for_cycle
+                    and smart_enabled
                     and smart_prefetched_keyframe
                     and smart_prefetched_keyframe.exists()
                     and last_frame_path
@@ -1772,25 +2100,47 @@ def run_sliding_story(
                     # appended to the story window (append mode) drives the
                     # visual content; the reference acts as a soft style /
                     # identity tether rather than hard frame continuity.
-                    venice_mode_str = "text_to_video"
-                    briq_data["input_mode"] = "text"
-                    if last_frame_path and last_frame_path.exists():
-                        crowd_reference_paths = [last_frame_path]
+                    supports_refs: Optional[bool] = None
+                    if hasattr(backend, "supports_video_optional_field"):
+                        try:
+                            supports_refs = backend.supports_video_optional_field(
+                                op="text2vid",
+                                field="reference_image_urls",
+                            )
+                        except Exception:
+                            supports_refs = None
+                    if last_frame_path and last_frame_path.exists() and supports_refs is False:
+                        venice_mode_str = "image_to_video"
+                        image_for_venice = last_frame_path
+                        briq_data["input_mode"] = "image"
+                        actual_inject_source_mode = "as_image_source"
+                        as_reference_fallback_to_image_source = True
                         logger.info(
-                            f"[SlidingStory/Venice] Cycle {cycle_idx}: text_to_video "
-                            f"(crowd as_reference, lastframe attached as REFERENCE image)"
+                            "[SlidingStory/Venice] Cycle "
+                            f"{cycle_idx}: crowd as_reference unsupported; falling back to image_to_video "
+                            "using previous last frame as source."
                         )
                     else:
-                        crowd_reference_paths = None
-                        logger.info(
-                            f"[SlidingStory/Venice] Cycle {cycle_idx}: text_to_video "
-                            f"(crowd as_reference, no prior frame to use as reference)"
-                        )
+                        venice_mode_str = "text_to_video"
+                        briq_data["input_mode"] = "text"
+                        if last_frame_path and last_frame_path.exists():
+                            crowd_reference_paths = [last_frame_path]
+                            logger.info(
+                                f"[SlidingStory/Venice] Cycle {cycle_idx}: text_to_video "
+                                f"(crowd as_reference, lastframe attached as REFERENCE image)"
+                            )
+                        else:
+                            crowd_reference_paths = None
+                            actual_inject_source_mode = "text_only_fallback"
+                            logger.info(
+                                f"[SlidingStory/Venice] Cycle {cycle_idx}: text_to_video "
+                                f"(crowd as_reference, no prior frame to use as reference)"
+                            )
                 elif not smart_mode_applied and last_frame_path and last_frame_path.exists():
                     venice_mode_str = "image_to_video"
                     image_for_venice = last_frame_path
                     briq_data["input_mode"] = "image"
-                    if crowd_active and crowd_inject_source_mode == "as_image_source":
+                    if crowd_active and resolved_cycle_prompt.inject_source_mode == "as_image_source":
                         logger.info(
                             f"[SlidingStory/Venice] Cycle {cycle_idx}: image_to_video "
                             f"from last frame (crowd as_image_source)"
@@ -1800,6 +2150,8 @@ def run_sliding_story(
                 elif not smart_mode_applied:
                     venice_mode_str = "text_to_video"
                     briq_data["input_mode"] = "text"
+                    if crowd_active and resolved_cycle_prompt.inject_source_mode == "as_reference":
+                        actual_inject_source_mode = "text_only_fallback"
                     logger.info(f"[SlidingStory/Venice] Cycle {cycle_idx}: text_to_video (no prior frame)")
 
             vid_atom_id = f"video_{cycle_idx:03d}"
@@ -1855,7 +2207,7 @@ def run_sliding_story(
                     smart_rng = random.Random(random_seed_base + cycle_idx * 10007 + 731)
                     smart_denoise = smart_rng.uniform(denoise_min, denoise_max)
 
-                    if _should_schedule_smart_reinject(
+                    if smart_reinject_schedule_allowed_for_cycle and _should_schedule_smart_reinject(
                         state=smart_reinject_state,
                         config=config,
                         cycle_idx=cycle_idx,
@@ -1884,6 +2236,11 @@ def run_sliding_story(
                             briq_data["smart_reinject_prompt_preview"] = smart_next_window_prompt[:220]
                     else:
                         briq_data["smart_reinject_scheduled"] = False
+                        if crowd_active and smart_enabled:
+                            logger.info(
+                                "[SlidingStory/SmartReinject] Smart reinject paused for this cycle "
+                                "because crowd prompt is active; scheduling skipped."
+                            )
 
             if venice_mode_str in {"first_last_frame", "smart_async_first_last_frame"} and image_for_venice and end_image_for_venice:
                 vid_result = backend.generate_morph_video(
@@ -1919,9 +2276,70 @@ def run_sliding_story(
                     source_image=image_for_venice,
                 )
 
+            venice_response_meta = ((getattr(vid_result, "metadata", None) or {}).get("response") or {})
+            stripped_retry_fields = set(venice_response_meta.get("stripped_retry_fields") or [])
+            accepted_optional_fields = set(venice_response_meta.get("accepted_optional_fields") or [])
+            reference_images_stripped_by_retry = "reference_image_urls" in stripped_retry_fields
+            reference_images_accepted = (
+                "reference_image_urls" in accepted_optional_fields and not reference_images_stripped_by_retry
+            )
+
+            if (
+                crowd_active
+                and requested_inject_source_mode == "as_reference"
+                and actual_inject_source_mode == "as_reference"
+                and reference_images_stripped_by_retry
+                and last_frame_path
+                and last_frame_path.exists()
+            ):
+                logger.warning(
+                    "[SlidingStory/Venice] reference_image_urls was stripped by Venice retry; "
+                    "falling back to image_to_video for this cycle."
+                )
+                fallback_req = GenerationRequest(
+                    prompt=stacked_prompt,
+                    negative_prompt="",
+                    seed=seed,
+                    mode=InputMode.IMAGE,
+                    init_image_path=last_frame_path,
+                    width=get_capability_setting('video', 'width', 1280),
+                    height=get_capability_setting('video', 'height', 720),
+                    output_dir=videos_dir,
+                    atom_id=vid_atom_id,
+                    duration_seconds=img2vid_dur,
+                    video_fps=resolved_fps,
+                    video_frames=resolved_frames,
+                    video_prompt=video_stage_prompt,
+                    motion_prompt=motion_prompt_text or None,
+                    reference_image_paths=None,
+                )
+                fallback_result = backend.generate_video(
+                    fallback_req,
+                    source_image=last_frame_path,
+                )
+                if fallback_result and fallback_result.success and fallback_result.video_path and fallback_result.video_path.exists():
+                    vid_result = fallback_result
+                    venice_mode_str = "image_to_video_reference_fallback"
+                    actual_inject_source_mode = "as_image_source"
+                    as_reference_fallback_to_image_source = True
+                    reference_images_accepted = False
+                else:
+                    actual_inject_source_mode = "text_only_fallback"
+                    logger.warning(
+                        "[SlidingStory/Venice] as_reference fallback to image_to_video failed; "
+                        "keeping text-only result for this cycle."
+                    )
+
+            briq_data["requested_inject_source_mode"] = requested_inject_source_mode
+            briq_data["actual_inject_source_mode"] = actual_inject_source_mode
+            briq_data["reference_images_requested"] = reference_images_requested
+            briq_data["reference_images_accepted"] = bool(reference_images_accepted)
+            briq_data["reference_images_stripped_by_retry"] = bool(reference_images_stripped_by_retry)
+            if as_reference_fallback_to_image_source:
+                briq_data["as_reference_fallback_to_image_source"] = True
+
             if not (vid_result and vid_result.success and vid_result.video_path and vid_result.video_path.exists()):
                 error_msg = getattr(vid_result, 'error', 'unknown error')
-                _shutdown_smart_reinject_state(smart_reinject_state)
                 raise RuntimeError(f"[Venice] Video generation failed in cycle {cycle_idx}: {error_msg}")
 
             video_name = f"video_{cycle_idx:03d}.mp4"

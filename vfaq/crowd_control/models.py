@@ -63,6 +63,9 @@ class CrowdControlConfig:
     #     images, the field is auto-omitted and the cycle runs as a pure
     #     text2vid prompt.
     inject_source_mode: str = "as_image_source"
+    # Number of additional cycles to replay the most recent fresh crowd prompt.
+    # 0 = current cycle only, 1 = current + next cycle, etc.
+    carryover_cycles: int = 0
     max_chars: int = 300
     rate_limit_seconds: int = 600
     max_queue: int = 100
@@ -94,6 +97,7 @@ class CrowdControlConfig:
             inject_label=data.get("inject_label", cls.inject_label),
             inject_mode=im,
             inject_source_mode=ism,
+            carryover_cycles=max(0, int(data.get("carryover_cycles", 0))),
             max_chars=int(data.get("max_chars", cls.max_chars)),
             rate_limit_seconds=int(data.get("rate_limit_seconds", cls.rate_limit_seconds)),
             max_queue=int(data.get("max_queue", cls.max_queue)),

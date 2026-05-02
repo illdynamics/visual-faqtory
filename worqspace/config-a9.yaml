@@ -214,6 +214,7 @@ crowd_control:
   # `inject_mode` is orthogonal: append = paragraph + audience text, replace
   # = audience text only. Source mode is independent of that.
   inject_source_mode: "as_image_source"
+  carryover_cycles: 0                  # 0 = current only, 1 = +next cycle, 2 = +next two cycles
   max_chars: 300                        # Max prompt length from viewers
   rate_limit_seconds: 180               # 1 submission per IP per this many seconds
   max_queue: 100                        # Max pending prompts in queue
