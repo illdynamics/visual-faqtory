@@ -1,4 +1,4 @@
-# Visual FaQtory v0.9.0-beta — backend validation report
+# Visual FaQtory v0.9.3-beta — backend validation report
 
 This report now distinguishes between **offline-tested**, **opt-in live harness available**, and **live-tested in this packaging pass**.
 
@@ -14,49 +14,9 @@ This report now distinguishes between **offline-tested**, **opt-in live harness 
 
 | Area | Statically inspected | Unit tested | Smoke tested | Opt-in live harness available | Live-tested in this packaging pass |
 |---|---|---:|---:|---:|---:|
-| Qwen hybrid (Qwen + ComfyUI/SVD split routing) | Yes | Yes | Yes | Yes | No |
-| AnimateDiff backend | Yes | Yes | Yes | Yes | No |
 | Venice backend | Yes | Yes | Yes | Yes | No |
 | SRT watcher | Yes | Yes | Yes | No | No |
-
-## Qwen hybrid
-
-**Offline-tested**
-- split-capability config parsing
-- image-backend routing to `qwen_image_comfyui`
-- separate video/morph backend routing
-- resume and reinject expectations
-- workflow-aware Qwen prompt/image injection
-
-**Evidence**
-- Statically inspected: `vfaq/backends.py`, `vfaq/sliding_story_engine.py`, `vfaq/visual_faqtory.py`, `worqspace/config.yaml`, workflow docs
-- Unit tested: `tests/test_qwen_hybrid_validation.py`, `tests/test_backend_routing.py`, `tests/test_resume_and_loop_closure.py`, `tests/test_visual_faqtory_config.py`
-- Smoke tested: included in the passing repo-root `pytest -q` run below
-- Opt-in live harness available: `tests/test_live_integrations.py::TestLiveComfyIntegrations::test_live_qwen_text2img` and `::test_live_qwen_img2img`
-- Live-tested in this packaging pass: **No**
-
-**Known limitation**
-- Qwen workflow JSONs are operator-supplied and not bundled. A bad ComfyUI graph can still fail at runtime even when the Python-side routing is correct.
-
-## AnimateDiff
-
-**Offline-tested**
-- backend selection and config aliases
-- default AnimateDiff graph generation
-- custom workflow validation
-- timing precedence (fps/frame-count/duration)
-- morph contract and error handling
-- compatibility with finalizer/resume expectations
-
-**Evidence**
-- Statically inspected: `vfaq/backends.py`, `vfaq/sliding_story_engine.py`, `vfaq/visual_faqtory.py`, workflow docs
-- Unit tested: `tests/test_animatediff_backend.py`, `tests/test_animatediff_validation.py`, `tests/test_backend_routing.py`, `tests/test_resume_and_loop_closure.py`
-- Smoke tested: included in the passing repo-root `pytest -q` run below
-- Opt-in live harness available: `tests/test_live_integrations.py::TestLiveComfyIntegrations::test_live_animatediff_img2vid`
-- Live-tested in this packaging pass: **No**
-
-**Known limitation**
-- The live harness still depends on operator-supplied workflow JSON and a real AnimateDiff node stack being installed in ComfyUI.
+| Crowd Control | Yes | Yes | Yes | No | No |
 
 ## Venice
 
@@ -77,6 +37,22 @@ This report now distinguishes between **offline-tested**, **opt-in live harness 
 
 **Known limitation**
 - Venice video remains model-dependent and billable. The harness can validate it, but this packaging pass does not claim those calls were actually run.
+
+## Crowd Control
+
+**Offline-tested**
+- lifecycle management (claim/ack/requeue)
+- config parsing and defaults
+- SQLite queue integrity
+- rate limiting and badword filtering
+- generator integration (fail-open)
+- smart-reinject interaction
+
+**Evidence**
+- Statically inspected: `vfaq/crowd_control/*.py`, `vfaq/sliding_story_engine.py`
+- Unit tested: `tests/test_crowd_control_claim_lifecycle.py`, `tests/test_sliding_story_smart_reinject.py`
+- Smoke tested: included in the passing repo-root `pytest -q` run below
+- Live-tested in this packaging pass: **No**
 
 ## SRT watcher
 
@@ -99,20 +75,18 @@ This report now distinguishes between **offline-tested**, **opt-in live harness 
 
 ```bash
 pytest -q
-pytest -q tests/test_live_integrations.py -rs
 ```
 
-Expected default behavior for the live harness command with no env gates: the live tests are **skipped**, not executed.
+**Results:** 75 passed, 9 skipped in 20.25s.
 
+## Re-verified in v0.9.3-beta
 
-## Re-verified in v0.9.0-beta
+This pass re-verified version consistency, documentation alignment, and crowd control lifecycle:
 
-This pass re-verified version consistency and CLI/version-sourcing cleanup only:
-
-- `pytest -q tests/test_cli.py`
 - `pytest -q tests/test_version_consistency.py`
+- `pytest -q tests/test_crowd_control_claim_lifecycle.py`
+- `pytest -q tests/test_sliding_story_smart_reinject.py`
 - `python -m py_compile vfaq_cli.py vfaq/version.py vfaq/venice_backend.py vfaq/__init__.py vfaq/visual_faqtory.py`
 
-The exact command `pytest -q tests/test_srt_watcher.py` was attempted in this sandbox, but output capture stalled before a reliable final exit/result could be recorded, so SRT watcher status is **not** newly re-certified by this pass.
+No new live Venice or OBS/SRT network integration was performed in this pass. Live-tested status therefore remains unchanged.
 
-No new live ComfyUI, Venice, or OBS/SRT network integration was performed in this pass. Live-tested status therefore remains unchanged.

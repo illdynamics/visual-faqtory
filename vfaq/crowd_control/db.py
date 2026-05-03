@@ -3,19 +3,20 @@
 db.py — Crowd Control SQLite Database Layer
 ═══════════════════════════════════════════════════════════════════════════════
 
-WAL-mode SQLite with atomic pop, rate limiting, and audit trail.
+WAL-mode SQLite with atomic claim/ack queue semantics, rate limiting, and audit trail.
 No external dependencies — stdlib sqlite3 only.
 
-Part of Visual FaQtory v0.9.0-beta
+Part of Visual FaQtory v0.9.3-beta
 """
 from __future__ import annotations
 
 import logging
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+from uuid import uuid4
 
 from .models import Submission, SubmissionStatus
 
@@ -30,7 +31,9 @@ CREATE TABLE IF NOT EXISTS submissions (
     ip               TEXT    NOT NULL,
     prompt           TEXT    NOT NULL,
     status           TEXT    NOT NULL DEFAULT 'queued',
-    rejection_reason TEXT
+    rejection_reason TEXT,
+    claimed_at       TEXT,
+    claim_id         TEXT
 );
 """
 
@@ -51,7 +54,7 @@ class CrowdDB:
     """Thread-safe SQLite wrapper for the Crowd Control queue.
 
     Uses WAL mode for concurrent reads and IMMEDIATE transactions for
-    safe atomic pops.
+    safe atomic claim/ack transitions.
     """
 
     def __init__(self, db_path: str | Path):
@@ -80,10 +83,44 @@ class CrowdDB:
             conn.executescript(
                 _SCHEMA_SUBMISSIONS + _SCHEMA_RATE_LIMIT + _INDEX_SUBMISSIONS_STATUS
             )
+            self._migrate_submissions_schema(conn)
             conn.commit()
             logger.info(f"[CrowdDB] Database ready: {self._db_path}")
         finally:
             conn.close()
+
+    @staticmethod
+    def _now_iso() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    @staticmethod
+    def _parse_iso_utc(raw: Any) -> Optional[datetime]:
+        if raw in (None, ""):
+            return None
+        token = str(raw).strip()
+        if token.endswith("Z"):
+            token = token[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(token)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @staticmethod
+    def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return any(str(r["name"]) == column for r in rows)
+
+    def _migrate_submissions_schema(self, conn: sqlite3.Connection) -> None:
+        """Safe additive migration for claim/ack lifecycle fields."""
+        if not self._column_exists(conn, "submissions", "claimed_at"):
+            conn.execute("ALTER TABLE submissions ADD COLUMN claimed_at TEXT")
+            logger.info("[CrowdDB] Migrated submissions schema: added claimed_at")
+        if not self._column_exists(conn, "submissions", "claim_id"):
+            conn.execute("ALTER TABLE submissions ADD COLUMN claim_id TEXT")
+            logger.info("[CrowdDB] Migrated submissions schema: added claim_id")
 
     # ── Rate Limiting ────────────────────────────────────────────────────────
 
@@ -115,7 +152,7 @@ class CrowdDB:
 
     def update_rate_limit(self, ip: str) -> None:
         """Record a successful submission for rate-limit tracking."""
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = self._now_iso()
         with self._lock:
             conn = self._connect()
             try:
@@ -163,18 +200,35 @@ class CrowdDB:
             finally:
                 conn.close()
 
-    def pop_next(self) -> Optional[str]:
-        """Atomically pop the oldest queued prompt.
+    def claim_next(self, claim_timeout_seconds: int = 900) -> Optional[Dict[str, Any]]:
+        """Atomically claim the next queued prompt for generation.
 
-        Uses BEGIN IMMEDIATE for write-lock safety.
-
-        Returns:
-            The prompt string, or None if queue is empty.
+        Stale claims older than `claim_timeout_seconds` are requeued first.
+        Returns a dict with id/prompt/claim_id or None if queue is empty.
         """
         with self._lock:
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
+
+                timeout = max(1, int(claim_timeout_seconds or 900))
+                stale_before = (datetime.now(timezone.utc) - timedelta(seconds=timeout)).isoformat()
+                stale_rows = conn.execute(
+                    "SELECT id FROM submissions WHERE status = ? AND claimed_at IS NOT NULL AND claimed_at < ?",
+                    (SubmissionStatus.CLAIMED.value, stale_before),
+                ).fetchall()
+                if stale_rows:
+                    conn.execute(
+                        "UPDATE submissions SET status = ?, claim_id = NULL, claimed_at = NULL "
+                        "WHERE status = ? AND claimed_at IS NOT NULL AND claimed_at < ?",
+                        (SubmissionStatus.QUEUED.value, SubmissionStatus.CLAIMED.value, stale_before),
+                    )
+                    logger.info(
+                        "[CrowdDB] Reclaimed %s stale claimed prompt(s) older than %ss",
+                        len(stale_rows),
+                        timeout,
+                    )
+
                 row = conn.execute(
                     "SELECT id, prompt FROM submissions WHERE status = ? ORDER BY id ASC LIMIT 1",
                     (SubmissionStatus.QUEUED.value,),
@@ -182,18 +236,110 @@ class CrowdDB:
                 if row is None:
                     conn.commit()
                     return None
+                claim_id = uuid4().hex
+                claimed_at = self._now_iso()
                 conn.execute(
-                    "UPDATE submissions SET status = ? WHERE id = ?",
-                    (SubmissionStatus.SERVED.value, row["id"]),
+                    "UPDATE submissions SET status = ?, claim_id = ?, claimed_at = ? WHERE id = ?",
+                    (SubmissionStatus.CLAIMED.value, claim_id, claimed_at, row["id"]),
                 )
                 conn.commit()
-                logger.info(f"[CrowdDB] Popped submission #{row['id']}")
-                return row["prompt"]
+                logger.info(f"[CrowdDB] Claimed submission #{row['id']} (claim_id={claim_id[:8]}...)")
+                return {"id": int(row["id"]), "prompt": row["prompt"], "claim_id": claim_id}
             except Exception:
                 conn.rollback()
                 raise
             finally:
                 conn.close()
+
+    def ack_served(self, submission_id: int, claim_id: Optional[str] = None) -> bool:
+        """Mark a claimed prompt as served after successful generation."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT status, claim_id FROM submissions WHERE id = ?",
+                    (int(submission_id),),
+                ).fetchone()
+                if row is None:
+                    conn.commit()
+                    return False
+
+                status = str(row["status"] or "")
+                existing_claim_id = str(row["claim_id"] or "")
+                if status == SubmissionStatus.SERVED.value:
+                    conn.commit()
+                    return True
+                if status != SubmissionStatus.CLAIMED.value:
+                    conn.commit()
+                    return False
+                if claim_id and existing_claim_id and claim_id != existing_claim_id:
+                    conn.commit()
+                    return False
+
+                conn.execute(
+                    "UPDATE submissions SET status = ?, claim_id = NULL, claimed_at = NULL WHERE id = ?",
+                    (SubmissionStatus.SERVED.value, int(submission_id)),
+                )
+                conn.commit()
+                logger.info(f"[CrowdDB] Acked served submission #{submission_id}")
+                return True
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+    def requeue_claimed(self, submission_id: int, reason: str = "", claim_id: Optional[str] = None) -> bool:
+        """Requeue a previously claimed prompt (e.g., generation failure)."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT status, claim_id FROM submissions WHERE id = ?",
+                    (int(submission_id),),
+                ).fetchone()
+                if row is None:
+                    conn.commit()
+                    return False
+
+                status = str(row["status"] or "")
+                existing_claim_id = str(row["claim_id"] or "")
+                if status == SubmissionStatus.QUEUED.value:
+                    conn.commit()
+                    return True
+                if status != SubmissionStatus.CLAIMED.value:
+                    conn.commit()
+                    return False
+                if claim_id and existing_claim_id and claim_id != existing_claim_id:
+                    conn.commit()
+                    return False
+
+                conn.execute(
+                    "UPDATE submissions SET status = ?, claim_id = NULL, claimed_at = NULL WHERE id = ?",
+                    (SubmissionStatus.QUEUED.value, int(submission_id)),
+                )
+                conn.commit()
+                logger.info(
+                    "[CrowdDB] Requeued claimed submission #%s%s",
+                    submission_id,
+                    f" ({reason})" if reason else "",
+                )
+                return True
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+    def pop_next(self) -> Optional[str]:
+        """Backward-compatible pop API (claim + immediate serve)."""
+        claim = self.claim_next()
+        if not claim:
+            return None
+        self.ack_served(int(claim["id"]), claim_id=claim.get("claim_id"))
+        return claim.get("prompt")
 
     def queue_length(self) -> int:
         """Return the number of queued (pending) submissions."""
@@ -238,6 +384,7 @@ class CrowdDB:
             counts = {r["status"]: r["cnt"] for r in rows}
             return {
                 "queued": counts.get(SubmissionStatus.QUEUED.value, 0),
+                "claimed": counts.get(SubmissionStatus.CLAIMED.value, 0),
                 "served": counts.get(SubmissionStatus.SERVED.value, 0),
                 "rejected": counts.get(SubmissionStatus.REJECTED.value, 0),
                 "total": sum(counts.values()),

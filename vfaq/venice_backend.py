@@ -14,7 +14,7 @@ The backend is intentionally native HTTP rather than a ComfyUI shim because
 Venice already exposes first-class image and video endpoints with distinct
 async semantics for video jobs.
 
-Part of Visual FaQtory v0.9.0-beta
+Part of Visual FaQtory v0.9.3-beta
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
@@ -282,7 +282,7 @@ def _aspect_ratio_from_dims(width: int, height: int) -> str:
     Compute the closest Venice-valid aspect-ratio enum value for the given
     pixel dimensions.
 
-    NOTE (v0.9.0-beta fix): prior versions returned the GCD-reduced ratio
+    NOTE (v0.9.3-beta fix): prior versions returned the GCD-reduced ratio
     (e.g. 856×480 → '107:60'), which Venice rejects with HTTP 400
     invalid_enum_value. We now snap to the nearest enum value via
     _snap_aspect_ratio() using log-distance so 856×480 → '16:9' as expected.
@@ -394,7 +394,7 @@ class VeniceConfig:
             data.setdefault("hide_watermark", image.get("hide_watermark"))
             data.setdefault("safe_mode", image.get("safe_mode"))
             data.setdefault("image_lora_strength", image.get("lora_strength"))
-            # v0.9.0-beta: aspect_ratio for /image/edit and resolution for parity.
+            # v0.9.3-beta: aspect_ratio for /image/edit and resolution for parity.
             # Stringify aspect_ratio so unquoted YAML "16:9" → int 969 doesn't break.
             _img_ar = image.get("aspect_ratio")
             if _img_ar is not None:
@@ -475,8 +475,6 @@ class VeniceBackend(GeneratorBackend):
         self.venice_cfg = VeniceConfig.from_dict(config.get("venice", {}))
         self.session = requests.Session()
         self._model_cache: Optional[List[Dict[str, Any]]] = None
-        self._unsupported_video_optionals: Dict[Tuple[str, str], Set[str]] = {}
-        self._unsupported_optional_warned: Set[Tuple[str, str, str]] = set()
 
     # ──────────────────────────────────────────────────────────────────
     # Public backend API
@@ -525,7 +523,7 @@ class VeniceBackend(GeneratorBackend):
             model = self._get_video_model(source_image)
             self._validate_model_for_type(model, "video")
             model_info = self._lookup_model(model)
-            payload, omitted_fields, optional_field_telemetry = self._build_video_payload(
+            payload, omitted_fields = self._build_video_payload(
                 request=request,
                 model=model,
                 source_image=source_image,
@@ -538,7 +536,6 @@ class VeniceBackend(GeneratorBackend):
                 request.output_dir / f"{request.atom_id}_venice.mp4",
                 request,
                 omitted_fields=omitted_fields,
-                optional_field_telemetry=optional_field_telemetry,
             )
             result.generation_time = time.time() - start_time
             return result
@@ -563,7 +560,7 @@ class VeniceBackend(GeneratorBackend):
             model = self.venice_cfg.video_model_image_to_video
             self._validate_model_for_type(model, "video")
             model_info = self._lookup_model(model)
-            payload, omitted_fields, optional_field_telemetry = self._build_video_payload(
+            payload, omitted_fields = self._build_video_payload(
                 request=request,
                 model=model,
                 source_image=start_image_path,
@@ -580,7 +577,6 @@ class VeniceBackend(GeneratorBackend):
                 request.output_dir / f"{request.atom_id}_venice.mp4",
                 request,
                 omitted_fields=omitted_fields,
-                optional_field_telemetry=optional_field_telemetry,
             )
             result.generation_time = time.time() - start_time
             return result
@@ -711,9 +707,8 @@ class VeniceBackend(GeneratorBackend):
         output_path: Path,
         request: GenerationRequest,
         omitted_fields: Optional[List[str]] = None,
-        optional_field_telemetry: Optional[Dict[str, Any]] = None,
     ) -> GenerationResult:
-        queue_data, effective_payload, stripped_retry_fields, queue_retry_count = self._queue_video_request(queue_payload)
+        queue_data, effective_payload, stripped_retry_fields = self._queue_video_request(queue_payload)
         model = queue_data.get("model") or effective_payload["model"]
         queue_id = queue_data.get("queue_id")
         if not queue_id:
@@ -784,16 +779,6 @@ class VeniceBackend(GeneratorBackend):
                                 "retrieve_polls": polls,
                                 "last_status": last_status,
                                 "cleanup_after_download": cleanup_ok,
-                                "payload_retry_count": int(queue_retry_count),
-                                "requested_optional_fields": list(
-                                    (optional_field_telemetry or {}).get("requested_optional_fields")
-                                    or []
-                                ),
-                                "accepted_optional_fields": [
-                                    field
-                                    for field in ((optional_field_telemetry or {}).get("accepted_optional_fields") or [])
-                                    if field in effective_payload
-                                ],
                                 "omitted_optional_fields": list(omitted_fields or []),
                                 "stripped_retry_fields": list(stripped_retry_fields),
                             },
@@ -845,7 +830,7 @@ class VeniceBackend(GeneratorBackend):
                 # Main thread sleeps the full poll interval — spinner stays animated.
                 time.sleep(float(self.venice_cfg.poll_interval))
 
-        except BaseException:
+        except Exception:
             spinner.stop()
             raise
 
@@ -1072,56 +1057,6 @@ class VeniceBackend(GeneratorBackend):
             return None
         return self._coerce_optional_bool(value)
 
-    @staticmethod
-    def _normalize_video_op(op: str) -> str:
-        return "img2vid" if str(op or "").strip().lower() == "img2vid" else "text2vid"
-
-    def _video_model_for_op(self, op: str) -> str:
-        normalized = self._normalize_video_op(op)
-        if normalized == "img2vid":
-            return self.venice_cfg.video_model_image_to_video
-        return self.venice_cfg.video_model_text_to_video
-
-    def _unsupported_optional_key(self, model: str, op: str) -> Tuple[str, str]:
-        return (str(model or "").strip(), self._normalize_video_op(op))
-
-    def _is_optional_field_known_unsupported(self, model: str, op: str, field_name: str) -> bool:
-        key = self._unsupported_optional_key(model, op)
-        return field_name in self._unsupported_video_optionals.get(key, set())
-
-    def _mark_optional_field_unsupported(self, model: str, op: str, field_name: str, source: str = "") -> None:
-        key = self._unsupported_optional_key(model, op)
-        bucket = self._unsupported_video_optionals.setdefault(key, set())
-        if field_name in bucket:
-            return
-        bucket.add(field_name)
-        warn_key = (key[0], key[1], field_name)
-        if warn_key in self._unsupported_optional_warned:
-            return
-        self._unsupported_optional_warned.add(warn_key)
-        source_suffix = f" ({source})" if source else ""
-        logger.info(
-            "[Venice] Learned unsupported optional field "
-            f"{field_name} for model={key[0]} op={key[1]}{source_suffix}; future payloads will omit it."
-        )
-
-    def _unmark_optional_field_unsupported(self, model: str, op: str, field_name: str) -> None:
-        key = self._unsupported_optional_key(model, op)
-        bucket = self._unsupported_video_optionals.get(key)
-        if not bucket:
-            return
-        bucket.discard(field_name)
-        if not bucket:
-            self._unsupported_video_optionals.pop(key, None)
-
-    def supports_video_optional_field(self, op: str, field: str) -> Optional[bool]:
-        model = self._video_model_for_op(op)
-        normalized_op = self._normalize_video_op(op)
-        if self._is_optional_field_known_unsupported(model, normalized_op, field):
-            return False
-        model_info = self._lookup_model(model)
-        return self._supports_video_field(model_info, field)
-
     def _build_video_payload(
         self,
         request: GenerationRequest,
@@ -1129,17 +1064,10 @@ class VeniceBackend(GeneratorBackend):
         source_image: Optional[Path],
         end_image_path: Optional[Path],
         model_info: Optional[Dict[str, Any]],
-    ) -> Tuple[Dict[str, Any], List[str], Dict[str, Any]]:
+    ) -> Tuple[Dict[str, Any], List[str]]:
         omitted_fields: List[str] = []
         # Determine operation type so per-op config overrides are applied correctly.
         op = "img2vid" if source_image is not None else "text2vid"
-        requested_optional_fields: List[str] = []
-        accepted_optional_fields: List[str] = []
-
-        def _support(field_name: str) -> Optional[bool]:
-            if self._is_optional_field_known_unsupported(model, op, field_name):
-                return False
-            return self._supports_video_field(model_info, field_name)
 
         payload: Dict[str, Any] = {
             "model": model,
@@ -1148,33 +1076,24 @@ class VeniceBackend(GeneratorBackend):
             "negative_prompt": request.negative_prompt or self.venice_cfg.video_negative_prompt,
         }
 
-        requested_optional_fields.append("aspect_ratio")
-        supports_aspect_ratio = _support("aspect_ratio")
+        supports_aspect_ratio = self._supports_video_field(model_info, "aspect_ratio")
         if supports_aspect_ratio is not False:
             payload["aspect_ratio"] = self._select_aspect_ratio(request, op)
-            accepted_optional_fields.append("aspect_ratio")
         else:
             omitted_fields.append("aspect_ratio")
-            self._mark_optional_field_unsupported(model, op, "aspect_ratio", source="capability_or_cache")
 
-        requested_optional_fields.append("resolution")
-        supports_resolution = _support("resolution")
+        supports_resolution = self._supports_video_field(model_info, "resolution")
         if supports_resolution is not False:
             payload["resolution"] = self._select_resolution(request, op)
-            accepted_optional_fields.append("resolution")
         else:
             omitted_fields.append("resolution")
-            self._mark_optional_field_unsupported(model, op, "resolution", source="capability_or_cache")
 
-        requested_optional_fields.append("audio")
-        supports_audio = _support("audio")
+        supports_audio = self._supports_video_field(model_info, "audio")
         audio_value = bool(request.generate_audio if request.generate_audio is not None else self.venice_cfg.video_audio)
         if supports_audio is not False:
             payload["audio"] = audio_value
-            accepted_optional_fields.append("audio")
         else:
             omitted_fields.append("audio")
-            self._mark_optional_field_unsupported(model, op, "audio", source="capability_or_cache")
 
         if source_image is not None:
             # ── Pre-resize source image to target output dimensions ────────────
@@ -1186,7 +1105,7 @@ class VeniceBackend(GeneratorBackend):
             resized = self._resize_source_for_img2vid(source_image, request, op)
             payload["image_url"] = self._data_url_for_file(resized)
 
-        supports_reference_images = _support("reference_image_urls")
+        supports_reference_images = self._supports_video_field(model_info, "reference_image_urls")
         # v0.9.1 — combine sources for reference images:
         #   1. Per-request paths (request.reference_image_paths), e.g. crowd
         #      as_reference mode forwarding the previous lastframe.
@@ -1200,7 +1119,6 @@ class VeniceBackend(GeneratorBackend):
         static_ref_urls = list(self.venice_cfg.video_reference_image_urls or [])
 
         if per_request_ref_paths or static_ref_urls:
-            requested_optional_fields.append("reference_image_urls")
             if supports_reference_images is not False:
                 merged_refs: List[str] = []
                 # Per-request paths first — typically more contextual (e.g.
@@ -1215,7 +1133,6 @@ class VeniceBackend(GeneratorBackend):
                 merged_refs.extend(static_ref_urls)
                 if merged_refs:
                     payload["reference_image_urls"] = merged_refs
-                    accepted_optional_fields.append("reference_image_urls")
                     if per_request_ref_paths:
                         logger.debug(
                             f"[Venice] Attached {len(per_request_ref_paths)} per-request "
@@ -1223,9 +1140,6 @@ class VeniceBackend(GeneratorBackend):
                         )
             else:
                 omitted_fields.append("reference_image_urls")
-                self._mark_optional_field_unsupported(
-                    model, op, "reference_image_urls", source="capability_or_cache"
-                )
                 if per_request_ref_paths:
                     logger.info(
                         f"[Venice] Model {model} does not support reference_image_urls — "
@@ -1233,22 +1147,13 @@ class VeniceBackend(GeneratorBackend):
                     )
 
         if end_image_path is not None:
-            requested_optional_fields.append("end_image_url")
-            supports_end_image = _support("end_image_url")
+            supports_end_image = self._supports_video_field(model_info, "end_image_url")
             if supports_end_image is not False:
                 payload["end_image_url"] = self._data_url_for_file(end_image_path)
-                accepted_optional_fields.append("end_image_url")
             else:
                 omitted_fields.append("end_image_url")
-                self._mark_optional_field_unsupported(model, op, "end_image_url", source="capability_or_cache")
 
-        telemetry = {
-            "requested_optional_fields": requested_optional_fields,
-            "accepted_optional_fields": accepted_optional_fields,
-            "op": op,
-            "model": model,
-        }
-        return payload, omitted_fields, telemetry
+        return payload, omitted_fields
 
     @staticmethod
     def _resolution_to_dims(resolution_token: str, aspect_ratio: str) -> Optional[tuple]:
@@ -1501,25 +1406,19 @@ class VeniceBackend(GeneratorBackend):
 
         return []
 
-    def _queue_video_request(
-        self,
-        queue_payload: Dict[str, Any],
-    ) -> Tuple[Dict[str, Any], Dict[str, Any], List[str], int]:
+    def _queue_video_request(self, queue_payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any], List[str]]:
         effective_payload = dict(queue_payload)
         stripped_fields: List[str] = []
-        queue_retry_count = 0
         # Fields we stripped but Venice later told us are Required — never strip again.
         restored_fields: set = set()
         attempted_payload_signatures = {self._queue_payload_signature(effective_payload)}
         first_400_error: Optional[str] = None
-        model_id = str(queue_payload.get("model") or effective_payload.get("model") or "")
-        op = "img2vid" if queue_payload.get("image_url") is not None else "text2vid"
         # Track whether we already snapped the duration to avoid infinite loops.
         duration_snapped: bool = False
         # Track whether we already snapped the resolution to avoid infinite loops.
         resolution_snapped: bool = False
         # Track whether we already snapped the aspect_ratio to avoid infinite loops.
-        # (v0.9.0-beta) Defence-in-depth — the request-builder already snaps
+        # (v0.9.3-beta) Defence-in-depth — the request-builder already snaps
         # aspect_ratio to a Venice-valid enum value, but if a future model
         # narrows the accepted set further this lets us recover gracefully
         # instead of bubbling up an HTTP 400.
@@ -1533,7 +1432,7 @@ class VeniceBackend(GeneratorBackend):
                     raise RuntimeError(
                         f"Venice endpoint /video/queue returned non-JSON content-type={response.headers.get('Content-Type')}"
                     )
-                return data, effective_payload, stripped_fields, queue_retry_count
+                return data, effective_payload, stripped_fields
 
             if response.status_code == 400:
                 if first_400_error is None:
@@ -1606,7 +1505,7 @@ class VeniceBackend(GeneratorBackend):
                             continue
 
                 # ── Aspect ratio snap-to-nearest ──────────────────────────────
-                # (v0.9.0-beta) Same logic as duration / resolution: when
+                # (v0.9.3-beta) Same logic as duration / resolution: when
                 # Venice rejects aspect_ratio with invalid_enum_value and
                 # provides the accepted options, snap to the nearest valid
                 # value (by log-ratio distance) and retry once.
@@ -1657,7 +1556,6 @@ class VeniceBackend(GeneratorBackend):
                             effective_payload[field] = queue_payload[field]
                         stripped_fields.remove(field)
                         restored_fields.add(field)
-                        self._unmark_optional_field_unsupported(model_id, op, field)
                     logger.warning(
                         f"[Venice] Re-adding field(s) previously stripped but now Required by model: "
                         f"{', '.join(newly_required_stripped)}"
@@ -1671,16 +1569,9 @@ class VeniceBackend(GeneratorBackend):
                         for field in retry_fields:
                             effective_payload.pop(field, None)
                             stripped_fields.append(field)
-                            self._mark_optional_field_unsupported(
-                                model_id,
-                                op,
-                                field,
-                                source="queue_retry",
-                            )
                         logger.warning(
                             f"[Venice] Retrying /video/queue without optional field(s): {', '.join(retry_fields)}"
                         )
-                        queue_retry_count += 1
                     signature = self._queue_payload_signature(effective_payload)
                     if signature not in attempted_payload_signatures:
                         attempted_payload_signatures.add(signature)
@@ -1695,16 +1586,9 @@ class VeniceBackend(GeneratorBackend):
                     for field in retry_fields:
                         effective_payload.pop(field, None)
                         stripped_fields.append(field)
-                        self._mark_optional_field_unsupported(
-                            model_id,
-                            op,
-                            field,
-                            source="queue_retry",
-                        )
                     logger.warning(
                         f"[Venice] Retrying /video/queue without optional field(s): {', '.join(retry_fields)}"
                     )
-                    queue_retry_count += 1
                     signature = self._queue_payload_signature(effective_payload)
                     if signature not in attempted_payload_signatures:
                         attempted_payload_signatures.add(signature)

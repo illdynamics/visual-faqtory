@@ -13,7 +13,7 @@ Pluggable backends for image and video generation:
 
 Each backend implements the GeneratorBackend interface.
 
-Part of Visual FaQtory v0.9.0-beta
+Part of Visual FaQtory v0.9.3-beta
 """
 import os
 import io

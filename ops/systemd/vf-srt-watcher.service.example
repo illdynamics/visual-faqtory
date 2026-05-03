@@ -12,7 +12,7 @@
 #   systemctl daemon-reload
 #   systemctl enable --now vf-srt-watcher
 #
-# Part of Visual FaQtory v0.9.0-beta
+# Part of Visual FaQtory v0.9.3-beta
 
 [Unit]
 Description=Visual FaQtory SRT A/B Playout Watcher

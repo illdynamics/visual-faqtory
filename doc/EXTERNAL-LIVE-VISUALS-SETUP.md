@@ -30,7 +30,7 @@ ZeroTier (or any routed network).
 - Crowd Control: submission page, QR code, `/api/next` pop, SQLite queue, rate limiting, badword filter, generator client (fail-open)
 - SRT watcher: A/B slot design, ffmpeg restart per slot, inotify watch, OBS WebSocket toggle
 
-### What was missing / added (v0.9.0-beta)
+### What was missing / added (v0.9.3-beta)
 
 - **Crowd queue overlay** — OBS browser source at `/visuals/overlay` with QR, counters, next prompts
 - **Public status API** — `/visuals/api/status?limit=3` returns queue preview + aggregate counts (no IPs)

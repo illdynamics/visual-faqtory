@@ -41,7 +41,7 @@ Assumption: the OBS media-source loop setting key is "looping" (canonical
 name in obs-studio's ffmpeg_source plugin). If your OBS build uses a
 different key, adjust LOOPING_KEY below.
 
-Part of Visual FaQtory v0.9.2-beta
+Part of Visual FaQtory v0.9.3-beta
 """
 from __future__ import annotations
 

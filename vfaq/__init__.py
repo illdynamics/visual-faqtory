@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Visual FaQtory v0.9.0-beta
+Visual FaQtory v0.9.3-beta
 ═══════════════════════════════════════════════════════════════════════════════
 
 An automated, long-form AI visual generation pipeline for music, DJ sets,
@@ -8,7 +8,7 @@ and experimental audiovisual projects.
 
 Pipeline: paragraph_story (sliding window) + Hybrid-capable backends (ComfyUI, Venice, Veo, Mock) + Finalizer
 
-v0.9.0-beta — Native Python Qwen image backend
+v0.9.3-beta — Native Python Qwen image backend
   - KEPT: split-capability backend routing
   - KEPT: Qwen image stage via ComfyUI workflows
   - NEW: image-only qwen_image_python / qwen_python local inference backend

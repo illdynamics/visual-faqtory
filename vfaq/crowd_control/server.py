@@ -9,13 +9,15 @@ Serves the crowd prompt page, QR code, queue API, overlay, and status.
 Routes (under configurable prefix, default /visuals):
   GET  {prefix}/              → HTML form + live queue stats
   POST {prefix}/api/submit    → Submit a prompt
-  GET  {prefix}/api/next      → Pop next prompt (token-protected)
+  GET  {prefix}/api/next      → Claim next prompt (token-protected)
+  POST {prefix}/api/ack       → Ack claimed prompt as served (token-protected)
+  POST {prefix}/api/requeue   → Requeue claimed prompt after failure (token-protected)
   GET  {prefix}/api/health    → Health check + queue length
   GET  {prefix}/api/status    → Public queue preview + counters (overlay data)
   GET  {prefix}/overlay       → OBS browser source overlay
   GET  {prefix}/qr.png        → QR code pointing to public URL
 
-Part of Visual FaQtory v0.9.0-beta
+Part of Visual FaQtory v0.9.3-beta
 """
 from __future__ import annotations
 
@@ -403,24 +405,74 @@ def create_crowd_app(config: CrowdControlConfig) -> FastAPI:
             {"ok": True, "message": "Mutation queued! It will appear in the next visual cycle.", "id": sub_id}
         )
 
+    def _require_token(token: Optional[str], authorization: Optional[str]) -> None:
+        provided_token = None
+        if authorization and authorization.lower().startswith("bearer "):
+            provided_token = authorization[7:].strip()
+        elif token:
+            provided_token = token
+        if not provided_token or provided_token != config.pop_token:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
     @app.get(f"{prefix}/api/next")
     async def pop_next(
         request: Request,
         token: Optional[str] = Query(None),
         authorization: Optional[str] = Header(None),
     ):
-        """Pop the next queued prompt. Token-protected."""
-        provided_token = None
-        if authorization and authorization.lower().startswith("bearer "):
-            provided_token = authorization[7:].strip()
-        elif token:
-            provided_token = token
+        """Claim the next queued prompt. Token-protected."""
+        _require_token(token, authorization)
+        claim = db.claim_next(claim_timeout_seconds=config.claim_timeout_seconds)
+        if not claim:
+            return JSONResponse({"prompt": None, "id": None})
+        return JSONResponse({
+            "prompt": claim["prompt"],
+            "id": int(claim["id"]),
+            "claim_id": claim.get("claim_id"),
+        })
 
-        if not provided_token or provided_token != config.pop_token:
-            raise HTTPException(status_code=401, detail="Unauthorized")
+    @app.post(f"{prefix}/api/ack")
+    async def ack_claim(
+        request: Request,
+        token: Optional[str] = Query(None),
+        authorization: Optional[str] = Header(None),
+    ):
+        """Ack a claimed prompt as served after successful generation."""
+        _require_token(token, authorization)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        sub_id = body.get("id")
+        claim_id = body.get("claim_id")
+        if sub_id is None:
+            return JSONResponse({"ok": False, "message": "Missing id"}, status_code=400)
+        ok = db.ack_served(int(sub_id), claim_id=claim_id)
+        if not ok:
+            return JSONResponse({"ok": False, "message": "Claim ack rejected"}, status_code=409)
+        return JSONResponse({"ok": True, "id": int(sub_id)})
 
-        prompt = db.pop_next()
-        return JSONResponse({"prompt": prompt})
+    @app.post(f"{prefix}/api/requeue")
+    async def requeue_claim(
+        request: Request,
+        token: Optional[str] = Query(None),
+        authorization: Optional[str] = Header(None),
+    ):
+        """Requeue a claimed prompt (typically after generation failure)."""
+        _require_token(token, authorization)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        sub_id = body.get("id")
+        claim_id = body.get("claim_id")
+        reason = str(body.get("reason", "") or "")
+        if sub_id is None:
+            return JSONResponse({"ok": False, "message": "Missing id"}, status_code=400)
+        ok = db.requeue_claimed(int(sub_id), reason=reason, claim_id=claim_id)
+        if not ok:
+            return JSONResponse({"ok": False, "message": "Claim requeue rejected"}, status_code=409)
+        return JSONResponse({"ok": True, "id": int(sub_id)})
 
     @app.get(f"{prefix}/api/status")
     async def queue_status(
@@ -436,7 +488,8 @@ def create_crowd_app(config: CrowdControlConfig) -> FastAPI:
             "ok": True,
             "version": _VERSION,
             "queue_length": counts["queued"],
-            "accepted_total": counts["queued"] + counts["served"],
+            "claimed_length": counts.get("claimed", 0),
+            "accepted_total": counts["queued"] + counts.get("claimed", 0) + counts["served"],
             "served_total": counts["served"],
             "rejected_total": counts["rejected"],
             "total_submissions": counts["total"],

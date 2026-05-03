@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Visual FaQtory v0.9.0-beta — config.example.yaml
+# Visual FaQtory v0.9.3-beta — config.example.yaml
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # FULLY-FILLED reference config. Every available parameter the engine reads is
@@ -15,7 +15,7 @@
 #   720p + 16:9 → 1280×720
 #   480p + 9:16 → 480×856
 #
-# As of v0.9.0-beta, any aspect_ratio value (computed or set) is auto-snapped
+# As of v0.9.3-beta, any aspect_ratio value (computed or set) is auto-snapped
 # to the nearest valid Venice enum value via log-distance — so 856×480 maps to
 # 16:9, never to the broken-but-mathematically-correct 107:60.
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -192,25 +192,33 @@ audio:
 # CROWD CONTROL (Live Audience Prompt Injection)
 # ═══════════════════════════════════════════════════════════════════════════════
 crowd_control:
-  enabled: false                          # true to activate live prompt injection
-  base_url: "http://10.20.30.22:8000/visuals"  # Where the generator reaches the server
+  enabled: true                           # true to activate live prompt injection
+  base_url: "http://10.20.30.22:8808/visuals"  # Must match the actual crowd server port (server default: 8808)
   pop_token: "CHANGE_ME_LONG_RANDOM"      # Bearer token for /api/next endpoint
   timeout_seconds: 2.0                    # HTTP timeout for generator→server calls
   inject_label: "Audience mutation request"   # Label injected into the prompt
-  inject_mode: "append"                   # append | replace
+  inject_mode: "replace"                  # append | replace
   inject_source_mode: "as_image_source"   # as_image_source | as_reference
-  carryover_cycles: 0                     # 0 = current only, 1 = +next cycle, 2 = +next two cycles
+  bake_mode: "reinject_keyframe"          # off | direct_video | reinject_keyframe
+  bake_use_morph: true
+  bake_denoise_min: 0.58
+  bake_denoise_max: 0.82
+  bake_prompt_prefix: "AUDIENCE PROMPT IS THE PRIMARY VISUAL MUTATION. Strongly transform the scene to match this request while preserving enough continuity from the source image:"
+  discard_smart_prefetch_on_crowd: true
+  claim_timeout_seconds: 900
+  ack_after_success: true
+  requeue_on_failure: true
                                           #
-                                          # as_image_source (default):
-                                          #   IMG2VID with previous lastframe as
-                                          #   SOURCE image. Audience prompt drives
-                                          #   motion; lastframe = hard continuity.
+                                          # bake_mode:
+                                          #   off: normal story flow (ignoring crowd visuals)
+                                          #   direct_video: crowd prompt goes straight to video
+                                          #   reinject_keyframe (default): bake a crowd keyframe first
                                           #
-                                          # as_reference:
-                                          #   TEXT2VID with previous lastframe as
-                                          #   REFERENCE image (model permitting).
-                                          #   Audience prompt drives visuals;
-                                          #   lastframe = soft style/identity tether.
+                                          # discard_smart_prefetch_on_crowd:
+                                          #   true: cancel pending story prefetches on crowd cycles
+                                          #
+                                          # claim_timeout_seconds:
+                                          #   auto-recovery timeout for claimed prompts
   max_chars: 300                          # Max prompt length from viewers
   rate_limit_seconds: 180                 # 1 submission per IP per this many seconds
   max_queue: 100                          # Max pending prompts in queue

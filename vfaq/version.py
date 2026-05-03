@@ -2,7 +2,7 @@
 """Shared version helpers for Visual FaQtory."""
 from __future__ import annotations
 from pathlib import Path
-_DEFAULT_VERSION = "v0.9.0-beta"
+_DEFAULT_VERSION = "v0.9.3-beta"
 
 def read_version(default: str = _DEFAULT_VERSION) -> str:
     version_file = Path(__file__).resolve().parents[1] / "VERSION"

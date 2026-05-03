@@ -199,11 +199,11 @@ audio:
 # ═══════════════════════════════════════════════════════════════════════════════
 crowd_control:
   enabled: true                        # Set true to activate crowd prompt injection
-  base_url: "http://10.20.30.22:8000/visuals"  # Where the generator reaches the server
+  base_url: "http://10.20.30.22:8808/visuals"  # Must match the actual crowd server port (default server port: 8808)
   pop_token: "Setyup34Setyup34Setyup34Setyup34"    # Bearer token for /api/next endpoint
   timeout_seconds: 1.0                  # HTTP timeout for generator→server calls
   inject_label: "Audience mutation request"  # Label injected into the prompt
-  inject_mode: "append"                 # append = add to story | replace = override story
+  inject_mode: "replace"                 # append = add to story | replace = override story
   # inject_source_mode (v0.9.1+) — controls HOW the audience prompt drives
   # the next cycle (only relevant when crowd_control.enabled: true):
   #
@@ -218,7 +218,16 @@ crowd_control:
   #
   # `inject_mode` is orthogonal: append = paragraph + audience text, replace
   # = audience text only. Source mode is independent of that.
-  inject_source_mode: "as_reference"
+  inject_source_mode: "as_image_source"
+  bake_mode: "reinject_keyframe"         # off | direct_video | reinject_keyframe
+  bake_use_morph: true
+  bake_denoise_min: 0.58
+  bake_denoise_max: 0.82
+  bake_prompt_prefix: "AUDIENCE PROMPT IS THE PRIMARY VISUAL MUTATION. Strongly transform the scene to match this request while preserving enough continuity from the source image:"
+  discard_smart_prefetch_on_crowd: true
+  claim_timeout_seconds: 900
+  ack_after_success: true
+  requeue_on_failure: true
   max_chars: 300                        # Max prompt length from viewers
   rate_limit_seconds: 60               # 1 submission per IP per this many seconds
   max_queue: 100                        # Max pending prompts in queue

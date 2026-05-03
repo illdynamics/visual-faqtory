@@ -2,6 +2,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -38,6 +39,7 @@ class SrtWatcherTests(unittest.TestCase):
     def _run_script(self, *args, extra_env=None):
         env = os.environ.copy()
         env['VF_SRT_ENV'] = str(self.temp_dir / 'missing.env')
+        env['VF_PYTHON_BIN'] = sys.executable
         if extra_env:
           env.update({k: str(v) for k, v in extra_env.items()})
         return subprocess.run(

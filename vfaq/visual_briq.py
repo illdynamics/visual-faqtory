@@ -8,7 +8,7 @@ A VisualBriq is the standardized instruction packet passed between agents:
 
 It contains everything needed to generate one visual atom in the cycle.
 
-Part of Visual FaQtory v0.9.0-beta
+Part of Visual FaQtory v0.9.3-beta
 """
 import json
 import hashlib

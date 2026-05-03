@@ -12,7 +12,7 @@ Pipeline flow:
   4. Audio mux (if base audio present)
   5. Save run to worqspace/saved-runs/<project-name>
 
-Part of Visual FaQtory v0.9.0-beta
+Part of Visual FaQtory v0.9.3-beta
 """
 import json
 import logging
@@ -160,7 +160,7 @@ def _mux_audio(video_path: Path, audio_path: Path, output_path: Path) -> bool:
 
 class VisualFaQtory:
     """
-    Main orchestrator for the Visual FaQtory v0.9.0-beta pipeline.
+    Main orchestrator for the Visual FaQtory v0.9.3-beta pipeline.
 
     Wires config loading, input detection, sliding story engine,
     finalizer, audio mux, and project saving.
@@ -832,13 +832,6 @@ class VisualFaQtory:
             )
         except KeyboardInterrupt:
             logger.info("\n[FaQtory] Run interrupted by user")
-            try:
-                from vfaq.sliding_story_engine import shutdown_active_smart_reinject_workers
-                shutdown_active_smart_reinject_workers(reason="interrupt")
-            except Exception as shutdown_error:
-                logger.warning(
-                    f"[FaQtory] Smart reinject shutdown during interrupt reported: {shutdown_error}"
-                )
             self._write_run_state(
                 "interrupted", start_time,
                 cycles_planned=total_cycles,
@@ -851,13 +844,6 @@ class VisualFaQtory:
             )
             raise
         except Exception as e:
-            try:
-                from vfaq.sliding_story_engine import shutdown_active_smart_reinject_workers
-                shutdown_active_smart_reinject_workers(reason="error")
-            except Exception as shutdown_error:
-                logger.warning(
-                    f"[FaQtory] Smart reinject shutdown after failure reported: {shutdown_error}"
-                )
             logger.error(f"[FaQtory] Run failed at cycle ~{self._cycles_completed + 1}: {e}")
             self._write_run_state(
                 "failed", start_time,

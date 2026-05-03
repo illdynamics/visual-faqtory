@@ -31,7 +31,7 @@
 #   take ~30 boundary waits. A future "latest-wins" mode could collapse
 #   the backlog to "use the most recent file when the current ends".
 #
-# Part of Visual FaQtory v0.9.2-beta
+# Part of Visual FaQtory v0.9.3-beta
 # ════════════════════════════════════════════════════════════════════════
 
 set -euo pipefail

@@ -9,7 +9,7 @@ Manages checkpoint state for resumable runs:
   - Resume context reconstruction
   - Per-cycle checkpoint updates
 
-Part of Visual FaQtory v0.9.0-beta
+Part of Visual FaQtory v0.9.3-beta
 """
 import json
 import logging

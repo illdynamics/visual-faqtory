@@ -1,4 +1,4 @@
-# Example capability-split backend config (v0.9.0-beta)
+# Example capability-split backend config (v0.9.3-beta)
 # Qwen image backends are image-only. Do not treat them like full pipeline backends.
 # Keeps the public app interface stable while routing each generation stage
 # to a dedicated backend under the hood.

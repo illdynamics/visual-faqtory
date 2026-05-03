@@ -1,5 +1,45 @@
 # Release Notes
 
+## v0.9.3-beta
+
+### Crowd Control: robust baked mutation flow for QR prompts
+
+- Crowd prompts are now **claimed** (not served) and must be **acked after successful cycle completion**.
+- New queue lifecycle:
+  - `queued` → `claimed` → `served`
+  - failed claimed prompts can be requeued
+  - stale claims are auto-recovered via configurable timeout
+- New API endpoints:
+  - `GET /visuals/api/next` now returns `{prompt, id, claim_id}`
+  - `POST /visuals/api/ack` to mark served
+  - `POST /visuals/api/requeue` to return a failed claim to the queue
+- Generator-side crowd flow now supports explicit crowd baking:
+  - crowd cycles generate a dedicated baked keyframe first
+  - video uses that baked keyframe (or first/last-frame with baked end frame)
+  - crowd prompts are no longer "video-text-only" when an image source exists
+- Smart reinject interaction hardening:
+  - crowd cycles discard pending smart prefetch for the same cycle
+  - crowd cycles never consume story-only smart-prefetched keyframes
+- Added crowd config fields:
+  - `bake_mode`, `bake_use_morph`, `bake_denoise_min`, `bake_denoise_max`, `bake_prompt_prefix`
+  - `discard_smart_prefetch_on_crowd`, `ack_after_success`, `requeue_on_failure`, `claim_timeout_seconds`
+- Added briq crowd metadata expansion:
+  - `prompt_id`, `full_prompt_preview`, `bake_used`, `bake_keyframe`, `bake_source_image`,
+    `bake_video_mode`, `smart_prefetch_discarded`, `acked`, `requeued_on_failure`, `effective_reinject`
+
+### Config/docs alignment
+
+- Crowd server default port is `8808`; generator `crowd_control.base_url` examples now align to `:8808`.
+- Live crowd config recommendations now use:
+  - `inject_mode: replace`
+  - `inject_source_mode: as_image_source`
+  - `bake_mode: reinject_keyframe`
+  - `bake_use_morph: true`
+  - `bake_denoise_min: 0.58`
+  - `bake_denoise_max: 0.82`
+  - `ack_after_success: true`
+  - `requeue_on_failure: true`
+
 ## v0.9.2-beta
 
 ### Feature: OBS A/B swap is now ALIGNED to clip end (default)
