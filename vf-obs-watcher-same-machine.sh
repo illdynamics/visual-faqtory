@@ -179,8 +179,7 @@ echo "OBS end threshold:  ${OBS_END_THRESHOLD_MS}ms"
 print_manual_test_checklist
 
 # ── Monitor directory for new completed files ───────────────────────────
-inotifywait -m -e close_write --format "%f" "$INTERP_DIR" | while read -r file; do
-    if [[ "$file" == *.mp4 ]]; then
-        process_file_locked "$INTERP_DIR/$file"
-    fi
+fswatch --event Created --event Updated --event Renamed -i "\.mp4$" "$INTERP_DIR" 2>/dev/null | while read -r file_path; do
+    [[ -z "$file_path" ]] && continue
+    process_file_locked "$file_path"
 done

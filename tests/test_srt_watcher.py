@@ -140,11 +140,11 @@ class SrtWatcherTests(unittest.TestCase):
         self.assertNotIn('Shutting down', proc.stdout)
         self.assertNotIn('Cleanup complete', proc.stdout)
 
-    def test_smoke_check_returns_nonzero_when_inotifywait_missing(self):
+    def test_smoke_check_returns_nonzero_when_fswatch_missing(self):
         self._write_yaml('worqspace/config.yaml', {'run': {'output_dir': './custom-run'}, 'finalizer': {'per_cycle_interpolation': False}})
-        proc = self._run_script('--smoke-check', extra_env={'OBS_AUTOSWAP': '0', 'VF_INOTIFYWAIT_BIN': str(self.temp_dir / 'bin' / 'missing-inotifywait')})
+        proc = self._run_script('--smoke-check', extra_env={'OBS_AUTOSWAP': '0', 'VF_FSWATCH_BIN': str(self.temp_dir / 'bin' / 'missing-fswatch')})
         self.assertNotEqual(proc.returncode, 0)
-        self.assertIn('inotifywait required', proc.stderr)
+        self.assertIn('fswatch required', proc.stderr)
 
     def test_process_file_swaps_active_slot_without_obs_autoswap(self):
         playdir = self.temp_dir / 'run' / 'obs'
@@ -153,9 +153,9 @@ class SrtWatcherTests(unittest.TestCase):
         (playdir / 'current_B.mp4').write_bytes(b'B')
         source_file = self.temp_dir / 'incoming.mp4'
         source_file.write_bytes(b'new clip data')
-        inotifywait = self._make_fake_tool('inotifywait')
+        fswatch = self._make_fake_tool('fswatch')
         ffmpeg = self._make_fake_tool('ffmpeg')
-        proc = self._run_script('--process-file', str(source_file), extra_env={'OBS_AUTOSWAP': '0', 'VF_INOTIFYWAIT_BIN': inotifywait, 'VF_FFMPEG_BIN': ffmpeg, 'VF_FFPROBE_BIN': str(self.temp_dir / 'bin' / 'missing-ffprobe'), 'VF_PLAYOUT_DIR': playdir, 'READY_STABLE_POLLS': '0', 'READY_POLL_INTERVAL_SEC': '0.01', 'PRELOAD_EXISTING_ON_START': '0'})
+        proc = self._run_script('--process-file', str(source_file), extra_env={'OBS_AUTOSWAP': '0', 'VF_FSWATCH_BIN': fswatch, 'VF_FFMPEG_BIN': ffmpeg, 'VF_FFPROBE_BIN': str(self.temp_dir / 'bin' / 'missing-ffprobe'), 'VF_PLAYOUT_DIR': playdir, 'READY_STABLE_POLLS': '0', 'READY_POLL_INTERVAL_SEC': '0.01', 'PRELOAD_EXISTING_ON_START': '0'})
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn('Switched to slot B', proc.stdout)
         self.assertEqual((playdir / '.active_slot').read_text(encoding='utf-8').strip(), 'B')
@@ -164,9 +164,9 @@ class SrtWatcherTests(unittest.TestCase):
     def test_smoke_check_validates_tools_and_prints_urls(self):
         ffmpeg = self._make_fake_tool('ffmpeg')
         ffprobe = self._make_fake_tool('ffprobe')
-        inotifywait = self._make_fake_tool('inotifywait')
+        fswatch = self._make_fake_tool('fswatch')
         self._write_yaml('worqspace/config.yaml', {'run': {'output_dir': './custom-run'}, 'finalizer': {'per_cycle_interpolation': False}})
-        proc = self._run_script('--smoke-check', extra_env={'OBS_AUTOSWAP': '0', 'VF_FFMPEG_BIN': ffmpeg, 'VF_FFPROBE_BIN': ffprobe, 'VF_INOTIFYWAIT_BIN': inotifywait})
+        proc = self._run_script('--smoke-check', extra_env={'OBS_AUTOSWAP': '0', 'VF_FFMPEG_BIN': ffmpeg, 'VF_FFPROBE_BIN': ffprobe, 'VF_FSWATCH_BIN': fswatch})
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn('Smoke-check OK', proc.stdout)
         self.assertIn('SRT_URL_A=', proc.stdout)
@@ -193,8 +193,8 @@ class SrtWatcherTests(unittest.TestCase):
         os.utime(new_file, (1_800_000_000, 1_800_000_000))
         ffmpeg = self._make_fake_tool('ffmpeg')
         ffprobe = self._make_fake_tool('ffprobe', body='echo video\n')
-        inotifywait = self._make_fake_tool('inotifywait')
-        proc = self._run_script('--reseed-slots', extra_env={'OBS_AUTOSWAP': '0', 'VF_WATCH_DIR': watch_dir, 'VF_PLAYOUT_DIR': playdir, 'VF_FFMPEG_BIN': ffmpeg, 'VF_FFPROBE_BIN': ffprobe, 'VF_INOTIFYWAIT_BIN': inotifywait, 'READY_STABLE_POLLS': '0', 'READY_POLL_INTERVAL_SEC': '0.01'})
+        fswatch = self._make_fake_tool('fswatch')
+        proc = self._run_script('--reseed-slots', extra_env={'OBS_AUTOSWAP': '0', 'VF_WATCH_DIR': watch_dir, 'VF_PLAYOUT_DIR': playdir, 'VF_FFMPEG_BIN': ffmpeg, 'VF_FFPROBE_BIN': ffprobe, 'VF_FSWATCH_BIN': fswatch, 'READY_STABLE_POLLS': '0', 'READY_POLL_INTERVAL_SEC': '0.01'})
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn('Re-seeded both slots', proc.stdout)
         self.assertEqual((playdir / 'current_A.mp4').read_bytes(), b'newer-bytes')
@@ -202,7 +202,7 @@ class SrtWatcherTests(unittest.TestCase):
 
     def test_script_contains_watch_and_health_monitor_hardening(self):
         content = (self.repo_root / 'vf-obs-watcher-srt-endpoints.sh').read_text(encoding='utf-8')
-        self.assertIn('-e close_write,moved_to', content)
+        self.assertIn('--event Created --event Updated --event Renamed', content)
         self.assertIn('ffmpeg slot $slot is not running; restarting', content)
         self.assertIn('Watch dir missing, recreating', content)
         self.assertIn('--validate-file', content)

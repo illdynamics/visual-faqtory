@@ -35,7 +35,7 @@ No real OBS caller, no real SRT network path, and no real long-running systemd s
 - stale ffmpeg pid files are detected and cleaned up
 - slot files are re-seeded if missing or invalid
 - ffmpeg slots are restarted by a background health monitor if they die after startup
-- watch dir is recreated if it disappears and the inotify loop is restarted
+- watch dir is recreated if it disappears and the fswatch loop is restarted
 - corrupt / incomplete mp4 files are rejected when `ffprobe` is available
 - `--validate-file` provides a fast operator check for a candidate clip
 - `--reseed-slots` re-seeds both slots from the newest valid watched clip or placeholders

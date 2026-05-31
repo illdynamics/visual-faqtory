@@ -83,7 +83,7 @@ the "halfway-through-the-loop" jump the immediate-prewarm behaviour caused.
 
 ### Watcher robustness
 
-  - `vf-obs-watcher-same-machine.sh` now uses `flock -n` so two inotify
+  - `vf-obs-watcher-same-machine.sh` now uses `flock -n` so two fswatch
     events can't overlap a swap. If a swap is already in progress, the
     new event is dropped (the file is already in the inactive slot, so
     when the running swap reaches its boundary it sees the latest file

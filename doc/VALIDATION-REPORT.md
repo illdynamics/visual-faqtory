@@ -18,7 +18,7 @@ Validated by focused tests and direct script inspection:
 
 ### 3) Watch behavior for direct writes and atomic moves
 Validated by script inspection and tests:
-- inotify watches `close_write,moved_to`
+- fswatch watches `Created,Updated,Renamed`
 - direct file writes into the watch dir are picked up
 - atomic renames / moves into the watch dir are picked up
 - non-`.mp4` files are ignored cleanly
@@ -50,7 +50,7 @@ Validated by tests:
 
 ### 7) Systemd example correctness
 Validated by inspection and patched:
-- install notes explicitly include `inotify-tools`
+- install notes explicitly include `fswatch`
 - the unit now runs `ExecStartPre=... --smoke-check`
 - `TimeoutStopSec=15` was added for cleaner service shutdown behavior
 
@@ -92,7 +92,7 @@ Focused watcher tests cover:
 - smoke-check dependency validation
 - nonzero exit behavior when required tools are missing
 - one-shot file processing and slot state flip without OBS autoswap
-- watcher event subscription includes both `close_write` and `moved_to`
+- watcher event subscription includes both `Created`, `Updated`, and `Renamed`
 - quiet `--status` output without cleanup chatter
 
 ### Smoke tested

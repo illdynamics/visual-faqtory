@@ -117,7 +117,7 @@ PYTHON_BIN="${VF_PYTHON_BIN:-${BASE_DIR}/.venv/bin/python}"
 CONFIG_PYTHON_BIN="${VF_CONFIG_PYTHON_BIN:-}"
 FFMPEG_BIN="${VF_FFMPEG_BIN:-ffmpeg}"
 FFPROBE_BIN="${VF_FFPROBE_BIN:-ffprobe}"
-INOTIFYWAIT_BIN="${VF_INOTIFYWAIT_BIN:-inotifywait}"
+FSWATCH_BIN="${VF_FSWATCH_BIN:-fswatch}"
 VF_CONFIG_FILE="${VF_CONFIG_FILE:-}"
 VF_WATCH_DIR="${VF_WATCH_DIR:-}"
 
@@ -203,7 +203,7 @@ resolve_watch_mode() {
   local cfg_lines=()
   if [[ -n "$VF_WATCH_DIR" ]]; then echo "override"; return 0; fi
   if [[ -n "$CONFIG_FILE" ]]; then
-    mapfile -t cfg_lines < <(read_config_value_lines "$CONFIG_FILE" 2>/dev/null || true)
+    while IFS= read -r line; do cfg_lines[${#cfg_lines[@]}]="$line"; done < <(read_config_value_lines "$CONFIG_FILE" 2>/dev/null || true)
     if [[ -n "${cfg_lines[1]:-}" ]]; then per_cycle="${cfg_lines[1]}"; fi
   fi
   if [[ "$per_cycle" == "true" ]]; then echo "videos_interpolated"; else echo "videos"; fi
@@ -214,7 +214,7 @@ resolve_watch_dir() {
   local cfg_lines=()
   if [[ "$WATCH_MODE" == "override" ]]; then echo "$(resolve_path_from_base "$VF_WATCH_DIR")"; return 0; fi
   if [[ -n "$CONFIG_FILE" ]]; then
-    mapfile -t cfg_lines < <(read_config_value_lines "$CONFIG_FILE" 2>/dev/null || true)
+    while IFS= read -r line; do cfg_lines[${#cfg_lines[@]}]="$line"; done < <(read_config_value_lines "$CONFIG_FILE" 2>/dev/null || true)
     if [[ -n "${cfg_lines[0]:-}" ]]; then output_dir="$(resolve_path_from_base "${cfg_lines[0]}")"; fi
   fi
   if [[ "$WATCH_MODE" == "videos_interpolated" ]]; then echo "${output_dir}/videos_interpolated"; else echo "${output_dir}/videos"; fi
@@ -233,7 +233,12 @@ copy_to_slot() {
 
 find_newest_existing_mp4() {
   [[ -d "$VF_WATCH_DIR" ]] || return 1
-  find "$VF_WATCH_DIR" -maxdepth 1 -type f -name '*.mp4' -printf '%T@|%p\n' 2>/dev/null | sort -nr | head -n 1 | cut -d'|' -f2-
+  local newest=""
+  for f in "$VF_WATCH_DIR"/*.mp4; do
+    [[ -f "$f" ]] || continue
+    [[ -z "$newest" || "$f" -nt "$newest" ]] && newest="$f"
+  done
+  [[ -n "$newest" ]] && echo "$newest"
 }
 
 is_duplicate_event() {
@@ -248,7 +253,7 @@ is_duplicate_event() {
 validate_media_file() {
   local file="$1" size
   [[ -f "$file" ]] || return 1
-  size=$(stat -c%s "$file" 2>/dev/null || echo 0)
+  size=$(wc -c < "$file" 2>/dev/null || echo 0)
   [[ "$size" -gt 0 ]] || return 1
   if (( FFPROBE_AVAILABLE == 1 )); then
     "$FFPROBE_BIN" -v error -select_streams v:0 -show_entries stream=codec_type -of default=nokey=1:noprint_wrappers=1 "$file" 2>/dev/null | grep -q '^video$'
@@ -265,7 +270,7 @@ wait_for_ready_file() {
   size="0"
   while (( $(date +%s) <= deadline )); do
     if [[ ! -f "$file" ]]; then sleep "$READY_POLL_INTERVAL_SEC"; continue; fi
-    size=$(stat -c%s "$file" 2>/dev/null || echo 0)
+    size=$(wc -c < "$file" 2>/dev/null || echo 0)
     if [[ "$size" -gt 0 && "$size" == "$last_size" ]]; then stable=$((stable + 1)); else stable=0; fi
     last_size="$size"
     if (( stable >= READY_STABLE_POLLS )); then
@@ -511,7 +516,7 @@ detect_runtime_capabilities() {
   local silent="${1:-0}"
   local require_core_tools="${2:-0}"
   if [[ "$require_core_tools" == "1" ]]; then
-    command -v "$INOTIFYWAIT_BIN" >/dev/null 2>&1 || fatal "inotifywait required (install inotify-tools or set VF_INOTIFYWAIT_BIN)"
+    command -v "$FSWATCH_BIN" >/dev/null 2>&1 || fatal "fswatch required (install fswatch or set VF_FSWATCH_BIN)"
     command -v "$FFMPEG_BIN" >/dev/null 2>&1 || fatal "ffmpeg not found (set VF_FFMPEG_BIN if needed)"
   fi
 
@@ -578,13 +583,13 @@ validate_file_mode() {
 watch_loop() {
   while true; do
     mkdir -p "$VF_WATCH_DIR"
-    log "Watching with inotify (close_write,moved_to): $VF_WATCH_DIR"
-    "$INOTIFYWAIT_BIN" -m -e close_write,moved_to --format "%e|%f" "$VF_WATCH_DIR" 2>/dev/null | while IFS='|' read -r events file_name; do
-      [[ "$file_name" == *.mp4 ]] || continue
-      process_video "$VF_WATCH_DIR/$file_name" "$events"
+    log "Watching with fswatch: $VF_WATCH_DIR"
+    "$FSWATCH_BIN" --event Created --event Updated --event Renamed -i "\.mp4$" "$VF_WATCH_DIR" 2>/dev/null | while read -r file_path; do
+      [[ -z "$file_path" ]] && continue
+      process_video "$file_path" "fswatch"
     done
     local watch_status=${PIPESTATUS[0]}
-    warn "inotifywait exited with status ${watch_status}; retrying in ${WATCH_RETRY_SEC}s"
+    warn "fswatch exited with status ${watch_status}; retrying in ${WATCH_RETRY_SEC}s"
     sleep "$WATCH_RETRY_SEC"
   done
 }

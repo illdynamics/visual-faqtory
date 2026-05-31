@@ -28,14 +28,14 @@ ZeroTier (or any routed network).
 ### What was already finished (v0.5.8-beta)
 
 - Crowd Control: submission page, QR code, `/api/next` pop, SQLite queue, rate limiting, badword filter, generator client (fail-open)
-- SRT watcher: A/B slot design, ffmpeg restart per slot, inotify watch, OBS WebSocket toggle
+- SRT watcher: A/B slot design, ffmpeg restart per slot, fswatch watch, OBS WebSocket toggle
 
 ### What was missing / added (v0.9.3-beta)
 
 - **Crowd queue overlay** — OBS browser source at `/visuals/overlay` with QR, counters, next prompts
 - **Public status API** — `/visuals/api/status?limit=3` returns queue preview + aggregate counts (no IPs)
 - **Enhanced submission page** — live stats, upcoming prompts, links to overlay/status/QR
-- **SRT watcher hardening** — prefers the actual active `worqspace/config.yaml`, supports `VF_CONFIG_FILE`, watches both `close_write` and `moved_to`, preloads the newest existing clip on startup, and waits for file readiness before swapping live
+- **SRT watcher hardening** — prefers the actual active `worqspace/config.yaml`, supports `VF_CONFIG_FILE`, watches both `Created`, `Updated`, and `Renamed`, preloads the newest existing clip on startup, and waits for file readiness before swapping live
 - **CLI banner** — overlay + status URLs printed on crowd server startup
 - **Docs + ops** — this file, env examples, systemd unit examples
 
@@ -52,7 +52,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 # Runtime tools needed by the SRT watcher
-sudo apt-get install -y ffmpeg inotify-tools
+sudo apt-get install -y ffmpeg fswatch
 # ffprobe is usually bundled with ffmpeg packages
 # Also: pip install obsws-python  (if OBS autoswap desired)
 ```
@@ -255,8 +255,8 @@ still update and restart on new video, so you just toggle visibility yourself.
 ### Troubleshooting
 
 **SRT connection refused:** Check firewall / ZeroTier routing. Verify the ffmpeg
-processes are running: `ps aux | grep ffmpeg`. Also verify `inotifywait` is installed
-(`inotify-tools` package) and that `./vf-obs-watcher-srt-endpoints.sh --smoke-check` passes.
+processes are running: `ps aux | grep ffmpeg`. Also verify `fswatch` is installed
+(`fswatch` package) and that `./vf-obs-watcher-srt-endpoints.sh --smoke-check` passes.
 
 **OBS shows black:** The watcher now seeds both slots with the newest existing watched `.mp4` on
 startup when available. If you still get black, run `./vf-obs-watcher-srt-endpoints.sh --status`
@@ -342,7 +342,7 @@ Set `OBS_AUTOSWAP=0`. Expected startup log: `OBS autoswap: DISABLED — SRT endp
 
 - Delete one slot file while the watcher runs: the health monitor should recover it.
 - Kill one ffmpeg process: the health monitor should log `ffmpeg slot X is not running; restarting`.
-- Rename or unmount the watched dir: the watcher should recreate the folder and restart the inotify loop.
+- Rename or unmount the watched dir: the watcher should recreate the folder and restart the fswatch loop.
 - Restart the systemd service: it should pass `--smoke-check`, restore slot files, and restart both SRT endpoints.
 
 ## Known-good watch-dir logic
