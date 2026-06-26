@@ -67,8 +67,8 @@ SCENE    = os.environ.get("OBS_SCENE",    "Ill Dynamics - Live on SkankOut")
 SOURCE_A = "Live-Visuals-A"
 SOURCE_B = "Live-Visuals-B"
 
-ID_A = 7
-ID_B = 8
+ID_A = 1
+ID_B = 2
 
 DEFAULT_PREWARM_SEC          = float(os.environ.get("OBS_PREWARM_SEC",          "0.8"))
 DEFAULT_MAX_WAIT_CURRENT_SEC = float(os.environ.get("OBS_MAX_WAIT_CURRENT_SEC", "180"))
@@ -77,6 +77,12 @@ DEFAULT_SWAP_MODE            =       os.environ.get("OBS_SWAP_MODE",            
 
 # Poll interval for media-state checks
 POLL_INTERVAL = 0.05
+
+# ── Play confirmation constants (v0.9.3+) ────────────────────────────────
+PLAY_RETRIES          = int(os.environ.get("OBS_PLAY_RETRIES", "3"))
+PLAY_RETRY_DELAY_SEC  = float(os.environ.get("OBS_PLAY_RETRY_DELAY_SEC", "1.0"))
+PLAY_CONFIRM_TIMEOUT  = float(os.environ.get("OBS_PLAY_CONFIRM_TIMEOUT", "5.0"))
+
 
 # OBS media-input action constants
 ACTION_RESTART = "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART"
@@ -246,6 +252,57 @@ def wait_for_media_ended(
     return False
 
 
+def confirm_and_retry_play(cl, input_name: str, retries: int = PLAY_RETRIES,
+                           delay: float = PLAY_RETRY_DELAY_SEC,
+                           timeout: float = PLAY_CONFIRM_TIMEOUT) -> bool:
+    """After a swap, confirm the target is actually playing.
+
+    Retries play + seek-to-0 up to  times, then confirms
+    the media state is PLAYING. Returns True when confirmed, False
+    if all retries exhausted.
+
+    v0.9.3+: standalone post-swap safety net — prevents the
+    "swapped but not playing" bug.
+    """
+    for attempt in range(1, retries + 1):
+        state, cursor, duration = get_media_status(cl, input_name)
+        if state == "OBS_MEDIA_STATE_PLAYING":
+            logger.info(
+                f"confirm_and_retry_play('{input_name}'): PLAYING "
+                f"confirmed on attempt {attempt} (cursor={cursor})"
+            )
+            return True
+
+        logger.warning(
+            f"confirm_and_retry_play('{input_name}'): state={state} "
+            f"cursor={cursor} — attempt {attempt}/{retries}"
+        )
+
+        if attempt < retries:
+            # Force a hard restart + play
+            logger.info(
+                f"confirm_and_retry_play('{input_name}'): "
+                f"triggering RESTART + PLAY (attempt {attempt})"
+            )
+            trigger_media_action(cl, input_name, ACTION_STOP)
+            time.sleep(0.15)
+            try:
+                if hasattr(cl, "set_media_input_cursor"):
+                    cl.set_media_input_cursor(input_name, 0)
+            except Exception:
+                pass
+            trigger_media_action(cl, input_name, ACTION_PLAY)
+            time.sleep(delay)
+
+    # Final check
+    state, cursor, _ = get_media_status(cl, input_name)
+    logger.error(
+        f"confirm_and_retry_play('{input_name}'): FAILED after "
+        f"{retries} retries — final state={state} cursor={cursor}"
+    )
+    return False
+
+
 def park_target_at_start(cl, target_name: str) -> None:
     """Best-effort park: stop, seek to 0, optionally pause.
 
@@ -408,10 +465,24 @@ def aligned_swap(slot: str, prewarm_sec: float, max_wait_current_sec: float,
     set_media_looping(cl, current_name, True)
     trigger_media_action(cl, current_name, ACTION_STOP)
 
-    logger.info(f"✓ Aligned swap complete — now active: {slot}")
+    # Step 9 (v0.9.3+) — Post-swap play verification with retries.
+    # This is the safety net: the swap may have completed all steps
+    # but the OBS source might still be paused/stalled. We verify
+    # playback is actually happening before declaring success.
+    logger.info(f"Step 9: confirming target '{target_name}' is playing")
+    if not confirm_and_retry_play(cl, target_name):
+        logger.error(
+            f"Post-swap play confirmation FAILED for '{target_name}'. "
+            "The swap steps completed but playback may not be active. "
+            "Returning non-zero so the watcher can trigger fallback."
+        )
+        print(f"WARNING: Switched to {slot} but playback not confirmed")
+        return 2  # Non-zero but distinct from CLI parse error (1)
+
+    logger.info(f"✓ Aligned swap complete — now active: {slot} "
+                f"(playback confirmed)")
     print(f"Switched to {slot}")
     return 0
-
 
 def immediate_swap(slot: str, prewarm_sec: float) -> int:
     """LEGACY immediate prewarm swap — kept for backwards compatibility.

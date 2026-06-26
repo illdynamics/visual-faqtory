@@ -419,7 +419,7 @@ class MockBackend(GeneratorBackend):
             try:
                 draw.text((20, 20), f"MOCK: {request.atom_id}", fill=(255, 255, 255))
                 draw.text((20, 50), f"Seed: {request.seed}", fill=(200, 200, 200))
-            except:
+            except Exception:
                 pass
             
             img.save(path)
@@ -543,11 +543,15 @@ class ComfyUIBackend(GeneratorBackend):
                          lora_name = lora_path.name
                 except FatalConfigError as e:
                     raise e # Re-raise if our resolver fails
-                except Exception:
+                except Exception as lora_err:
                     # Generic fallback for unexpected Path parsing issues
+                    logger = __import__('logging').getLogger(__name__)
+                    logger.warning(
+                        f"LoRA path resolution error for '{lora_path}': {lora_err}"
+                    )
                     raise FatalConfigError(
                         f"Could not resolve relative LoRA name from '{lora_path}'"
-                    )
+                    ) from lora_err
 
                 # Store both the absolute path and the ComfyUI-style relative name
                 self.lora_config = {

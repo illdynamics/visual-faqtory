@@ -1,0 +1,207 @@
+INFO:     Started server process [51564]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:51189 - "GET /health HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=4 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51200 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=7 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51223 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=10 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51225 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=16 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51227 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=20 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51229 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=23 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51231 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=25 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51233 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=28 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51235 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=30 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51237 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=32 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51239 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=34 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51241 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=36 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51243 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=38 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51245 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=40 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51247 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=43 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51249 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=45 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51251 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=47 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51253 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=49 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51255 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=51 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51257 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=53 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51259 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=56 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51261 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=58 tools_registered=10
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'spawn_agent', 'send_input', 'resume_agent', 'wait_agent', 'close_agent']
+INFO:     127.0.0.1:51263 - "POST /v1/responses HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [51564]
+INFO:     Started server process [83811]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)
+INFO:     127.0.0.1:53886 - "GET /health HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=4 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53899 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=7 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53902 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=11 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53904 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=16 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53908 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=20 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53910 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=22 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53912 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=26 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53914 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=28 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53916 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=31 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53918 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=36 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53920 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=38 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53922 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=40 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53924 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=42 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53926 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=44 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53928 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=47 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53930 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=49 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53932 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=52 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53934 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=54 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53946 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=56 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53948 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=58 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53950 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=61 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53958 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=65 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53963 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=67 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53974 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=70 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:53986 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=72 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:54018 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=74 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:54024 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=76 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:54035 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=78 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:54042 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=80 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:54048 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=82 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:54054 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=86 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:54060 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=89 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:54064 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=92 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:54068 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=95 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:54078 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=97 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:54088 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=100 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:54099 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=102 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:54103 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=105 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:54123 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=108 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:54139 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=110 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:54149 - "POST /v1/responses HTTP/1.1" 200 OK
+[codeseeq-bridge] request model=deepseek@deepseek-v4-pro-thinking mapped=deepseek@deepseek-v4-pro thinking=True stream=True messages=112 tools_registered=8
+[codeseeq-bridge] registered tool names: ['exec_command', 'write_stdin', 'update_plan', 'request_user_input', 'view_image', 'get_goal', 'create_goal', 'update_goal']
+INFO:     127.0.0.1:54165 - "POST /v1/responses HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [83811]

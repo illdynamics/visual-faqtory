@@ -1,159 +1,286 @@
 #!/usr/bin/env bash
-# vf-obs-watcher-same-machine.sh — Visual FaQtory OBS A/B Watcher
+# vf-obs-watcher-same-machine.sh — Visual FaQtory OBS A/B Watcher (HARDENED)
 # ════════════════════════════════════════════════════════════════════════
-# Watches the interpolated video output directory and triggers an ALIGNED
-# A/B swap in OBS whenever a new mp4 appears.
+# Watches the video output directory and triggers an ALIGNED A/B swap
+# in OBS whenever a new mp4 appears.
 #
-# v0.9.2+ behaviour:
-#   The default obs-swap.py mode is now ALIGNED — it waits for the
-#   currently visible clip to finish naturally before revealing the new
-#   one. This keeps visuals on-beat with whatever's been queued up
-#   musically, and avoids mid-clip jumps.
-#
-# Tuning knobs (env vars; override before launching):
-#   OBS_HOST                   default: 127.0.0.1
-#   OBS_PORT                   default: 4455
-#   OBS_PASSWORD               default: Setyup34!
-#   OBS_SCENE                  default: Ill Dynamics - Live on SkankOut
-#   OBS_PREWARM_SEC            default: 0.8   (target-PLAYING wait)
-#   OBS_MAX_WAIT_CURRENT_SEC   default: 180   (max wait for current end)
-#   OBS_END_THRESHOLD_MS       default: 200   (effective-ended margin)
-#   OBS_SWAP_MODE              default: aligned   ("aligned" | "immediate")
-#
-# With the aligned default, you can DISABLE "Close file when inactive" on
-# both OBS sources — media lifecycle is controlled via WebSocket.
-#
-# Latest-wins note (TODO):
-#   Today the watcher processes one swap at a time (serialized via flock)
-#   and only updates .active_slot after obs-swap.py succeeds. That means
-#   if many files arrive while we're waiting on the current clip to end,
-#   each will be processed in arrival order — so a 30-clip burst will
-#   take ~30 boundary waits. A future "latest-wins" mode could collapse
-#   the backlog to "use the most recent file when the current ends".
+# v0.9.3+ hardened behaviour:
+#   - set -e REMOVED: subcommand failures do not crash the watcher.
+#     The watcher MUST stay alive through transient OBS/network errors.
+#   - File stability check: verifies the new mp4 isn't still growing
+#     before copying it to the inactive slot.
+#   - Play confirmation: after swap, verifies the target source is
+#     actually playing. Retries play up to 3 times with 1s backoff.
+#   - Last-known-good fallback: if the new source fails to play after
+#     retries, reverts to the previous known-good active source.
+#   - Diagnostics artifact: writes swap events, play results, and
+#     fallback activations to run/obs/.watcher_diagnostics.jsonl.
+#   - Structured timestamps on every log line.
+#   - inotifywait restart loop: auto-recovers if the watch fails.
 #
 # Part of Visual FaQtory v0.9.3-beta
 # ════════════════════════════════════════════════════════════════════════
 
-set -euo pipefail
+set -uo pipefail
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INTERP_DIR="$BASE_DIR/run/videos"
 OBS_DIR="$BASE_DIR/run/obs"
 STATE_FILE="$OBS_DIR/.active_slot"
 LOCK_FILE="$OBS_DIR/.swap.lock"
+DIAG_FILE="$OBS_DIR/.watcher_diagnostics.jsonl"
+KNOWN_GOOD_FILE="$OBS_DIR/.last_known_good_video"
 
 PYTHON_BIN="$BASE_DIR/.venv/bin/python"
 OBS_SWAP_SCRIPT="$BASE_DIR/obs-swap.py"
 
-# ── Tuning defaults (override via env before launching) ──────────────────
 export OBS_PREWARM_SEC="${OBS_PREWARM_SEC:-0.8}"
 export OBS_MAX_WAIT_CURRENT_SEC="${OBS_MAX_WAIT_CURRENT_SEC:-180}"
 export OBS_END_THRESHOLD_MS="${OBS_END_THRESHOLD_MS:-200}"
 export OBS_SWAP_MODE="${OBS_SWAP_MODE:-aligned}"
+OBS_PLAY_RETRIES="${OBS_PLAY_RETRIES:-3}"
+OBS_PLAY_RETRY_DELAY_SEC="${OBS_PLAY_RETRY_DELAY_SEC:-1.0}"
+OBS_FILE_STABLE_CHECKS="${OBS_FILE_STABLE_CHECKS:-2}"
+OBS_FILE_STABLE_INTERVAL="${OBS_FILE_STABLE_INTERVAL:-0.3}"
 
 mkdir -p "$OBS_DIR"
 
-# ── Initialize state (start with A active) ───────────────────────────────
 if [[ ! -f "$STATE_FILE" ]]; then
     echo "A" > "$STATE_FILE"
 fi
 
-get_active_slot() {
-    cat "$STATE_FILE"
+# ── Timestamped logging ──────────────────────────────────────────────────
+ts_log()  { echo "[$(date '+%H:%M:%S')] [watcher] $*"; }
+ts_warn() { echo "[$(date '+%H:%M:%S')] [watcher] WARN: $*" >&2; }
+ts_error(){ echo "[$(date '+%H:%M:%S')] [watcher] ERROR: $*" >&2; }
+
+# ── Diagnostics artifact writer ───────────────────────────────────────────
+write_diag() {
+    local event="$1" slot="$2" extra="${3:-}"
+    local ts
+    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%Y-%m-%dT%H:%M:%SZ)"
+    printf '{"ts":"%s","event":"%s","slot":"%s","extra":"%s"}\n' \
+        "$ts" "$event" "$slot" "$extra" >> "$DIAG_FILE"
 }
 
-set_active_slot() {
-    echo "$1" > "$STATE_FILE"
+get_active_slot() { cat "$STATE_FILE"; }
+set_active_slot() { echo "$1" > "$STATE_FILE"; }
+
+# ── File stability check ─────────────────────────────────────────────────
+wait_file_stable() {
+    local file="$1" checks="$2" interval="$3" last_size size stable
+    last_size=-1; stable=0
+    while (( stable < checks )); do
+        if [[ ! -f "$file" ]]; then
+            ts_warn "File vanished while waiting for stability: $file"
+            return 1
+        fi
+        size=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null || echo 0)
+        if [[ "$size" -gt 0 && "$size" == "$last_size" ]]; then
+            stable=$((stable + 1))
+        else
+            stable=0
+        fi
+        last_size="$size"
+        sleep "$interval"
+    done
+    if [[ ! -s "$file" ]]; then
+        ts_error "File is empty after stability wait: $file"
+        return 1
+    fi
+    if ! dd if="$file" bs=1 count=1 of=/dev/null status=none 2>/dev/null; then
+        ts_error "File is not readable after stability wait: $file"
+        return 1
+    fi
+    return 0
 }
 
+# ── Atomic copy ──────────────────────────────────────────────────────────
 copy_atomic() {
-    local src="$1"
-    local dst="$2"
-
-    cp "$src" "$dst.next"
-    mv -f "$dst.next" "$dst"
+    local src="$1" dst="$2"
+    cp "$src" "$dst.next" || { ts_error "copy_atomic: cp failed $src -> $dst.next"; return 1; }
+    mv -f "$dst.next" "$dst" || { ts_error "copy_atomic: mv failed $dst.next -> $dst"; return 1; }
+    return 0
 }
 
-# Resolve a python interpreter, preferring repo .venv but falling back
-# gracefully if it's missing (lets manual `bash -n` and CI checks pass on
-# fresh checkouts).
 resolve_python() {
-    if [[ -x "$PYTHON_BIN" ]]; then
-        echo "$PYTHON_BIN"
-        return 0
-    fi
-    if command -v python3 >/dev/null 2>&1; then
-        command -v python3
-        return 0
-    fi
+    if [[ -x "$PYTHON_BIN" ]]; then echo "$PYTHON_BIN"; return 0; fi
+    if command -v python3 >/dev/null 2>&1; then command -v python3; return 0; fi
     echo "python"
 }
 
-process_file() {
-    local file="$1"
+# ── Known-good video tracking ────────────────────────────────────────────
+mark_known_good() {
+    local slot="$1" src="$OBS_DIR/current_${slot}.mp4"
+    if [[ -f "$src" && -s "$src" ]]; then
+        cp "$src" "$KNOWN_GOOD_FILE" 2>/dev/null || true
+        ts_log "Known-good marked: slot=$slot"
+        write_diag "known_good_marked" "$slot" "file=$src"
+    fi
+}
 
-    local active target python_bin
+restore_known_good() {
+    local slot="$1" dst="$OBS_DIR/current_${slot}.mp4"
+    if [[ -f "$KNOWN_GOOD_FILE" && -s "$KNOWN_GOOD_FILE" ]]; then
+        cp "$KNOWN_GOOD_FILE" "$dst" 2>/dev/null || return 1
+        ts_warn "Restored known-good video to slot $slot"
+        write_diag "known_good_restored" "$slot" ""
+        return 0
+    fi
+    ts_error "No known-good video available to restore!"
+    return 1
+}
+
+# ── Play confirmation with retries ───────────────────────────────────────
+confirm_source_playing() {
+    local slot="$1" retries="$2" delay="$3"
+    local python_bin source_name attempt state media_state cursor
+    python_bin="$(resolve_python)"
+    source_name="Live-Visuals-${slot}"
+
+    for (( attempt=1; attempt <= retries; attempt++ )); do
+        state=$("$python_bin" -c "
+import os, sys
+try:
+    from obsws_python import ReqClient
+    host = os.environ.get('OBS_HOST', '127.0.0.1')
+    port = int(os.environ.get('OBS_PORT', '4455'))
+    password = os.environ.get('OBS_PASSWORD', 'Setyup34!')
+    cl = ReqClient(host=host, port=port, password=password)
+    resp = cl.get_media_input_status('${source_name}')
+    ms = getattr(resp, 'media_state', getattr(resp, 'mediaState', 'UNKNOWN'))
+    cur = getattr(resp, 'media_cursor', getattr(resp, 'mediaCursor', None))
+    print(f'{ms}|{cur}')
+except Exception as e:
+    print(f'ERROR|{e}')
+" 2>/dev/null) || state="ERROR|connection_failed"
+
+        media_state="${state%%|*}"; cursor="${state#*|}"
+        ts_log "Play confirm $attempt/$retries slot=$slot: $media_state cursor=$cursor"
+        write_diag "play_confirm" "$slot" "attempt=$attempt state=$media_state cursor=$cursor"
+
+        if [[ "$media_state" == "OBS_MEDIA_STATE_PLAYING" ]]; then
+            ts_log "✓ Slot $slot confirmed PLAYING (cursor=$cursor)"
+            write_diag "play_confirmed" "$slot" "cursor=$cursor"
+            return 0
+        fi
+
+        if (( attempt < retries )); then
+            ts_log "Retrying play for slot $slot in ${delay}s..."
+            "$python_bin" -c "
+import os, sys, time
+try:
+    from obsws_python import ReqClient
+    host = os.environ.get('OBS_HOST', '127.0.0.1')
+    port = int(os.environ.get('OBS_PORT', '4455'))
+    password = os.environ.get('OBS_PASSWORD', 'Setyup34!')
+    cl = ReqClient(host=host, port=port, password=password)
+    cl.trigger_media_input_action('${source_name}', 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY')
+    time.sleep(0.2)
+    cl.trigger_media_input_action('${source_name}', 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART')
+except Exception as e:
+    print(f'Play retry error: {e}', file=sys.stderr)
+" 2>/dev/null || true
+            sleep "$delay"
+        fi
+    done
+
+    ts_error "Slot $slot FAILED to confirm PLAYING after $retries attempts"
+    write_diag "play_failed" "$slot" "attempts=$retries"
+    return 1
+}
+
+# ── Main swap orchestrator ───────────────────────────────────────────────
+process_file() {
+    local file="$1" active target python_bin swap_rc inactive_file
     active="$(get_active_slot)"
     python_bin="$(resolve_python)"
 
-    if [[ "$active" == "A" ]]; then
-        target="B"
-    else
-        target="A"
+    if [[ "$active" == "A" ]]; then target="B"; else target="A"; fi
+
+    ts_log "──────────────────────────────────────"
+    ts_log "New file: $file  |  active=$active  |  target=$target"
+
+    # File stability
+    ts_log "Checking file stability (checks=${OBS_FILE_STABLE_CHECKS})..."
+    if ! wait_file_stable "$file" "$OBS_FILE_STABLE_CHECKS" "$OBS_FILE_STABLE_INTERVAL"; then
+        ts_error "File stability FAILED — SKIPPING $file"
+        write_diag "file_stability_failed" "$target" "file=$file"
+        return 1
     fi
+    ts_log "File stable ✓"
 
-    echo "--------------------------------------"
-    echo "New file detected: $file"
-    echo "Currently active: $active"
-    echo "Copying to inactive slot: $target"
+    # Copy
+    inactive_file="$OBS_DIR/current_${target}.mp4"
+    if ! copy_atomic "$file" "$inactive_file"; then
+        ts_error "Copy FAILED — SKIPPING"
+        write_diag "copy_failed" "$target" "file=$file"
+        return 1
+    fi
+    local fsize
+    fsize=$(stat -c%s "$inactive_file" 2>/dev/null || stat -f%z "$inactive_file" 2>/dev/null || echo 0)
+    write_diag "copy_complete" "$target" "file=$file size=$fsize"
 
-    copy_atomic "$file" "$OBS_DIR/current_${target}.mp4"
-
-    echo "Triggering OBS swap → $target  " \
-         "(mode=$OBS_SWAP_MODE, prewarm=${OBS_PREWARM_SEC}s, " \
-         "max_wait_current=${OBS_MAX_WAIT_CURRENT_SEC}s, " \
-         "end_threshold=${OBS_END_THRESHOLD_MS}ms)"
-
-    # Pass the new args explicitly so obs-swap.py picks them up regardless
-    # of whether the env was inherited cleanly.
-    if "$python_bin" "$OBS_SWAP_SCRIPT" "$target" \
+    # Swap
+    ts_log "Triggering OBS swap → $target (mode=${OBS_SWAP_MODE})"
+    write_diag "swap_triggered" "$target" "mode=${OBS_SWAP_MODE}"
+    "$python_bin" "$OBS_SWAP_SCRIPT" "$target" \
         --prewarm "$OBS_PREWARM_SEC" \
         --max-wait-current "$OBS_MAX_WAIT_CURRENT_SEC" \
-        --end-threshold-ms "$OBS_END_THRESHOLD_MS"; then
-        # Only after the visible swap actually completed do we update
-        # state. If obs-swap.py crashed or fail-opened with a non-zero
-        # exit, .active_slot stays unchanged so the NEXT file still gets
-        # routed at the (still-actually-active) inactive slot.
-        set_active_slot "$target"
-        echo "Now active: $target"
+        --end-threshold-ms "$OBS_END_THRESHOLD_MS" || true
+    swap_rc=$?
+
+    if [[ $swap_rc -ne 0 ]]; then
+        ts_warn "obs-swap.py exited with code $swap_rc — continuing with play confirmation"
+        write_diag "swap_nonzero_exit" "$target" "exit_code=$swap_rc"
     else
-        echo "ERROR: obs-swap.py failed for slot $target — keeping " \
-             ".active_slot=$active so the next file still routes correctly." >&2
+        write_diag "swap_complete" "$target" ""
     fi
-    echo "--------------------------------------"
+
+    # Play confirmation with retries
+    if confirm_source_playing "$target" "$OBS_PLAY_RETRIES" "$OBS_PLAY_RETRY_DELAY_SEC"; then
+        set_active_slot "$target"
+        mark_known_good "$target"
+        ts_log "✓ Now active: $target"
+        write_diag "active_changed" "$target" "from=$active"
+    else
+        ts_error "Play confirmation FAILED for $target — triggering fallback"
+        write_diag "fallback_triggered" "$target" "reason=play_confirmation_failed"
+
+        if restore_known_good "$target"; then
+            ts_warn "Fallback: restored known-good video to $target, retrying swap"
+            "$python_bin" "$OBS_SWAP_SCRIPT" "$target" \
+                --prewarm "$OBS_PREWARM_SEC" \
+                --max-wait-current "$OBS_MAX_WAIT_CURRENT_SEC" \
+                --end-threshold-ms "$OBS_END_THRESHOLD_MS" || true
+
+            if confirm_source_playing "$target" 2 "$OBS_PLAY_RETRY_DELAY_SEC"; then
+                set_active_slot "$target"
+                ts_warn "Fallback SUCCESS: $target now playing known-good video"
+                write_diag "fallback_success" "$target" "source=known_good"
+            else
+                ts_error "CRITICAL: Fallback also failed. Keeping active=$active unchanged."
+                write_diag "fallback_failed" "$active" "target=$target"
+            fi
+        else
+            ts_error "CRITICAL: No known-good video. Keeping active=$active unchanged."
+            write_diag "critical_no_fallback" "$active" "target=$target"
+        fi
+    fi
+    ts_log "──────────────────────────────────────"
 }
 
-# Wrapper that serialises swaps. flock is used in non-blocking mode
-# (-n) so a swap that's already in progress causes the new event to be
-# dropped rather than queueing forever — for the live-set use case we'd
-# rather lose one stale prewarm than build a backlog. With aligned mode
-# the running swap will already pick up the most recent inactive-slot
-# file when the current clip ends, since copy_atomic happens BEFORE the
-# lock is taken. (TODO future: latest-wins mode.)
 process_file_locked() {
     local file="$1"
-    # Use a subshell so flock's FD scoping is contained.
     (
-        # Open lock fd 9 on the lockfile; -n = non-blocking, fail fast if held.
         if ! flock -n 9; then
-            echo "swap already in progress — skipping event for $file" >&2
+            ts_warn "Swap already in progress — skipping event for $file"
             exit 0
         fi
         process_file "$file"
     ) 9>"$LOCK_FILE"
 }
 
-# ── Manual test checklist (printed on startup) ───────────────────────────
 print_manual_test_checklist() {
     cat <<'EOF'
 Manual test checklist (live OBS required):
@@ -171,15 +298,33 @@ Manual test checklist (live OBS required):
 EOF
 }
 
-echo "Watching $INTERP_DIR for new videos..."
-echo "OBS swap mode:      ${OBS_SWAP_MODE}"
-echo "OBS prewarm:        ${OBS_PREWARM_SEC}s"
-echo "OBS max-wait curr:  ${OBS_MAX_WAIT_CURRENT_SEC}s"
-echo "OBS end threshold:  ${OBS_END_THRESHOLD_MS}ms"
-print_manual_test_checklist
+seed_known_good() {
+    local active active_file
+    active="$(get_active_slot)"
+    active_file="$OBS_DIR/current_${active}.mp4"
+    if [[ -f "$active_file" && -s "$active_file" ]]; then
+        cp "$active_file" "$KNOWN_GOOD_FILE" 2>/dev/null || true
+        ts_log "Seeded known-good from active slot $active"
+    fi
+}
 
-# ── Monitor directory for new completed files ───────────────────────────
-fswatch --event Created --event Updated --event Renamed -i "\.mp4$" "$INTERP_DIR" 2>/dev/null | while read -r file_path; do
-    [[ -z "$file_path" ]] && continue
-    process_file_locked "$file_path"
+# ── Startup ──────────────────────────────────────────────────────────────
+ts_log "=== Visual FaQtory OBS A/B Watcher STARTING (v0.9.3-hardened) ==="
+ts_log "Watch dir:         $INTERP_DIR"
+ts_log "OBS swap mode:     ${OBS_SWAP_MODE}"
+ts_log "Play retries:      ${OBS_PLAY_RETRIES}"
+ts_log "File stable checks:${OBS_FILE_STABLE_CHECKS}"
+print_manual_test_checklist
+seed_known_good
+
+# inotifywait restart loop
+while true; do
+    ts_log "Starting inotifywait on $INTERP_DIR..."
+    inotifywait -m -e close_write --format "%f" "$INTERP_DIR" 2>/dev/null | while read -r file; do
+        if [[ "$file" == *.mp4 ]]; then
+            process_file_locked "$INTERP_DIR/$file"
+        fi
+    done
+    ts_warn "inotifywait exited — restarting in 3s..."
+    sleep 3
 done

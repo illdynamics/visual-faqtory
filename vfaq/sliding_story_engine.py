@@ -1792,7 +1792,11 @@ def run_sliding_story(
             lastframe_path = keyframes_dir / lastframe_name
             try:
                 _extract_last_frame_ffmpeg(lastframe_source, lastframe_path)
-            except Exception:
+            except Exception as lastframe_err:
+                logger.error(
+                    f"[SlidingStory] Veo last-frame extraction FAILED in cycle {cycle_idx}: "
+                    f"{lastframe_err}\n{traceback.format_exc()}"
+                )
                 _requeue_crowd_claim_if_needed("veo_lastframe_extraction_failed")
                 raise
             last_frame_path = lastframe_path
@@ -2327,7 +2331,11 @@ def run_sliding_story(
             lastframe_path = keyframes_dir / lastframe_name
             try:
                 _extract_last_frame_ffmpeg(lastframe_source, lastframe_path)
-            except Exception:
+            except Exception as lastframe_err:
+                logger.error(
+                    f"[SlidingStory] Venice last-frame extraction FAILED: "
+                    f"{lastframe_err}\n{traceback.format_exc()}"
+                )
                 _requeue_crowd_claim_if_needed("venice_lastframe_extraction_failed")
                 raise
 
@@ -2345,8 +2353,11 @@ def run_sliding_story(
                 _res_tok = _op_block.get('resolution') or _vc_video.get('resolution') or '720p'
                 _ar_str = str(_op_block.get('aspect_ratio') or _vc_video.get('aspect_ratio') or '16:9')
                 _venice_frame_target = _VB._resolution_to_dims(_res_tok, _ar_str)
-            except Exception:
-                pass
+            except Exception as vframe_err:
+                logger.debug(
+                    f"[SlidingStory] Venice frame-target resolution failed "
+                    f"(non-fatal): {vframe_err}"
+                )
             if _venice_frame_target:
                 _resize_frame_to_target(lastframe_path, *_venice_frame_target)
 
@@ -2546,7 +2557,11 @@ def run_sliding_story(
             lastframe_path = keyframes_dir / lastframe_name
             try:
                 _extract_last_frame_ffmpeg(lastframe_source, lastframe_path)
-            except Exception:
+            except Exception as lastframe_err:
+                logger.error(
+                    f"[SlidingStory] Cycle-1 last-frame extraction FAILED: "
+                    f"{lastframe_err}\n{traceback.format_exc()}"
+                )
                 _requeue_crowd_claim_if_needed("comfy_cycle1_lastframe_extraction_failed")
                 raise
             last_frame_path = lastframe_path
@@ -2794,7 +2809,11 @@ def run_sliding_story(
         lastframe_path = keyframes_dir / lastframe_name
         try:
             _extract_last_frame_ffmpeg(lastframe_source, lastframe_path)
-        except Exception:
+        except Exception as lastframe_err:
+            logger.error(
+                f"[SlidingStory] Last-frame extraction FAILED in cycle {cycle_idx}: "
+                f"{lastframe_err}\n{traceback.format_exc()}"
+            )
             _requeue_crowd_claim_if_needed("comfy_lastframe_extraction_failed")
             raise
         last_frame_path = lastframe_path
@@ -2935,6 +2954,6 @@ def run_sliding_story(
     # Clean up temporary backend outputs
     try:
         shutil.rmtree(comfy_tmp, ignore_errors=True)
-    except Exception:
-        pass
+    except Exception as cleanup_err:
+        logger.debug(f"[SlidingStory] Temp cleanup warning (non-fatal): {cleanup_err}")
     return result_path

@@ -50,8 +50,10 @@ def _load_job_timings() -> Dict[str, List[float]]:
     try:
         if _VENICE_JOB_TIMINGS_FILE.exists():
             return json.loads(_VENICE_JOB_TIMINGS_FILE.read_text())
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            f"Failed to load Venice job timings (non-fatal): {e}"
+        )
     return {}
 
 
@@ -64,8 +66,10 @@ def _save_job_timing(model: str, elapsed: float) -> None:
         history.append(round(elapsed, 1))
         timings[model] = history[-20:]  # keep last 20 samples
         _VENICE_JOB_TIMINGS_FILE.write_text(json.dumps(timings, indent=2))
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            f"Failed to save Venice job timing (non-fatal): {e}"
+        )
 
 
 def _eta_seconds(model: str, elapsed: float) -> Optional[float]:
@@ -830,8 +834,11 @@ class VeniceBackend(GeneratorBackend):
                 # Main thread sleeps the full poll interval — spinner stays animated.
                 time.sleep(float(self.venice_cfg.poll_interval))
 
-        except Exception:
+        except Exception as poll_err:
             spinner.stop()
+            logging.getLogger(__name__).error(
+                f"Venice poll loop crashed: {poll_err}", exc_info=True
+            )
             raise
 
     # ──────────────────────────────────────────────────────────────────
@@ -961,7 +968,10 @@ class VeniceBackend(GeneratorBackend):
         if models is None and self.venice_cfg.validate_models:
             try:
                 models = self._get_models()
-            except Exception:
+            except Exception as model_err:
+                logging.getLogger(__name__).debug(
+                    f"Failed to fetch Venice models (non-fatal): {model_err}"
+                )
                 models = None
         if not models:
             return None
@@ -1171,7 +1181,10 @@ class VeniceBackend(GeneratorBackend):
         try:
             ar_parts = [float(x) for x in aspect_ratio.split(":")]
             ar = ar_parts[0] / ar_parts[1]
-        except Exception:
+        except Exception as ar_err:
+            logging.getLogger(__name__).debug(
+                f"Failed to parse aspect ratio '{aspect_ratio}' (non-fatal): {ar_err}"
+            )
             ar = 16.0 / 9.0
         raw_width = height * ar
         width = round(raw_width / 8) * 8
@@ -1687,7 +1700,10 @@ class VeniceBackend(GeneratorBackend):
     def _safe_json_from_response(response: requests.Response) -> Optional[Dict[str, Any]]:
         try:
             return response.json()
-        except Exception:
+        except Exception as json_err:
+            logging.getLogger(__name__).debug(
+                f"Failed to parse Venice API JSON response (non-fatal): {json_err}"
+            )
             return None
 
     @staticmethod

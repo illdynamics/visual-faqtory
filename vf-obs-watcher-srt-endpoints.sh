@@ -584,7 +584,7 @@ watch_loop() {
   while true; do
     mkdir -p "$VF_WATCH_DIR"
     log "Watching with fswatch: $VF_WATCH_DIR"
-    "$FSWATCH_BIN" --event Created --event Updated --event Renamed -i "\.mp4$" "$VF_WATCH_DIR" 2>/dev/null | while read -r file_path; do
+    "$FSWATCH_BIN" --event Created --event Updated --event Renamed -i "video_[0-9][0-9][0-9]\.mp4$" "$VF_WATCH_DIR" 2>/dev/null | while read -r file_path; do
       [[ -z "$file_path" ]] && continue
       process_video "$file_path" "fswatch"
     done
