@@ -111,7 +111,8 @@ resolve_python() {
 
 # ── Known-good video tracking ────────────────────────────────────────────
 mark_known_good() {
-    local slot="$1" src="$OBS_DIR/current_${slot}.mp4"
+    local slot="$1"
+    local src="$OBS_DIR/current_${slot}.mp4"
     if [[ -f "$src" && -s "$src" ]]; then
         cp "$src" "$KNOWN_GOOD_FILE" 2>/dev/null || true
         ts_log "Known-good marked: slot=$slot"
@@ -120,7 +121,8 @@ mark_known_good() {
 }
 
 restore_known_good() {
-    local slot="$1" dst="$OBS_DIR/current_${slot}.mp4"
+    local slot="$1"
+    local dst="$OBS_DIR/current_${slot}.mp4"
     if [[ -f "$KNOWN_GOOD_FILE" && -s "$KNOWN_GOOD_FILE" ]]; then
         cp "$KNOWN_GOOD_FILE" "$dst" 2>/dev/null || return 1
         ts_warn "Restored known-good video to slot $slot"
@@ -317,11 +319,34 @@ ts_log "File stable checks:${OBS_FILE_STABLE_CHECKS}"
 print_manual_test_checklist
 seed_known_good
 
+# ── Enforce loop ON on active source at startup ──────────────────────────
+enforce_active_loop() {
+    local active slot python_bin source_name
+    active="$(get_active_slot)"
+    python_bin="$(resolve_python)"
+    source_name="Live-Visuals-${active}"
+    ts_log "Ensuring loop ON for active source ${source_name}..."
+    "$python_bin" -c "
+import os
+try:
+    from obsws_python import ReqClient
+    host = os.environ.get('OBS_HOST', '127.0.0.1')
+    port = int(os.environ.get('OBS_PORT', '4455'))
+    password = os.environ.get('OBS_PASSWORD', 'Setyup34!')
+    cl = ReqClient(host=host, port=port, password=password)
+    cl.set_input_settings('${source_name}', {'looping': True}, overlay=True)
+    print(f'Loop ON for ${source_name}')
+except Exception as e:
+    print(f'Could not set loop on ${source_name}: {e}')
+" 2>/dev/null || ts_warn "Failed to enforce loop on ${source_name}"
+}
+enforce_active_loop
+
 # inotifywait restart loop
 while true; do
     ts_log "Starting inotifywait on $INTERP_DIR..."
-    inotifywait -m -e close_write --format "%f" "$INTERP_DIR" 2>/dev/null | while read -r file; do
-        if [[ "$file" == *.mp4 ]]; then
+    inotifywait -m -e close_write -e moved_to --format "%f" "$INTERP_DIR" 2>/dev/null | while read -r file; do
+        if [[ "$file" == *.mp4 ]] && [[ "$file" != *_venice.mp4 ]]; then
             process_file_locked "$INTERP_DIR/$file"
         fi
     done

@@ -67,8 +67,6 @@ SCENE    = os.environ.get("OBS_SCENE",    "Ill Dynamics - Live on SkankOut")
 SOURCE_A = "Live-Visuals-A"
 SOURCE_B = "Live-Visuals-B"
 
-ID_A = 1
-ID_B = 2
 
 DEFAULT_PREWARM_SEC          = float(os.environ.get("OBS_PREWARM_SEC",          "0.8"))
 DEFAULT_MAX_WAIT_CURRENT_SEC = float(os.environ.get("OBS_MAX_WAIT_CURRENT_SEC", "180"))
@@ -284,13 +282,10 @@ def confirm_and_retry_play(cl, input_name: str, retries: int = PLAY_RETRIES,
                 f"confirm_and_retry_play('{input_name}'): "
                 f"triggering RESTART + PLAY (attempt {attempt})"
             )
-            trigger_media_action(cl, input_name, ACTION_STOP)
+            # Use RESTART which inherently resets to frame 0,
+            # avoiding SetMediaInputCursor on a non-playing source.
+            trigger_media_action(cl, input_name, ACTION_RESTART)
             time.sleep(0.15)
-            try:
-                if hasattr(cl, "set_media_input_cursor"):
-                    cl.set_media_input_cursor(input_name, 0)
-            except Exception:
-                pass
             trigger_media_action(cl, input_name, ACTION_PLAY)
             time.sleep(delay)
 
@@ -376,11 +371,24 @@ def force_media_reload(cl, input_name: str, do_stop_first: bool = False) -> None
 
 # ── Swap implementations ──────────────────────────────────────────────────
 
-def _resolve_slots(slot: str):
-    """Map a slot letter to (target_name, target_id, current_name, current_id)."""
+def _resolve_slots(slot: str, cl=None):
+    """Map a slot letter to (target_name, target_id, current_name, current_id).
+
+    Scene item IDs are resolved dynamically from OBS at invocation time so the
+    swap works regardless of what numeric IDs OBS has assigned to the sources.
+    When  is provided, IDs are fetched live; otherwise a fallback scan of
+    the scene item list is attempted on first call.
+    """
+    def _get_id(cl, source_name):
+        try:
+            resp = cl.get_scene_item_id(SCENE, source_name)
+            return getattr(resp, 'scene_item_id', 1)
+        except Exception:
+            return 1  # fallback — better than crashing
+
     if slot == "A":
-        return SOURCE_A, ID_A, SOURCE_B, ID_B
-    return SOURCE_B, ID_B, SOURCE_A, ID_A
+        return SOURCE_A, _get_id(cl, SOURCE_A) if cl else 1, SOURCE_B, _get_id(cl, SOURCE_B) if cl else 2
+    return SOURCE_B, _get_id(cl, SOURCE_B) if cl else 2, SOURCE_A, _get_id(cl, SOURCE_A) if cl else 1
 
 
 def _connect():
@@ -395,7 +403,9 @@ def _connect():
 def aligned_swap(slot: str, prewarm_sec: float, max_wait_current_sec: float,
                  end_threshold_ms: int) -> int:
     """Aligned A/B swap — wait for current to end, then start target from 0."""
-    target_name, target_id, current_name, current_id = _resolve_slots(slot)
+    cl = _connect()
+
+    target_name, target_id, current_name, current_id = _resolve_slots(slot, cl)
 
     logger.info(
         f"ALIGNED swap → {slot} "
@@ -405,7 +415,12 @@ def aligned_swap(slot: str, prewarm_sec: float, max_wait_current_sec: float,
         f"end_threshold={end_threshold_ms}ms)"
     )
 
-    cl = _connect()
+    # Step 0 — Ensure the current (visible) source has looping ON.
+    # This is critical for initial startup: if OBS is freshly loaded and
+    # the sources don't have the loop tickbox checked in the UI, the
+    # currently-playing video will stop after one play-through.
+    logger.info(f"Step 0: ensuring loop ON for current '{current_name}'")
+    set_media_looping(cl, current_name, True)
 
     # Step 1 — z-order: current on top, target hidden behind.
     logger.info("Step 1: z-order — current top (0), target below (1)")
@@ -491,15 +506,15 @@ def immediate_swap(slot: str, prewarm_sec: float) -> int:
     soon as it's playing. Use only when explicitly opted in via --immediate
     or OBS_SWAP_MODE=immediate.
     """
-    target_name, target_id, current_name, current_id = _resolve_slots(slot)
+    cl = _connect()
+
+    target_name, target_id, current_name, current_id = _resolve_slots(slot, cl)
 
     logger.info(
         f"IMMEDIATE (legacy) prewarm swap → {slot} "
         f"(target='{target_name}', current='{current_name}', "
         f"prewarm={prewarm_sec:.2f}s)"
     )
-
-    cl = _connect()
 
     logger.info("Step 1: z-ordering — current on top, target below")
     set_item_index(cl, SCENE, current_id, 0)

@@ -199,7 +199,7 @@ audio:
 # ═══════════════════════════════════════════════════════════════════════════════
 crowd_control:
   enabled: true                        # Set true to activate crowd prompt injection
-  base_url: "http://10.20.30.22:8808/visuals"  # Must match the actual crowd server port (default server port: 8808)
+  base_url: "http://127.0.0.1:8000/visuals"  # Must match the actual crowd server port (currently running on port 8000)
   pop_token: "Setyup34Setyup34Setyup34Setyup34"    # Bearer token for /api/next endpoint
   timeout_seconds: 1.0                  # HTTP timeout for generator→server calls
   inject_label: "Audience mutation request"  # Label injected into the prompt

@@ -106,3 +106,6 @@ Thumbs.db
 
 # Config backups
 **/.config_backup/*
+
+.codeseeq
+.codeseeq/**

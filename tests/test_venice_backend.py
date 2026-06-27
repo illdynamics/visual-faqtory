@@ -244,7 +244,7 @@ class VeniceBackendTests(unittest.TestCase):
         self.assertTrue(result.video_path.exists())
         self.assertEqual(calls[0][2]['duration'], '4s')
         self.assertEqual(calls[1][2]['duration'], '5s')
-        self.assertIn('/video/complete', calls[-1][1])
+        self.assertEqual(calls[-1][2]['delete_media_on_completion'], True)
         self.assertEqual(result.metadata['response']['retrieve_polls'], 2)
         self.assertEqual(result.metadata['operation'], 'text2vid')
 

@@ -63,6 +63,7 @@ import os
 import random
 import shutil
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -1758,8 +1759,36 @@ def run_sliding_story(
 
             if not (vid_result and vid_result.success and vid_result.video_path and vid_result.video_path.exists()):
                 error_msg = getattr(vid_result, 'error', 'unknown error')
-                _requeue_crowd_claim_if_needed("veo_video_generation_failed")
-                raise RuntimeError(f"[Veo] Video generation failed in cycle {cycle_idx}: {error_msg}")
+                # ── Content policy violation: retry with sanitized prompt ──
+                if re.search(r'(?i)content\s*policy|violates', error_msg):
+                    safe_prompt = "gentle cinematic motion, smooth camera movement, atmospheric lighting, high quality"
+                    logger.warning(
+                        f"[SlidingStory/Veo] Content policy violation in cycle {cycle_idx}; "
+                        f"retrying with sanitized prompt"
+                    )
+                    safe_req = GenerationRequest(
+                        prompt=safe_prompt,
+                        negative_prompt=vid_req.negative_prompt,
+                        seed=vid_req.seed,
+                        mode=vid_req.mode,
+                        width=vid_req.width,
+                        height=vid_req.height,
+                        duration_seconds=vid_req.duration_seconds,
+                        video_fps=vid_req.video_fps,
+                        video_frames=vid_req.video_frames,
+                        output_dir=vid_req.output_dir,
+                        atom_id=vid_req.atom_id,
+                    )
+                    vid_result = backend.generate_video(safe_req, source_image=image_for_veo)
+                    briq_data["content_policy_retry"] = True
+                    briq_data["original_prompt_preview"] = stacked_prompt[:200]
+                    if not (vid_result and vid_result.success and vid_result.video_path and vid_result.video_path.exists()):
+                        retry_error = getattr(vid_result, 'error', 'unknown error')
+                        _requeue_crowd_claim_if_needed("veo_video_generation_failed")
+                        raise RuntimeError(f"[Veo] Video generation failed in cycle {cycle_idx} (even after content-policy retry): {retry_error}")
+                else:
+                    _requeue_crowd_claim_if_needed("veo_video_generation_failed")
+                    raise RuntimeError(f"[Veo] Video generation failed in cycle {cycle_idx}: {error_msg}")
 
             # Veo outputs as <atom_id>_veo.mp4 — rename to standard video_NNN.mp4
             video_name = f"video_{cycle_idx:03d}.mp4"
@@ -2302,9 +2331,39 @@ def run_sliding_story(
 
             if not (vid_result and vid_result.success and vid_result.video_path and vid_result.video_path.exists()):
                 error_msg = getattr(vid_result, 'error', 'unknown error')
-                _requeue_crowd_claim_if_needed("venice_video_generation_failed")
-                _shutdown_smart_reinject_state(smart_reinject_state)
-                raise RuntimeError(f"[Venice] Video generation failed in cycle {cycle_idx}: {error_msg}")
+                # ── Content policy violation: retry with sanitized prompt ──
+                if re.search(r'(?i)content\s*policy|violates', error_msg):
+                    safe_prompt = "gentle cinematic motion, smooth camera movement, atmospheric lighting, high quality"
+                    logger.warning(
+                        f"[SlidingStory/Venice] Content policy violation in cycle {cycle_idx}; "
+                        f"retrying with sanitized prompt"
+                    )
+                    safe_req = GenerationRequest(
+                        prompt=safe_prompt,
+                        negative_prompt=vid_req.negative_prompt,
+                        seed=vid_req.seed,
+                        mode=vid_req.mode,
+                        width=vid_req.width,
+                        height=vid_req.height,
+                        duration_seconds=vid_req.duration_seconds,
+                        video_fps=vid_req.video_fps,
+                        video_frames=vid_req.video_frames,
+                        output_dir=vid_req.output_dir,
+                        atom_id=vid_req.atom_id,
+                    )
+                    vid_result = backend.generate_video(safe_req, source_image=image_for_venice)
+                    briq_data["content_policy_retry"] = True
+                    briq_data["original_prompt_preview"] = stacked_prompt[:200]
+                    # Still failed? Then raise.
+                    if not (vid_result and vid_result.success and vid_result.video_path and vid_result.video_path.exists()):
+                        retry_error = getattr(vid_result, 'error', 'unknown error')
+                        _requeue_crowd_claim_if_needed("venice_video_generation_failed")
+                        _shutdown_smart_reinject_state(smart_reinject_state)
+                        raise RuntimeError(f"[Venice] Video generation failed in cycle {cycle_idx} (even after content-policy retry): {retry_error}")
+                else:
+                    _requeue_crowd_claim_if_needed("venice_video_generation_failed")
+                    _shutdown_smart_reinject_state(smart_reinject_state)
+                    raise RuntimeError(f"[Venice] Video generation failed in cycle {cycle_idx}: {error_msg}")
 
             video_name = f"video_{cycle_idx:03d}.mp4"
             video_path = videos_dir / video_name

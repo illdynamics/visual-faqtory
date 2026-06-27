@@ -1,6 +1,6 @@
-model = "deepseek@deepseek-v4-pro-thinking"
+model = "deepseek@deepseek-v4-flash"
 model_provider = "codeseeq"
-model_catalog_json = "/Users/wicked/.config/codeseeq/config/codex-model-catalog.json"
+model_catalog_json = "/home/wicked/.config/codeseeq/config/codex-model-catalog.json"
 
 approval_policy = "on-request"
 sandbox_mode = "workspace-write"
@@ -10,7 +10,6 @@ model_supports_reasoning_summaries = false
 model_reasoning_summary = "none"
 
 web_search = "live"
-model_reasoning_effort = "none"
 
 [analytics]
 enabled = false
@@ -42,5 +41,5 @@ stream_max_retries = 2
 stream_idle_timeout_ms = 600000
 supports_websockets = false
 
-[projects."/Users/wicked/x/visual-faqtory"]
+[projects."/x/visual-faqtory"]
 trust_level = "trusted"

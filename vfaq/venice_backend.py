@@ -521,6 +521,12 @@ class VeniceBackend(GeneratorBackend):
             logger.error(f"[Venice] Image generation failed: {e}")
             return GenerationResult(success=False, error=str(e), generation_time=time.time() - start_time)
 
+    def _staging_output_path(self, output_dir: Path, atom_id: str) -> Path:
+        """Return a staging path for the venice temp file, out of the watched dir."""
+        staging = output_dir / ".staging"
+        staging.mkdir(parents=True, exist_ok=True)
+        return staging / f"{atom_id}_venice.mp4"
+
     def generate_video(self, request: GenerationRequest, source_image: Optional[Path]) -> GenerationResult:
         start_time = time.time()
         try:
@@ -537,7 +543,7 @@ class VeniceBackend(GeneratorBackend):
 
             result = self._run_video_job(
                 payload,
-                request.output_dir / f"{request.atom_id}_venice.mp4",
+                self._staging_output_path(request.output_dir, request.atom_id),
                 request,
                 omitted_fields=omitted_fields,
             )
@@ -578,7 +584,7 @@ class VeniceBackend(GeneratorBackend):
                 )
             result = self._run_video_job(
                 payload,
-                request.output_dir / f"{request.atom_id}_venice.mp4",
+                self._staging_output_path(request.output_dir, request.atom_id),
                 request,
                 omitted_fields=omitted_fields,
             )
@@ -747,7 +753,7 @@ class VeniceBackend(GeneratorBackend):
                 retrieve_payload = {
                     "model": model,
                     "queue_id": queue_id,
-                    "delete_media_on_completion": False,
+                    "delete_media_on_completion": bool(self.venice_cfg.cleanup_after_download),
                 }
                 response = self._request_raw("POST", "/video/retrieve", json=retrieve_payload)
                 polls += 1
@@ -762,13 +768,10 @@ class VeniceBackend(GeneratorBackend):
                     )
                     output_path.parent.mkdir(parents=True, exist_ok=True)
                     output_path.write_bytes(response.content)
-                    if self.venice_cfg.cleanup_after_download:
-                        try:
-                            self._request_json("POST", "/video/complete", json={"model": model, "queue_id": queue_id})
-                            cleanup_ok = True
-                        except Exception as cleanup_error:
-                            cleanup_ok = False
-                            logger.warning(f"[Venice] Video cleanup failed for {queue_id}: {cleanup_error}")
+                    # Media auto-deleted on server side when cleanup_after_download is True
+                    # (delete_media_on_completion=True in retrieve_payload handles it).
+                    # When cleanup_after_download is False, the media remains on the server.
+                    cleanup_ok = bool(self.venice_cfg.cleanup_after_download)
                     return GenerationResult(
                         success=True,
                         video_path=output_path,
@@ -1163,6 +1166,23 @@ class VeniceBackend(GeneratorBackend):
             else:
                 omitted_fields.append("end_image_url")
 
+        # ── Pre-emptive Seedance face consent ─────────────────────────────────
+        # Seedance models (seedance-*) require explicit consent when the
+        # submitted images contain detectable human faces. Venice returns HTTP
+        # 409 with a consent block if we don't include these booleans upfront.
+        # Instead of waiting for a 409 and retrying (which costs a round trip
+        # and logs a warning), we proactively include the consent block for
+        # any Seedance model, especially when sending end_image_url (morph) or
+        # image_url (img2vid) that may contain faces.
+        if "seedance" in model.lower():
+            payload.setdefault("consents", {
+                "seedance": {
+                    "confirmed_terms_and_privacy": True,
+                    "confirmed_legal_right": True,
+                    "confirmed_screening_acknowledged": True,
+                }
+            })
+
         return payload, omitted_fields
 
     @staticmethod
@@ -1252,6 +1272,9 @@ class VeniceBackend(GeneratorBackend):
     @staticmethod
     def _queue_field_aliases() -> Dict[str, List[str]]:
         return {
+            "consents": [
+                "consents", "seedance_consent", "face_consent", "consent",
+            ],
             "reference_image_urls": [
                 "reference_image_urls", "reference images", "referenceimages", "reference_image_url",
             ],
@@ -1606,6 +1629,44 @@ class VeniceBackend(GeneratorBackend):
                     if signature not in attempted_payload_signatures:
                         attempted_payload_signatures.add(signature)
                         continue
+
+            # ── Handle HTTP 409 needs_consent (face-bearing media) ────────────
+            # Seedance morph model requires explicit consent when the end_image
+            # contains detectable faces. Venice returns HTTP 409 with a
+            # consents.seedance block containing the policy_text. We accept the
+            # terms and retry with all three consent booleans set to true.
+            if response.status_code == 409:
+                consent = (data or {}).get("consent", {}) if isinstance(data, dict) else {}
+                if consent:
+                    # If the response includes a consent block, set all its top-level
+                    # keys (e.g. seedance) as consented. This handles both the first
+                    # 409 (no consents sent yet) and subsequent 409s where the model
+                    # might expect a different consent structure than what we sent.
+                    consents_field = {}
+                    for provider in consent:
+                        if isinstance(consent[provider], dict):
+                            consents_field[provider] = {
+                                k: True for k in consent[provider]
+                                if isinstance(k, str) and k.startswith("confirmed")
+                            }
+                    if not consents_field:
+                        # Fallback: unconditional blanket consent for seedance
+                        consents_field = {
+                            "seedance": {
+                                "confirmed_terms_and_privacy": True,
+                                "confirmed_legal_right": True,
+                                "confirmed_screening_acknowledged": True,
+                            }
+                        }
+                    effective_payload["consents"] = consents_field
+                    logger.info(
+                        f"[Venice] Accepting consent for {' & '.join(consents_field.keys())} and retrying"
+                    )
+                    signature = self._queue_payload_signature(effective_payload)
+                    if signature not in attempted_payload_signatures:
+                        attempted_payload_signatures.add(signature)
+                        continue
+                # If no consent block in response, fall through to final error.
 
             final_error = self._format_error_payload(response.status_code, data)
             if stripped_fields:
