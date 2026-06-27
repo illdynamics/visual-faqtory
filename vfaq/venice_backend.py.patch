@@ -1,0 +1,33 @@
+--- a/venice_backend.py
++++ b/venice_backend.py
+@@ -528,6 +528,12 @@ class VeniceBackend(GeneratorBackend):
+     # ──────────────────────────────────────────────────────────────────
+     # Video endpoints
+     # ──────────────────────────────────────────────────────────────────
++    def _staging_output_path(self, output_dir: Path, atom_id: str) -> Path:
++        """Return a staging path for the venice temp file, out of the watched dir."""
++        staging = output_dir / ".staging"
++        staging.mkdir(parents=True, exist_ok=True)
++        return staging / f"{atom_id}_venice.mp4"
++
+     def generate_video(self, request: GenerationRequest, source_image: Optional[Path]) -> GenerationResult:
+         start_time = time.time()
+         try:
+@@ -545,7 +551,7 @@ class VeniceBackend(GeneratorBackend):
+
+             result = self._run_video_job(
+                 payload,
+-                request.output_dir / f"{request.atom_id}_venice.mp4",
++                self._staging_output_path(request.output_dir, request.atom_id),
+                 request,
+                 omitted_fields=omitted_fields,
+             )
+@@ -586,7 +592,7 @@ class VeniceBackend(GeneratorBackend):
+             )
+             result = self._run_video_job(
+                 payload,
+-                request.output_dir / f"{request.atom_id}_venice.mp4",
++                self._staging_output_path(request.output_dir, request.atom_id),
+                 request,
+                 omitted_fields=omitted_fields,
+             )
