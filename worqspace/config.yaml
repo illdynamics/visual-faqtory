@@ -57,7 +57,7 @@ venice:
 
   models:
     text2img: seedream-v5-pro
-    img2img: qwen-edit
+    img2img: seedream-v5-pro-edit
     text2vid: gemini-omni-flash-text-to-video
     img2vid: gemini-omni-flash-image-to-video
 
