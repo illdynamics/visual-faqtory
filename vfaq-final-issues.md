@@ -55,23 +55,9 @@ streaming control surface.
    - **Impact:** any LLM-enabled configuration crashes. The LLM feature is
      advertised but cannot work as shipped.
 
-4. **`vfaq/ltx_video_backend.py` does not exist (VERIFIED)**
-   - Referenced by `backends.py` module docstring ("LTXVideoBackend ... see
-     ltx_video_backend.py"), referred to throughout `sliding_story_engine.py`
-     (`morph_is_ltx`, LTX branches), and advertised in `vfaq_cli.py` help text and
-     `cmd_backends` ("Active LTX Config Check").
-   - `_create_single_backend` has no `ltx_video` entry → selecting `type: ltx_video`
-     silently falls through to `mock` ("Unknown backend … using mock").
-   - **Impact:** LTX-Video is documented as a supported backend but is entirely
-     absent; misconfigured users silently get mock output.
+4. Please remove ANYTHING related to the LTX Video backend. we do not ever want to use this backend anymore. do not break any existing functionality while removing LTX Video completely please.
 
-5. **`qwen_image_python` / `qwen_python` backends do not exist (VERIFIED)**
-   - `vfaq/__init__.py` header claims: "NEW: image-only qwen_image_python /
-     qwen_python local inference backend".
-   - `vfaq_cli.py:358` help text advertises `qwen_image_python/qwen_python`.
-   - `_create_single_backend` only registers `qwen_image_comfyui` and `qwen_image`
-     (a legacy alias). There is no `qwen_image_python`/`qwen_python` branch.
-   - **Impact:** two advertised backend types silently drop to `mock`.
+5. Please remove EVERYTHING related to qwen-image-python and qwen-image and mock. all three we will never ever use again and we do not want to use these backends anymore. do not break any existing functionality while removing these three.
 
 ---
 
@@ -115,6 +101,8 @@ streaming control surface.
    - **Impact:** large maintenance surface, misleading architecture docs, and the
      place where the missing `llm_utils` and the `GenerationSpec` bug live.
 
+     Please remove the instruqtor, construqtor, inspeqtor and prompt_bundle if they are full dead code, and remove any reference to them from the docs, please. do not break any working existing functionality when doing so.
+
 9. **`VisualFaQtory._run_finalizer()` is dead code (VERIFIED)**
    - Never called; the runtime uses `run_sliding_story` (which finalizes internally)
      plus `_collect_story_outputs()`.
@@ -131,19 +119,26 @@ streaming control surface.
       the "swapped but not playing" bug class).
     - **Impact:** advertised safety/diagnostics features don't actually run.
 
+    please remove all these unused scripts completely if they are really not used at all or called, as we did not have any issue anymore with obs not playing. from the scripts we do use like obs-swap.py please remove just the parts that are not being used like the video validator. do not break any other working existing functionality.
+
 11. **`calculate_blur` / `calculate_entropy` in `image_metrics.py` are unused (VERIFIED)**
     - Only `calculate_frame_similarity` is referenced (by `sliding_story_engine`).
+    ok fix the entropy and image metrics calculators to be working/used/optionally used if we turn them on in the config, make them configurable then. do not break any other working functionality when doing so.
 
 12. **`vfaq/venice_backend.py.patch` is committed development debris (VERIFIED tracked)**
     - A 33-line unified diff whose `--- a/venice_backend.py` path no longer matches
       the actual `vfaq/venice_backend.py` location.
     - Should be removed from the repo.
 
+    please remove that from the repo, and do not break anything working other functionality.
+
 13. **Duplicate ≈1 MB splash images committed**
     - `visual-faqtory.jpg` (836 KB) and `vfaq/visual-faqtory.jpg` (917 KB) are two
       *different* images. Only `visual-faqtory.jpg` is referenced (`README.md`).
     - `vfaq/visual-faqtory.jpg` appears orphaned; together they add ~1.75 MB of
       image bloat to every clone.
+
+    - keep the best one and remove the orphaned one please and do not break anything when doing so.
 
 ---
 
@@ -161,6 +156,8 @@ streaming control surface.
     - **Impact:** the `encoder_preference: auto` inside `quality` has no effect; the
       effective preference is the top-level list `["h264_nvenc", "libx264"]`.
 
+    fix all these issues properly and do not break any working functionality when doing so.
+
 15. **`base_folders.py` default folder names contradict `visual_faqtory.py` (VERIFIED)**
     - `base_folders.select_base_files` defaults to `base_image`, `base_audio`,
       `base_video` (singular) directories.
@@ -169,12 +166,16 @@ streaming control surface.
     - `base_folders.py` is dead code (issue #8), but if revived it would look in
       directories that don't match the active pipeline's naming.
 
+    just remove the base_folders.py please and only keep the detect inputs stuff thats all we need I think. if we hae an image or audio or video in one of those base_ folders it should auto detect and do it properly. do not break any existing functionality when doing so.
+
 16. **`VeoBackend` does not inherit from `GeneratorBackend` (VERIFIED)**
     - `class VeoBackend:` (no base class), although its docstring says it
       "Implements the GeneratorBackend interface".
     - It's duck-typed (`generate_image`, `generate_video`, `generate_morph_video`,
       `check_availability`), so the factory still works, but `isinstance(x,
       GeneratorBackend)` checks and any future abstract-interface guarantees fail.
+
+    please make sure this is all fixed properly. and do not break any existing functionality.
 
 17. **Stale version strings scattered across docstrings/comments**
     - `base_folders.py`, `prompt_bundle.py`, `prompt_synth.py`,
@@ -186,12 +187,16 @@ streaming control surface.
     - `sliding_story_engine.py` docstring says "Part of Visual FaQtory v0.7.0-beta".
     - The version-consistency test only guards a handful of files, so these are missed.
 
+    clean up all invalid version strings please.
+
 18. **Invalid lowercase `any`/`callable` type annotations (VERIFIED)**
     - `sliding_story_engine.py` uses `Dict[str, any]` (lines 134–139) and
       `Optional[callable]` (line 937) — lowercase names that do not exist.
     - Masked at import time by `from __future__ import annotations`, but
       `typing.get_type_hints()` (or any runtime type introspector) raises
       `NameError`/is incorrect for these signatures.
+
+    please fix all these accordingly, do not break anything else along the way.
 
 19. **`_create_single_backend` factory mapping is incomplete/inconsistent**
     - `'venice': None` is populated in the dict and then explicitly handled +
@@ -200,15 +205,21 @@ streaming control surface.
     - Missing `ltx_video`, `qwen_image_python`, `qwen_python` (see #4/#5).
     - `BackendType` enum omits `LTX`/`QwEN_PYTHON`, while the CLI advertises them.
 
+    make sure ltx video, qwen_image_python and qwen_python or qwen_image are fully removed from the repo and every reference to them. in any capitalization. we dont use them and will not ever use them again. make sure you do not break anything else.
+
 20. **`_concat_stream_copy` and `_concat_reencode` share `_concat_list.txt`**
     - Both write the same temp concat file. They are always called sequentially
       (not concurrently), so this is not currently a data race, but it's fragile.
+
+    make this more robust please and do not break anything
 
 21. **NVENC encoder args differ between `inspeqtor.py` and `finalizer.py`**
     - `inspeqtor` `_encode_args` uses `-rc vbr -cq N -b:v 0 -profile:v high -preset p5`.
     - `finalizer` `_get_encoder_args` uses only `-cq N -preset p5 -pix_fmt yuv420p`.
     - Since `inspeqtor.py` is dead code this is harmless today, but the divergence
       is another sign of the legacy agent split.
+
+    inspeqtor is not being used anymore I thought, so if thats the solution to remove inspeqtor.py then do so. make sure that doesnt break anything.
 
 ---
 
@@ -223,6 +234,8 @@ streaming control surface.
     - `motion = getattr(briq, 'motion_prompt', None) or None` — the trailing `or None`
       is a no-op for a string attribute.
 
+    construqtor.py is being removed so clean this up. do not break anything.
+
 24. **`image_metrics.py` uses `print()` instead of `logging` (VERIFIED)**
     - `calculate_frame_similarity`, `calculate_blur`, `calculate_entropy` all
       `print(...)` on error, inconsistent with the rest of the codebase's logging.
@@ -231,52 +244,39 @@ streaming control surface.
     - `calculate_blur`/`calculate_entropy` also divide by a hardcoded `max-variance`
       heuristic and emit an unused `min_variance` path.
 
+    fix these accordingly without breaking anything.
+
 25. **CLI `-r` short flag overload documented confusingly**
     - `-r` is `--resume`; `--no-reinject` is `-R` (uppercase). The inline comment
       acknowledges this but it's easy to confuse. Consider dropping the `-R` short
       form or documenting loudly.
+
+      ok fix this so we wont get confused anymore.
+
 
 26. **`venice_backend.py` has an empty `except` with `pass` inside the spinner/timing code**
     - Line 825 area: `pass` in an exception handler, plus a couple of other bare
       `pass` blocks in `_retry_delay` (line 1756). Not bugs by themselves, but they
       silently swallow errors and are worth logging.
 
+      fix this properly please without breaking anything.
+
 27. **Crowd-control port mismatch between config and defaults**
     - `worqspace/config.yaml` says `base_url: "http://127.0.0.1:8000/visuals"` (port 8000),
       while `cmd_crowd`'s default and `vf-crowd-control.env.example` use port 8808.
       The comment in config.yaml even notes "(currently running on port 8000)".
 
+      make the default be 8000 please on both sides and do not break anything.
+
 28. **`visual-faqtory.jpg` / `vfaq/visual-faqtory.jpg` are binary assets in the package dir**
     - `vfaq/visual-faqtory.jpg` (917 KB) is inside the Python package directory and
       is never referenced by code; likely should be removed (also see #13).
 
----
+      this one should be removed now, if not remove it and do not break anything.
 
-## ✅ Verified-good signals
+      also im not sure if we do, but I thought we had some audio sync and bpm sync options in the config, double-check if these are working and if not, fix them accordingly without breaking anything else. and at the very last please tell me on the terminal output how audiuo reactivity works before the video is actually made. the bpm sync I can understand though hehe. fix that as well and do not break anything else.
 
-- Test suite green: **75 passed, 9 skipped** (9 skips are live-integration tests
-  gated behind `VF_RUN_LIVE_*` / env flags).
-- `run_state.py` atomic state writes, resume/discovery, and frame-extraction
-  fallbacks are coherent and well-documented.
-- `crowd_control` (models/db/client/server/filtering) is self-consistent and
-  has solid claim/ack/requeue lifecycle semantics.
-- `VeniceConfig` / `VeoConfig` dataclass parsing is defensive (filtering unknown
-  keys, normalizing booleans/ints/floats, snapping aspect ratio).
-- The `sliding_story_engine.py` orchestrator is feature-complete for ComfyUI /
-  Veo / Venice routing (subject to the `traceback` bug above).
 
----
+when all above is fixed, please do a version bump to v0.9.4-beta everywhere you can and inside the VERSION file if we have any (or else create it). then you will deep-analyze the codebase again to the maximum detail and then please update the full documentation accordingly to the current state. then also create/modify the QUICKSTART.md for less technical people to add a easy to follow short step-by-step guide how to use visual faqtory from scratch for multiple goals: promo video generation for people's own tracks that they made or whatever they wanna use it for, live mode with crowd control, or any other modes if we have any.
 
-## Suggested remediation priority
-
-1. Rotate and remove all hardcoded credentials (#1, #2).
-2. Add the missing `llm_utils.py` or remove/guard the LLM feature (#3).
-3. Fix the `traceback` import in `sliding_story_engine.py` (#6).
-4. Reconcile documented backends vs. factory: implement or clearly remove
-   `ltx_video`, `qwen_image_python`, `qwen_python` (#4, #5).
-5. Fix `VisualBriq.from_dict` / `GenerationSpec` field mismatch (#7).
-6. Delete or properly wire up dead modules (#8–#13); at minimum fix docs so the
-   architecture description matches reality.
-7. Align config schema (`quality.encoder_preference`, base folder names, crowd
-   port) (#14, #15, #27).
-8. Clean up minor items (#22–#28).
+then please git add commit and push the whole thing.
