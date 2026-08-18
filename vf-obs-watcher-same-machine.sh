@@ -16,7 +16,8 @@
 #   - Diagnostics artifact: writes swap events, play results, and
 #     fallback activations to run/obs/.watcher_diagnostics.jsonl.
 #   - Structured timestamps on every log line.
-#   - inotifywait restart loop: auto-recovers if the watch fails.
+#   - fswatch restart loop: auto-recovers if the watch fails (inotifywait is
+#     Linux-only; fswatch works on macOS + Linux).
 #
 # Part of Visual FaQtory v0.9.3-beta
 # ════════════════════════════════════════════════════════════════════════
@@ -42,6 +43,9 @@ OBS_PLAY_RETRIES="${OBS_PLAY_RETRIES:-3}"
 OBS_PLAY_RETRY_DELAY_SEC="${OBS_PLAY_RETRY_DELAY_SEC:-1.0}"
 OBS_FILE_STABLE_CHECKS="${OBS_FILE_STABLE_CHECKS:-2}"
 OBS_FILE_STABLE_INTERVAL="${OBS_FILE_STABLE_INTERVAL:-0.3}"
+DEDUP_WINDOW_SEC="${DEDUP_WINDOW_SEC:-2}"
+LAST_PROCESSED_FILE=""
+LAST_PROCESSED_TS=0
 
 mkdir -p "$OBS_DIR"
 
@@ -65,6 +69,18 @@ write_diag() {
 
 get_active_slot() { cat "$STATE_FILE"; }
 set_active_slot() { echo "$1" > "$STATE_FILE"; }
+
+# ── Duplicate event suppression (fswatch can emit Created+Updated for one write) ─
+is_duplicate_event() {
+    local file="$1" now
+    now=$(date +%s)
+    if [[ "$file" == "$LAST_PROCESSED_FILE" ]] && (( now - LAST_PROCESSED_TS < DEDUP_WINDOW_SEC )); then
+        return 0
+    fi
+    LAST_PROCESSED_FILE="$file"
+    LAST_PROCESSED_TS=$now
+    return 1
+}
 
 # ── File stability check ─────────────────────────────────────────────────
 wait_file_stable() {
@@ -195,6 +211,10 @@ except Exception as e:
 # ── Main swap orchestrator ───────────────────────────────────────────────
 process_file() {
     local file="$1" active target python_bin swap_rc inactive_file
+    if is_duplicate_event "$file"; then
+        ts_log "Ignoring duplicate event for $file"
+        return 0
+    fi
     active="$(get_active_slot)"
     python_bin="$(resolve_python)"
 
@@ -342,14 +362,16 @@ except Exception as e:
 }
 enforce_active_loop
 
-# inotifywait restart loop
+# fswatch restart loop (macOS/Linux portable)
 while true; do
-    ts_log "Starting inotifywait on $INTERP_DIR..."
-    inotifywait -m -e close_write -e moved_to --format "%f" "$INTERP_DIR" 2>/dev/null | while read -r file; do
-        if [[ "$file" == *.mp4 ]] && [[ "$file" != *_venice.mp4 ]]; then
-            process_file_locked "$INTERP_DIR/$file"
+    ts_log "Starting fswatch on $INTERP_DIR..."
+    fswatch --event Created --event Updated --event Renamed "$INTERP_DIR" 2>/dev/null | while read -r file_path; do
+        [[ -z "$file_path" ]] && continue
+        fname="$(basename "$file_path")"
+        if [[ "$fname" == *.mp4 ]] && [[ "$fname" != *_venice.mp4 ]]; then
+            process_file_locked "$file_path"
         fi
     done
-    ts_warn "inotifywait exited — restarting in 3s..."
+    ts_warn "fswatch exited — restarting in 3s..."
     sleep 3
 done

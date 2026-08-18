@@ -56,10 +56,10 @@ venice:
   strict_model_validation: false
 
   models:
-    text2img: seedream-v5-pro
-    img2img: seedream-v5-pro-edit
-    text2vid: gemini-omni-flash-text-to-video
-    img2vid: gemini-omni-flash-image-to-video
+    text2img: z-image-turbo
+    img2img: z-image-turbo
+    text2vid: flux-3-text-to-video
+    img2vid: flux-3-image-to-video
 
   image:
     aspect_ratio: "16:9"         # Venice valid: 1:1 | 3:2 | 16:9 | 21:9 | 9:16 | 2:3 | 3:4 | 4:5 | auto
@@ -82,24 +82,24 @@ venice:
     audio: false
     # ── Optional video params (commented = inherit defaults) ────────────────
     # duration: "5s"             # Default if no per-op duration set; or:
-    duration_seconds: 4        # numeric variant (becomes "5s" internally)
+    duration_seconds: 5        # numeric variant (becomes "5s" internally)
     # seed: null                 # Video seed (null = backend default)
     # reference_image_urls: []   # Optional reference image URLs (model-dependent)
     poll_interval: 3           # Override venice.poll_interval just for video
     poll_timeout: 300          # Override venice.poll_timeout just for video
 
     text2vid:
-      duration_seconds: 4
+      duration_seconds: 5
       aspect_ratio: "16:9"
       resolution: 480p
 
     img2vid:
-      duration_seconds: 4
+      duration_seconds: 5
       aspect_ratio: "16:9"
       resolution: 480p
 
   text_to_video_first_cycle: true
-  enable_end_frame_morph: true
+  enable_end_frame_morph: false
   enable_loop_closure: false
 
   # ── Other Venice top-level options (commented = use defaults) ─────────────
@@ -110,7 +110,7 @@ venice:
 
 paragraph_story:
   max_paragraphs: 2
-  img2vid_duration_sec: 4
+  img2vid_duration_sec: 5
   video_fps: 24
   seed_base: 0
   rolling_window: true
@@ -121,10 +121,10 @@ paragraph_story:
   # ── Other paragraph_story options (commented = use defaults) ──────────────
   # video_frames: null                          # Override frame count (else derived)
   # timing_authority: null                      # frames | duration | fps
-  reinject: true                          # img2img keyframe every cycle
-  smart_reinject_enabled: true           # Async prefetch keyframe for next cycle
+  reinject: false                          # img2img keyframe every cycle
+  smart_reinject_enabled: false           # Async prefetch keyframe for next cycle
   smart_reinject_every_n_cycles: 1        # 1 = every eligible cycle
-  smart_reinject_use_morph: true          # true = first/last morph, false = i2v from prefetched frame
+  smart_reinject_use_morph: false          # true = first/last morph, false = i2v from prefetched frame
 #  smart_reinject_similarity_guard_enabled: true
 #  smart_reinject_similarity_threshold: 0.42
 #  smart_reinject_wait_timeout_sec: 0      # 0 = never wait for late prefetch
@@ -178,7 +178,7 @@ finalizer:
 audio:
   enabled: false                # Mux audio into final deliverable
   sync_video_audio: false      # Compute cycle count from audio duration
-  cycle_seconds: 4             # Seconds per cycle when sync_video_audio: true
+  cycle_seconds: 5             # Seconds per cycle when sync_video_audio: true
 #                                # (defaults to paragraph_story.img2vid_duration_sec)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -198,7 +198,7 @@ audio:
 #
 # ═══════════════════════════════════════════════════════════════════════════════
 crowd_control:
-  enabled: false                        # Set true to activate crowd prompt injection
+  enabled: true                        # Set true to activate crowd prompt injection
   base_url: "http://127.0.0.1:8000/visuals"  # Must match the actual crowd server port (currently running on port 8000)
   pop_token: "Setyup34Setyup34Setyup34Setyup34"    # Bearer token for /api/next endpoint
   timeout_seconds: 1.0                  # HTTP timeout for generator→server calls
@@ -220,7 +220,7 @@ crowd_control:
   # = audience text only. Source mode is independent of that.
   inject_source_mode: "as_image_source"
   bake_mode: "reinject_keyframe"         # off | direct_video | reinject_keyframe
-  bake_use_morph: true
+  bake_use_morph: false
   bake_denoise_min: 0.58
   bake_denoise_max: 0.82
   bake_prompt_prefix: "AUDIENCE PROMPT IS THE PRIMARY VISUAL MUTATION. Strongly transform the scene to match this request while preserving enough continuity from the source image:"
