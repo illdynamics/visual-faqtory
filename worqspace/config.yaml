@@ -57,7 +57,7 @@ venice:
 
   models:
     text2img: z-image-turbo
-    img2img: z-image-turbo
+    img2img: seedream-v5-pro-edit
     text2vid: flux-3-text-to-video
     img2vid: flux-3-image-to-video
 

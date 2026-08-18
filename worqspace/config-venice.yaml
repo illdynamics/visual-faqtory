@@ -51,7 +51,7 @@ venice:
 
   models:
     text2img: flux-2-pro
-    img2img: flux-2-pro
+    img2img: flux-2-max-edit
     text2vid: grok-imagine-text-to-video
     img2vid: wan-2.1-pro-image-to-video
 

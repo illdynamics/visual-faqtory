@@ -68,7 +68,7 @@ venice:
   # ── Model selection ───────────────────────────────────────────────────────
   models:
     text2img: seedream-v4
-    img2img: seedream-v4
+    img2img: seedream-v4-edit
     text2vid: seedance-1-5-pro-text-to-video
     img2vid: seedance-1-5-pro-image-to-video
 

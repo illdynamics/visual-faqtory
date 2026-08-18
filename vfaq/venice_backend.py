@@ -938,10 +938,35 @@ class VeniceBackend(GeneratorBackend):
             return str(op_override)
         return self.venice_cfg.video_resolution
 
+    # Venice's /models endpoint is type-scoped: without a ?type= filter it only
+    # returns text/chat models, so media models never appear in the list. Fetch
+    # each media type explicitly and merge, otherwise check_availability reports
+    # 0 image/video models and _validate_model_for_type can never pass for
+    # image/video/inpaint models (e.g. an img2img edit model like
+    # seedream-v5-pro-edit is only advertised under type=inpaint).
+    _MODEL_TYPE_FILTERS: Tuple[str, ...] = (
+        "text", "image", "video", "inpaint",
+        "audio", "music", "tts", "stt", "embedding",
+    )
+
     def _get_models(self) -> List[Dict[str, Any]]:
         if self._model_cache is None:
-            payload = self._request_json("GET", "/models")
-            self._model_cache = list(payload.get("data") or [])
+            seen: Dict[str, Dict[str, Any]] = {}
+            last_exception: Optional[Exception] = None
+            for mtype in self._MODEL_TYPE_FILTERS:
+                try:
+                    payload = self._request_json("GET", f"/models?type={mtype}")
+                except Exception as exc:  # pragma: no cover - network dependent
+                    last_exception = exc
+                    logger.debug(f"[Venice] /models?type={mtype} fetch failed (non-fatal): {exc}")
+                    continue
+                for model in payload.get("data") or []:
+                    model_id = str(model.get("id"))
+                    if model_id:
+                        seen[model_id] = model
+            if not seen and last_exception is not None:  # pragma: no cover - network dependent
+                raise RuntimeError(f"Venice /models fetch failed: {last_exception}")
+            self._model_cache = list(seen.values())
         return self._model_cache
 
     def _validate_model_for_type(self, model_id: str, expected_type: str) -> None:
