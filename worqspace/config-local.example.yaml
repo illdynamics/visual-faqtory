@@ -2,12 +2,15 @@
 # Visual FaQtory v0.9.4-beta — Local MLX backend example config
 # ═══════════════════════════════════════════════════════════════════════════════
 #
-# Copy to worqspace/config.yaml (or use: vfaq_cli.py run --config this-file)
+# Copy to worqspace/config.yaml (or: python vfaq_cli.py run --config this-file)
 # to run FLUX.1-dev, FLUX.1 Kontext, Wan 2.2 and Z-Image-Turbo locally on
-# Apple Silicon via lightning-mlx (also supports mflux / a custom command).
+# Apple Silicon.
 #
-# IMPORTANT: replace the /path/to/... values with the actual directories or
-# checkpoint files on your MacBook. See macbook-finish-vfaq-steps.md.
+# Recommended, working-out-of-the-box path: use the `mflux` runner for the
+# three image models (Z-Image-Turbo, FLUX.1-dev, FLUX.1 Kontext). It is
+# installed with `pip install mflux` and its command names are on your PATH
+# inside the project virtualenv. Wan 2.2 video uses the `wan` runner
+# (SceneWorks `mlx-gen-wan`), which is a separate native tool.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 paths:
@@ -34,47 +37,76 @@ input:
 # Local backend configuration
 # ─────────────────────────────────────────────────────────────────────────────
 local:
-  # Which runner/tool to invoke. Supported:
-  #   lightning-mlx   (recommended, Apple Silicon)
-  #   mflux           (FLUX image generation via mflux-generate)
-  #   command         (fully custom command templates)
-  runner: lightning-mlx
+  # Default runner for image models. Supported runners:
+  #   mflux       (recommended) Z-Image-Turbo / FLUX.1-dev / FLUX.1-Kontext
+  #   flux-swift  flux.swift-format checkpoints (mzbac/flux1.*.4bit.mlx)
+  #   wan         SceneWorks mlx-gen-wan (Wan 2.2 video)
+  #   command     fully custom shell templates
+  runner: mflux
 
   timeout: 3600                   # Per-generation timeout in seconds
   width: 1024
   height: 576
-  steps: 30
+  steps: 8                        # Z-Image-Turbo uses 8; FLUX dev/Kontext use ~25
   fps: 8
+  quantize: 4                     # mflux quantization (4=4bit, 8=8bit, auto/empty = model default)
 
-  # Capability → model mapping. Choose from:
-  #   image: z-image-turbo | flux-1-dev
-  #   video: wan-2.2
-  #   edit:  flux-1-kontext
+  # Capability → model mapping.
   models:
-    image: z-image-turbo
+    image: z-image-turbo          # z-image-turbo | flux-1-dev
     video: wan-2.2
     edit: flux-1-kontext
 
-  # Absolute paths to the models on disk. These can point to a directory
-  # (e.g. a HF repo checkout or MLX conversion) or a single checkpoint file,
-  # depending on what your runner expects.
+  # The model spec passed to the runner. For `mflux` this may be a local path,
+  # an mflux-compatible HuggingFace repo id ("org/name"), or a built-in mflux
+  # model name ("z-image-turbo", "dev", "dev-kontext"). For `flux-swift` and
+  # `wan` it must be an on-disk directory/checkpoint.
+  #
+  # NOTE ON YOUR ~/Qoding/ai CHECKPOINTS:
+  #   flux1.dev.4bit.mlx  / flux1.kontext.4bit.mlx  → flux.swift format
+  #   Z-Image-Turbo-MLX-4bit                        → diffusers-MLX (andrevp) format
+  #   wan2.2-ti2v-5b-mlx                            → SceneWorks format
+  # Those three formats are NOT readable by mflux. To use them directly, set
+  # `model_runners.flux-1-dev/flux-1-kontext` to `flux-swift`, and
+  # `model_runners.wan-2.2` to `wan`, then install the matching tools.
+  # For a zero-friction mflux run, point the image models at mflux-compatible
+  # sources (the commented-out values below).
   model_paths:
-    flux-1-dev: /path/to/flux-1-dev
-    flux-1-kontext: /path/to/flux-1-kontext
-    wan-2.2: /path/to/wan-2.2
-    z-image-turbo: /path/to/z-image-turbo
+    flux-1-dev: ~/Qoding/ai/flux1.dev.4bit.mlx
+    flux-1-kontext: ~/Qoding/ai/flux1.kontext.4bit.mlx
+    wan-2.2: ~/Qoding/ai/wan2.2-ti2v-5b-mlx
+    z-image-turbo: ~/Qoding/ai/Z-Image-Turbo-MLX-4bit
+    # mflux-compatible sources (uncomment to use instead of the ~/Qoding/ai paths):
+    # flux-1-dev: dev
+    # flux-1-kontext: dev-kontext
+    # z-image-turbo: z-image-turbo
 
-  # Runner-specific settings. The defaults below target a reasonable
-  # lightning-mlx CLI interface. If your installed lightning-mlx version uses
-  # different flags, override the *_template strings. Supported placeholders:
-  #   {model} {model_path} {prompt} {negative_prompt} {output}
-  #   {width} {height} {seed} {steps} {fps} {duration}
-  #   {input_image} {start_image} {end_image}
-  lightning_mlx:
-    executable: lightning-mlx
-    # image_template: "lightning-mlx generate-image --model {model} --model-path {model_path} --prompt {prompt} --output {output} --width {width} --height {height} --seed {seed} --steps {steps}"
-    # video_template: "lightning-mlx generate-video --model {model} --model-path {model_path} --prompt {prompt} --image {input_image} --output {output} --width {width} --height {height} --fps {fps} --duration {duration} --seed {seed} --steps {steps}"
-    # morph_template: "lightning-mlx generate-video --model {model} --model-path {model_path} --prompt {prompt} --image {start_image} --end-image {end_image} --output {output} --width {width} --height {height} --fps {fps} --duration {duration} --seed {seed}"
+  # Per-model runner overrides (optional). Leave commented to use the default
+  # `runner` above for every model.
+  # model_runners:
+  #   flux-1-dev: mflux
+  #   flux-1-kontext: mflux
+  #   z-image-turbo: mflux
+  #   wan-2.2: wan
+
+  # Runner-specific settings.
+  mflux:
+    executable: mflux-generate    # base executable (the model-specific CLIs are derived)
+    # quantize: 4                  # optional; defaults to local.quantize
+
+  flux_swift:
+    executable: flux.swift.cli
+    hf_token_env: HF_TOKEN        # env var holding your Hugging Face token (gated models)
+
+  wan:
+    executable: mlx-gen-wan       # SceneWorks native Wan 2.2 worker
+
+  # Fully custom command runner example (unused unless runner/command chosen):
+  # command:
+  #   executable: my-local-generator
+  #   image_template: "my-local-generator image --prompt {prompt} --output {output}"
+  #   video_template: "my-local-generator video --prompt {prompt} --image {input_image} --output {output}"
+  #   morph_template: "my-local-generator morph --start {start_image} --end {end_image} --output {output}"
 
 paragraph_story:
   max_paragraphs: 2

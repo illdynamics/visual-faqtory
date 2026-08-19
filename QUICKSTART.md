@@ -87,14 +87,21 @@ visuals by scanning a QR code.
 
 ## Goal C — Run locally on Apple Silicon (MacBook M-series)
 
-1. Make sure `lightning-mlx` (or `mflux`) is installed and on your `PATH`.
+1. Install the image runner (recommended):
+   ```bash
+   python3 -m venv .venv && source .venv/bin/activate
+   pip install -r requirements.txt mflux
+   ```
 2. Copy the example config:
    ```bash
    cp worqspace/config-local.example.yaml worqspace/config.yaml
    ```
-3. Edit `worqspace/config.yaml` → `local.model_paths` and point each model to
-   the folder/checkpoint on disk.
-4. Verify everything is found:
+3. Edit `worqspace/config.yaml` → `local.model_paths`. For the image models
+   (`z-image-turbo`, `flux-1-dev`, `flux-1-kontext`) you can use an
+   mflux-compatible HuggingFace repo id or a built-in name (e.g.
+   `z-image-turbo`, `dev`, `dev-kontext`) and mflux will download it. For
+   Wan 2.2 video you need SceneWorks `mlx-gen-wan` (a separate native tool).
+4. Verify what is available:
    ```bash
    python vfaq_cli.py backends
    ```
@@ -103,9 +110,10 @@ visuals by scanning a QR code.
    python vfaq_cli.py run -n local-test
    ```
 
-> The local backend has **not been exercised on real hardware in this repo**.
-> If the default `lightning-mlx` command templates don't match your installed
-> CLI, follow `macbook-finish-vfaq-steps.md` to finish wiring it up.
+> The local backend's image models (Z-Image-Turbo, FLUX.1-dev, FLUX.1 Kontext)
+> have been verified on Apple Silicon via `mflux`. Wan 2.2 video requires the
+> SceneWorks native worker (`mlx-gen-wan`); until it is installed the backend
+> reports Wan as unavailable and morph falls back to an ffmpeg crossfade.
 
 ---
 

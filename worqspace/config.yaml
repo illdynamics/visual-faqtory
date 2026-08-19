@@ -42,30 +42,41 @@ morph_backend:
 # ─────────────────────────────────────────────────────────────────────────────
 # Set backend.type: local (and image_backend/video_backend/morph_backend to
 # local when using split routing) to run FLUX.1-dev, FLUX.1 Kontext, Wan 2.2
-# and Z-Image-Turbo locally. Fill in model_paths with the actual on-disk
-# locations, then see worqspace/config-local.example.yaml for full options.
+# and Z-Image-Turbo locally. Recommended runner is mflux (`pip install mflux`)
+# for the image models; Wan 2.2 video uses the `wan` runner (SceneWorks).
+# See worqspace/config-local.example.yaml for full options and format notes.
 local:
-  runner: lightning-mlx          # lightning-mlx | mflux | command
+  runner: mflux                  # mflux | flux-swift | wan | command
   timeout: 3600
   width: 1024
   height: 576
-  steps: 30
+  steps: 8                       # Z-Image-Turbo uses 8; FLUX dev/Kontext use ~25
   fps: 8
+  quantize: 4                    # mflux quantization (4bit; auto/empty = model default)
   models:
     image: z-image-turbo         # z-image-turbo | flux-1-dev
     video: wan-2.2
     edit: flux-1-kontext
+  # For `mflux` these may be a local path, an mflux-compatible HF repo id
+  # ("org/name"), or a built-in mflux model name. For `flux-swift` / `wan`
+  # they must be on-disk checkpoints.
   model_paths:
-    flux-1-dev: /path/to/flux-1-dev
-    flux-1-kontext: /path/to/flux-1-kontext
-    wan-2.2: /path/to/wan-2.2
-    z-image-turbo: /path/to/z-image-turbo
-  lightning_mlx:
-    executable: lightning-mlx
-    # Optional overrides for the default CLI templates:
-    # image_template: "..."
-    # video_template: "..."
-    # morph_template: "..."
+    flux-1-dev: ~/Qoding/ai/flux1.dev.4bit.mlx
+    flux-1-kontext: ~/Qoding/ai/flux1.kontext.4bit.mlx
+    wan-2.2: ~/Qoding/ai/wan2.2-ti2v-5b-mlx
+    z-image-turbo: ~/Qoding/ai/Z-Image-Turbo-MLX-4bit
+  # model_runners:               # optional per-model runner overrides
+  #   flux-1-dev: mflux
+  #   flux-1-kontext: mflux
+  #   z-image-turbo: mflux
+  #   wan-2.2: wan
+  mflux:
+    executable: mflux-generate
+  flux_swift:
+    executable: flux.swift.cli
+    hf_token_env: HF_TOKEN
+  wan:
+    executable: mlx-gen-wan
 
 input:
   mode: text                     # text | image | video

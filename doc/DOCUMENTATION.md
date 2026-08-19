@@ -250,24 +250,32 @@ The ComfyUI backend supports:
 ### Local MLX backend (Apple Silicon)
 
 Run FLUX.1-dev, FLUX.1 Kontext, Wan 2.2 and Z-Image-Turbo locally via a
-pluggable runner (`lightning-mlx` by default, plus `mflux` or a custom
-`command`). See `worqspace/config-local.example.yaml` and
+pluggable runner. Recommended: `mflux` (image models) and `wan` (SceneWorks
+`mlx-gen-wan` for Wan 2.2 video); `flux-swift` and a fully custom `command`
+runner are also supported. See `worqspace/config-local.example.yaml` and
 `macbook-finish-vfaq-steps.md`.
 
 ```yaml
 backend:
   type: local
 local:
-  runner: lightning-mlx
+  runner: mflux          # mflux | flux-swift | wan | command
+  quantize: 4            # mflux quantization (4bit)
   models:
-    image: z-image-turbo
+    image: z-image-turbo   # z-image-turbo | flux-1-dev
     video: wan-2.2
     edit: flux-1-kontext
   model_paths:
-    flux-1-dev: /path/to/flux-1-dev
-    flux-1-kontext: /path/to/flux-1-kontext
-    wan-2.2: /path/to/wan-2.2
-    z-image-turbo: /path/to/z-image-turbo
+    flux-1-dev: ~/Qoding/ai/flux1.dev.4bit.mlx
+    flux-1-kontext: ~/Qoding/ai/flux1.kontext.4bit.mlx
+    wan-2.2: ~/Qoding/ai/wan2.2-ti2v-5b-mlx
+    z-image-turbo: ~/Qoding/ai/Z-Image-Turbo-MLX-4bit
+  # For mflux, model_paths values may also be an mflux-compatible HF repo id
+  # (org/name) or a built-in mflux model name ("dev", "dev-kontext",
+  # "z-image-turbo"). The ~/Qoding/ai checkpoints above are flux.swift /
+  # diffusers-MLX / SceneWorks formats and are NOT readable by mflux; install
+  # the matching native tool (flux.swift / mlx-gen-wan) and set model_runners
+  # accordingly to use them directly.
 ```
 
 ### AnimateDiff Backend

@@ -1742,11 +1742,16 @@ def list_available_backends() -> Dict[str, tuple]:
     except Exception as e:
         results['veo'] = (False, f"Veo: {e}")
 
-    # Check local MLX backend (importable + runner/model paths).
+    # Check local MLX backend (importable + runner executable presence).
     try:
         from .local_backend import LocalBackend
-        backend = LocalBackend({'runner': 'lightning-mlx'})
-        results['local'] = backend.check_availability()
+        backend = LocalBackend({'local': {'runner': 'mflux'}})
+        avail, msg = backend.check_availability()
+        if not avail and "model_path" in msg.lower():
+            # The runner is present; availability is only limited by config.
+            results['local'] = (True, "Local backend importable (mflux present; configure local.model_paths)")
+        else:
+            results['local'] = (avail, msg)
     except Exception as e:
         results['local'] = (False, f"local: {e}")
 

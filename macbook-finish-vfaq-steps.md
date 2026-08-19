@@ -1,87 +1,74 @@
-# MacBook Finish Steps — Local MLX backend
+# MacBook Finish Steps — Local MLX backend (verified)
 
-The `local` backend is implemented and wired into Visual FaQtory, but it has
-**not been executed against real model files** because the models live on your
-MacBook (M1 Max) and use `lightning-mlx` (MLX). Everything below is what you run
-on the MacBook to finish wiring + verify.
+The `local` backend is wired into Visual FaQtory and has been verified on this
+MacBook (Apple Silicon) with **mflux** for the image models. Wan 2.2 video uses
+the SceneWorks native worker (`mlx-gen-wan`), which is a separate tool.
 
-## 0. What already works from the repo
+> ⚠️ The old instructions in this file assumed a `lightning-mlx generate-image`
+> CLI. That tool is an LLM server, not an image generator, so the backend was
+> reimplemented. Use `mflux` instead.
+
+## 0. What works out of the box
 
 - `backend.type: local` creates a `LocalBackend`.
 - Model selection: `flux-1-dev`, `flux-1-kontext`, `wan-2.2`, `z-image-turbo`.
-- Runner selection: `lightning-mlx` (default), `mflux`, or fully-custom `command`.
-- `python vfaq_cli.py backends` checks the runner executable and model paths.
-- The sliding-story engine already treats `local` like the generic ComfyUI path
-  (text2img → img2img keyframe → img2vid / morph).
+- Runner selection: `mflux` (recommended images), `flux-swift`, `wan`
+  (SceneWorks), or a fully-custom `command`.
+- `python vfaq_cli.py backends` checks runner executables and reports per-model
+  availability.
 
-## 1. Install / locate the runner
-
-```bash
-which lightning-mlx || echo "lightning-mlx not on PATH"
-```
-
-If it is not installed, install it with your package manager of choice, e.g.:
+## 1. Install the image runner (mflux)
 
 ```bash
-# Replace with the real install command for your setup
-pipx install lightning-mlx      # or: pip install lightning-mlx
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt mflux
 ```
 
-Confirm the CLI surface:
+Confirm the CLIs exist:
 
 ```bash
-lightning-mlx --help
+which mflux-generate mflux-generate-z-image-turbo mflux-generate-kontext
 ```
 
-The defaults in `vfaq/local_backend.py` assume subcommands like:
-
-```bash
-lightning-mlx generate-image --model ... --model-path ... --prompt ... --output ... ...
-lightning-mlx generate-video --model ... --model-path ... --prompt ... --image ... --output ... ...
-```
-
-**If your installed CLI uses different subcommand/flag names**, do not edit code —
-override the templates in `worqspace/config.yaml`:
-
-```yaml
-local:
-  runner: lightning-mlx
-  lightning_mlx:
-    executable: lightning-mlx
-    image_template: "lightning-mlx <real-image-command> --prompt {prompt} --output {output} ..."
-    video_template: "lightning-mlx <real-video-command> --prompt {prompt} --image {input_image} --output {output} ..."
-    morph_template: "lightning-mlx <real-morph-command> --start {start_image} --end {end_image} --output {output} ..."
-```
-
-Supported placeholders:
-`{model} {model_path} {prompt} {negative_prompt} {output} {width} {height} {seed} {steps} {fps} {duration} {input_image} {start_image} {end_image}`
-
-## 2. Point to the models on disk
-
-Copy the local example config:
+## 2. Configure the models
 
 ```bash
 cp worqspace/config-local.example.yaml worqspace/config.yaml
 ```
 
-Edit `worqspace/config.yaml` → `local.model_paths`:
+`local.model_paths` values are passed to the runner's `--model` flag. For
+`mflux` they may be a local path, an mflux-compatible HuggingFace repo id
+(`org/name`), or a built-in mflux model name. Verified working sources:
 
 ```yaml
 local:
-  runner: lightning-mlx
+  runner: mflux
+  quantize: 4
   models:
-    image: z-image-turbo      # or flux-1-dev
+    image: z-image-turbo
     video: wan-2.2
     edit: flux-1-kontext
   model_paths:
-    flux-1-dev: /absolute/path/to/flux-1-dev
-    flux-1-kontext: /absolute/path/to/flux-1-kontext
-    wan-2.2: /absolute/path/to/wan-2.2
-    z-image-turbo: /absolute/path/to/z-image-turbo
+    z-image-turbo: filipstrand/Z-Image-Turbo-mflux-4bit
+    flux-1-dev: dhairyashil/FLUX.1-dev-mflux-4bit
+    flux-1-kontext: akx/FLUX.1-Kontext-dev-mflux-4bit
+    wan-2.2: ~/Qoding/ai/wan2.2-ti2v-5b-mlx
 ```
 
-`model_paths` values may be a directory (HF checkout / MLX conversion) or a
-single checkpoint file — use whatever `lightning-mlx` expects for that model.
+> Your `~/Qoding/ai` checkpoints are three different formats:
+> `flux1.dev.4bit.mlx` / `flux1.kontext.4bit.mlx` (flux.swift),
+> `Z-Image-Turbo-MLX-4bit` (diffusers-MLX), `wan2.2-ti2v-5b-mlx` (SceneWorks).
+> Those are **not** mflux-readable. To run those exact files, install the
+> matching tool and set `local.model_runners`:
+>
+> ```yaml
+> local:
+>   model_runners:
+>     flux-1-dev: flux-swift      # flux.swift.cli
+>     flux-1-kontext: flux-swift
+>     wan-2.2: wan                # mlx-gen-wan
+> ```
 
 ## 3. Verify availability
 
@@ -89,17 +76,13 @@ single checkpoint file — use whatever `lightning-mlx` expects for that model.
 python vfaq_cli.py backends
 ```
 
-You want the `local` line to show:
+Expected (with mflux installed and Wan not yet installed):
 
 ```
-  [✓] local        - Local backend ready via lightning-mlx — image=z-image-turbo, video=wan-2.2, edit=flux-1-kontext
+  [✓] local - Local backend partially available — ready: Z-Image-Turbo, FLUX.1 Kontext; missing: Wan 2.2: Runner executable not found on PATH: mlx-gen-wan
 ```
 
-If it shows missing paths, fix `local.model_paths`.
-
-## 4. Smoke-test one image and one video
-
-First, a direct unit-level check:
+## 4. Smoke-test the image models
 
 ```bash
 python - <<'PY'
@@ -107,76 +90,30 @@ from pathlib import Path
 import yaml
 from vfaq.backends import create_backend, GenerationRequest, InputMode
 
-cfg = yaml.safe_load(Path('worqspace/config.yaml').read_text())
+cfg = yaml.safe_load(Path('worqspace/config-local.example.yaml').read_text())
+# point image models at mflux-compatible sources for a quick test
+cfg['local']['model_paths']['z-image-turbo'] = 'filipstrand/Z-Image-Turbo-mflux-4bit'
+cfg['local']['model_paths']['flux-1-dev'] = 'dhairyashil/FLUX.1-dev-mflux-4bit'
+cfg['local']['model_paths']['flux-1-kontext'] = 'akx/FLUX.1-Kontext-dev-mflux-4bit'
 backend = create_backend(cfg)
-print('availability:', backend.check_availability())
-
-out = Path('run/_local_smoke')
-out.mkdir(parents=True, exist_ok=True)
-
+out = Path('run/_local_smoke'); out.mkdir(parents=True, exist_ok=True)
 img = backend.generate_image(GenerationRequest(
     prompt='a neon jellyfish drifting through fog',
-    mode=InputMode.TEXT,
-    width=512,
-    height=512,
-    steps=4,
-    output_dir=out,
-    atom_id='smoke_img',
-))
-print('image:', img.success, img.error, img.image_path)
-
-vid = backend.generate_video(GenerationRequest(
-    prompt='slow camera drift, shimmering neon',
-    mode=InputMode.IMAGE,
-    width=512,
-    height=512,
-    duration_seconds=2.0,
-    video_fps=6,
-    output_dir=out,
-    atom_id='smoke_vid',
-), source_image=img.image_path)
-print('video:', vid.success, vid.error, vid.video_path)
+    mode=InputMode.TEXT, width=512, height=512, steps=4, output_dir=out, atom_id='smoke'))
+print(img.success, img.error, img.image_path)
 PY
 ```
 
-## 5. Run a full short story
+## 5. Wan 2.2 video
 
-```bash
-# keep it short for the first test
-printf 'Paragraph one.\n\nParagraph two.' > worqspace/story.txt
-python vfaq_cli.py run -n local-smoke
-```
-
-Then check `run/` for `video_*.mp4` and `worqspace/saved-runs/local-smoke/`.
-
-## 6. If lightning-mlx is not the right tool
-
-The backend also supports `mflux` (FLUX images) and a fully custom `command`
-runner. For `mflux`:
+Wan 2.2 TI2V requires the SceneWorks native worker (`mlx-gen-wan`). It is not
+pip-installable. Install it and place `mlx-gen-wan` on your PATH, then set:
 
 ```yaml
 local:
-  runner: mflux
-  mflux:
-    executable: mflux-generate
+  wan:
+    executable: mlx-gen-wan
 ```
 
-For a totally custom command (any local inference script):
-
-```yaml
-local:
-  runner: command
-  command:
-    executable: my-local-generator
-    image_template: "my-local-generator image --prompt {prompt} --output {output} ..."
-    video_template: "my-local-generator video --prompt {prompt} --image {input_image} --output {output} ..."
-    morph_template: "my-local-generator morph --start {start_image} --end {end_image} --output {output} ..."
-```
-
-## 7. If you get stuck
-
-- Run with `PYTHONPATH=. python vfaq_cli.py run -n debug --dry-run` to isolate
-  config/availability problems from generation problems.
-- The exact command built by the backend is logged with a `[Local] Running:` line.
-- Report that line + the exit output; the fix will almost always be a
-  `*_template` override in `worqspace/config.yaml`.
+Until then the backend reports Wan as unavailable, and morph requests fall back
+to an ffmpeg crossfade so image-only runs can still complete.

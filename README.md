@@ -48,7 +48,7 @@ worqspace/          User workspace — story, config, base images, prompts
 vfaq/               Core Python package
   venice_backend.py   Venice image + video backend
   veo_backend.py      Google Veo backend
-  local_backend.py    Local MLX backend (lightning-mlx / mflux / command)
+  local_backend.py    Local MLX backend (mflux / flux-swift / wan / command)
   backends.py         Backend interface + ComfyUI backend
   sliding_story_engine.py  Main cycle engine
   visual_faqtory.py   Run orchestrator
