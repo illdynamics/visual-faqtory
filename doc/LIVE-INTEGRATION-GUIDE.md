@@ -1,13 +1,12 @@
-# Visual FaQtory v0.9.3-beta — live integration guide
+# Visual FaQtory v0.9.4-beta — live integration guide
 
-This repo now ships an **opt-in** live integration harness for external systems. The default offline suite stays fast and does **not** require ComfyUI, Venice, Qwen workflows, or paid API calls.
+This repo now ships an **opt-in** live integration harness for external systems. The default offline suite stays fast and does **not** require ComfyUI, Venice workflows, local model downloads, or paid API calls.
 
 ## What this harness covers
 
 The gated live pytest module is `tests/test_live_integrations.py`.
 
 It can exercise:
-- Qwen image via ComfyUI (`qwen_image_comfyui`) — text2img and img2img
 - ComfyUI SVD img2vid
 - AnimateDiff via ComfyUI img2vid
 - Venice text2img
@@ -24,7 +23,7 @@ It can exercise:
 
 ## Required gates
 
-### ComfyUI / Qwen / AnimateDiff live tests
+### ComfyUI / AnimateDiff live tests
 
 Set:
 
@@ -37,12 +36,6 @@ Recommended / required env vars:
 ```bash
 export VF_COMFYUI_API_URL=http://127.0.0.1:8188
 export VF_COMFY_TIMEOUT=300
-
-# Required for live Qwen text2img
-export VF_COMFY_QWEN_WORKFLOW_IMAGE=/absolute/path/to/qwen_text2img_api.json
-
-# Required for live Qwen img2img
-export VF_COMFY_QWEN_WORKFLOW_IMG2IMG=/absolute/path/to/qwen_img2img_api.json
 
 # Required for live SVD img2vid
 export VF_COMFY_SVD_WORKFLOW_VIDEO=/absolute/path/to/svd_img2vid_api.json
@@ -105,7 +98,7 @@ pytest -q tests/test_live_integrations.py -rs
 Run only the ComfyUI live checks:
 
 ```bash
-pytest -q tests/test_live_integrations.py -k "comfy or qwen or animatediff" -rs
+pytest -q tests/test_live_integrations.py -k "comfy or animatediff" -rs
 ```
 
 Run only the Venice live checks:
@@ -121,8 +114,6 @@ ComfyUI workflow JSONs are **operator-supplied**. This repo does not bundle know
 The live harness expects API-exported JSON workflow files that already match your installed node stack and models.
 
 Minimum expectations:
-- Qwen text2img workflow: must be a valid API JSON graph for still-image generation.
-- Qwen img2img workflow: must include at least one `LoadImage` node so the harness can inject the source image.
 - SVD img2vid workflow: must accept one uploaded source image and produce a downloadable video output.
 - AnimateDiff img2vid workflow: must include a real AnimateDiff loader node and produce a downloadable video output.
 
@@ -130,7 +121,7 @@ If your graph names, checkpoints, motion models, or custom nodes differ from the
 
 ## What success looks like
 
-### ComfyUI / Qwen / AnimateDiff
+### ComfyUI / AnimateDiff
 - the configured workflow path exists
 - ComfyUI is reachable
 - source-image upload works where relevant

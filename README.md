@@ -1,4 +1,4 @@
-# Visual FaQtory v0.9.3-beta
+# Visual FaQtory v0.9.4-beta
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 ![Repo Views](https://komarev.com/ghpvc/?username=illdynamics-visual-faqtory&label=Repo+Views&color=blue)
 ![Splash](visual-faqtory.jpg)
@@ -7,7 +7,7 @@ Automated long-form AI visual generation pipeline for music, DJ sets, and experi
 
 Runs a sliding-window paragraph story through a configurable backend chain — generating images, videos, and morphs per cycle — and assembles them into a final output video.
 
-**Backends:** ComfyUI · Venice · Veo  
+**Backends:** ComfyUI · Venice · Veo · Local MLX (FLUX.1-dev / FLUX.1 Kontext / Wan 2.2 / Z-Image-Turbo)  
 **Features:** Reinject / img2vid chaining · Crowd Control QR overlay · Live OBS integration · ETA spinner · Per-op timing
 
 ---
@@ -48,6 +48,7 @@ worqspace/          User workspace — story, config, base images, prompts
 vfaq/               Core Python package
   venice_backend.py   Venice image + video backend
   veo_backend.py      Google Veo backend
+  local_backend.py    Local MLX backend (lightning-mlx / mflux / command)
   backends.py         Backend interface + ComfyUI backend
   sliding_story_engine.py  Main cycle engine
   visual_faqtory.py   Run orchestrator
@@ -62,6 +63,7 @@ doc/                Documentation
 
 | Doc | Description |
 |---|---|
+| [`QUICKSTART.md`](QUICKSTART.md) | Short non-technical step-by-step guide |
 | [`doc/DOCUMENTATION.md`](doc/DOCUMENTATION.md) | Full config reference, pipeline architecture, backend guide |
 | [`doc/LIVE-INTEGRATION-GUIDE.md`](doc/LIVE-INTEGRATION-GUIDE.md) | OBS + SRT live streaming integration |
 | [`doc/EXTERNAL-LIVE-VISUALS-SETUP.md`](doc/EXTERNAL-LIVE-VISUALS-SETUP.md) | External live visuals setup |

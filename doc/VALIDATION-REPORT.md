@@ -100,7 +100,6 @@ Repository tests executed per test module after this pass:
 - `tests/test_animatediff_backend.py` → 7 passed
 - `tests/test_animatediff_validation.py` → 4 passed
 - `tests/test_backend_routing.py` → 6 passed
-- `tests/test_qwen_hybrid_validation.py` → 13 passed
 - `tests/test_resume_and_loop_closure.py` → 3 passed
 - `tests/test_split_mock_smoke.py` → 1 passed
 - `tests/test_srt_watcher.py` → 9 passed

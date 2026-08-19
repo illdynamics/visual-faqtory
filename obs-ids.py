@@ -1,8 +1,12 @@
+import os
+
 from obsws_python import ReqClient
 
-HOST = "127.0.0.1"
-PORT = 4455
-PASSWORD = "Setyup34!"
+HOST = os.environ.get("OBS_HOST", "127.0.0.1")
+PORT = int(os.environ.get("OBS_PORT", "4455"))
+PASSWORD = os.environ.get("OBS_PASSWORD")
+if not PASSWORD:
+    raise SystemExit("OBS_PASSWORD environment variable is required")
 
 SCENE = "Ill Dynamics - Live on SkankOut"
 

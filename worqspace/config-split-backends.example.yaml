@@ -1,5 +1,4 @@
-# Example capability-split backend config (v0.9.3-beta)
-# Qwen image backends are image-only. Do not treat them like full pipeline backends.
+# Example capability-split backend config (v0.9.4-beta)
 # Keeps the public app interface stable while routing each generation stage
 # to a dedicated backend under the hood.
 
@@ -9,14 +8,14 @@ backend:
   height: 576
   timeout: 600
 
-  # Image stage only
+  # Image stage
   image_backend:
-    type: qwen_image_comfyui
+    type: comfyui
     api_url: http://localhost:8188
-    workflow_image: ./worqspace/workflows/qwen_image_t2i.json
-    workflow_img2img: ./worqspace/workflows/qwen_image_i2i.json
+    workflow_image: ./worqspace/workflows/sdxl_t2i.json
+    workflow_img2img: ./worqspace/workflows/sdxl_i2i.json
 
-  # Video stage only
+  # Video stage
   video_backend:
     type: comfyui
     api_url: http://localhost:8188
@@ -32,20 +31,27 @@ comfyui:
   sdxl_ckpt: juggernautXL_ragnarokBy.safetensors
   svd_ckpt: svd_xt_1_1.safetensors
 
-# LoRA is validated against the IMAGE capability now, not the whole router.
+# LoRA is validated against the IMAGE capability.
 lora:
   enabled: false
   path: /x/ComfyUI/models/loras/pytorch_lora_weights.safetensors
   strength: 1.0
   backend: comfyui
 
-# Native Python alternative for the image stage:
+# Local MLX alternative for all three stages:
+# backend:
+#   type: local
 # image_backend:
-#   type: qwen_image_python
-#
-# qwen_python:
-#   model_id: Qwen/Qwen-Image
-#   img2img_model_id: Qwen/Qwen-Image
-#   edit_model_id: null
-#   device: auto
-#   torch_dtype: auto
+#   type: local
+# video_backend:
+#   type: local
+# morph_backend:
+#   type: local
+# local:
+#   runner: lightning-mlx
+#   models: {image: z-image-turbo, video: wan-2.2, edit: flux-1-kontext}
+#   model_paths:
+#     flux-1-dev: /path/to/flux-1-dev
+#     flux-1-kontext: /path/to/flux-1-kontext
+#     wan-2.2: /path/to/wan-2.2
+#     z-image-turbo: /path/to/z-image-turbo

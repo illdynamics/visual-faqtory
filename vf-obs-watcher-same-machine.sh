@@ -19,7 +19,7 @@
 #   - fswatch restart loop: auto-recovers if the watch fails (inotifywait is
 #     Linux-only; fswatch works on macOS + Linux).
 #
-# Part of Visual FaQtory v0.9.3-beta
+# Part of Visual FaQtory v0.9.4-beta
 # ════════════════════════════════════════════════════════════════════════
 
 set -uo pipefail
@@ -163,7 +163,7 @@ try:
     from obsws_python import ReqClient
     host = os.environ.get('OBS_HOST', '127.0.0.1')
     port = int(os.environ.get('OBS_PORT', '4455'))
-    password = os.environ.get('OBS_PASSWORD', 'Setyup34!')
+    password = os.environ.get('OBS_PASSWORD')
     cl = ReqClient(host=host, port=port, password=password)
     resp = cl.get_media_input_status('${source_name}')
     ms = getattr(resp, 'media_state', getattr(resp, 'mediaState', 'UNKNOWN'))
@@ -191,7 +191,7 @@ try:
     from obsws_python import ReqClient
     host = os.environ.get('OBS_HOST', '127.0.0.1')
     port = int(os.environ.get('OBS_PORT', '4455'))
-    password = os.environ.get('OBS_PASSWORD', 'Setyup34!')
+    password = os.environ.get('OBS_PASSWORD')
     cl = ReqClient(host=host, port=port, password=password)
     cl.trigger_media_input_action('${source_name}', 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY')
     time.sleep(0.2)
@@ -352,7 +352,7 @@ try:
     from obsws_python import ReqClient
     host = os.environ.get('OBS_HOST', '127.0.0.1')
     port = int(os.environ.get('OBS_PORT', '4455'))
-    password = os.environ.get('OBS_PASSWORD', 'Setyup34!')
+    password = os.environ.get('OBS_PASSWORD')
     cl = ReqClient(host=host, port=port, password=password)
     cl.set_input_settings('${source_name}', {'looping': True}, overlay=True)
     print(f'Loop ON for ${source_name}')

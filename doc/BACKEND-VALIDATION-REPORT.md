@@ -1,4 +1,4 @@
-# Visual FaQtory v0.9.3-beta — backend validation report
+# Visual FaQtory v0.9.4-beta — backend validation report
 
 This report now distinguishes between **offline-tested**, **opt-in live harness available**, and **live-tested in this packaging pass**.
 
@@ -79,7 +79,7 @@ pytest -q
 
 **Results:** 75 passed, 9 skipped in 20.25s.
 
-## Re-verified in v0.9.3-beta
+## Re-verified in v0.9.4-beta
 
 This pass re-verified version consistency, documentation alignment, and crowd control lifecycle:
 

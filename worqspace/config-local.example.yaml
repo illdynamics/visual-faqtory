@@ -1,0 +1,113 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Visual FaQtory v0.9.4-beta — Local MLX backend example config
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Copy to worqspace/config.yaml (or use: vfaq_cli.py run --config this-file)
+# to run FLUX.1-dev, FLUX.1 Kontext, Wan 2.2 and Z-Image-Turbo locally on
+# Apple Silicon via lightning-mlx (also supports mflux / a custom command).
+#
+# IMPORTANT: replace the /path/to/... values with the actual directories or
+# checkpoint files on your MacBook. See macbook-finish-vfaq-steps.md.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+paths:
+  output_dir: ./run
+  briqs_dir: ./run/briqs
+
+backend:
+  type: local
+  timeout: 3600
+
+image_backend:
+  type: local
+
+video_backend:
+  type: local
+
+morph_backend:
+  type: local
+
+input:
+  mode: text                      # text | image | video
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Local backend configuration
+# ─────────────────────────────────────────────────────────────────────────────
+local:
+  # Which runner/tool to invoke. Supported:
+  #   lightning-mlx   (recommended, Apple Silicon)
+  #   mflux           (FLUX image generation via mflux-generate)
+  #   command         (fully custom command templates)
+  runner: lightning-mlx
+
+  timeout: 3600                   # Per-generation timeout in seconds
+  width: 1024
+  height: 576
+  steps: 30
+  fps: 8
+
+  # Capability → model mapping. Choose from:
+  #   image: z-image-turbo | flux-1-dev
+  #   video: wan-2.2
+  #   edit:  flux-1-kontext
+  models:
+    image: z-image-turbo
+    video: wan-2.2
+    edit: flux-1-kontext
+
+  # Absolute paths to the models on disk. These can point to a directory
+  # (e.g. a HF repo checkout or MLX conversion) or a single checkpoint file,
+  # depending on what your runner expects.
+  model_paths:
+    flux-1-dev: /path/to/flux-1-dev
+    flux-1-kontext: /path/to/flux-1-kontext
+    wan-2.2: /path/to/wan-2.2
+    z-image-turbo: /path/to/z-image-turbo
+
+  # Runner-specific settings. The defaults below target a reasonable
+  # lightning-mlx CLI interface. If your installed lightning-mlx version uses
+  # different flags, override the *_template strings. Supported placeholders:
+  #   {model} {model_path} {prompt} {negative_prompt} {output}
+  #   {width} {height} {seed} {steps} {fps} {duration}
+  #   {input_image} {start_image} {end_image}
+  lightning_mlx:
+    executable: lightning-mlx
+    # image_template: "lightning-mlx generate-image --model {model} --model-path {model_path} --prompt {prompt} --output {output} --width {width} --height {height} --seed {seed} --steps {steps}"
+    # video_template: "lightning-mlx generate-video --model {model} --model-path {model_path} --prompt {prompt} --image {input_image} --output {output} --width {width} --height {height} --fps {fps} --duration {duration} --seed {seed} --steps {steps}"
+    # morph_template: "lightning-mlx generate-video --model {model} --model-path {model_path} --prompt {prompt} --image {start_image} --end-image {end_image} --output {output} --width {width} --height {height} --fps {fps} --duration {duration} --seed {seed}"
+
+paragraph_story:
+  max_paragraphs: 2
+  img2vid_duration_sec: 5
+  video_fps: 24
+  seed_base: 0
+  rolling_window: true
+  require_morph: true
+  enable_loop_closure: false
+  img2img_denoise_min: 0.44
+  img2img_denoise_max: 0.66
+  reinject: true
+  smart_reinject_enabled: false
+
+finalizer:
+  enabled: true
+  per_cycle_pingpong: false
+  per_cycle_interpolation: false
+  upscale_resolution: 1280x720
+  interpolate_fps: 30
+  post_run_interpolation: true
+  post_run_pingpong: false
+  post_interpolate_fps: 60
+  quality:
+    crf: 11
+    encoder_preference: auto
+
+audio:
+  enabled: false
+  sync_video_audio: false
+  cycle_seconds: 5
+  # bpm: 128
+  # beats_per_cycle: 4
+
+image_metrics:
+  enabled: false

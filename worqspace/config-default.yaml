@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Visual FaQtory v0.9.3-beta — config.yaml
+# Visual FaQtory v0.9.4-beta — config.yaml
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # Active config preserves every previously-set value exactly. Only changes vs
@@ -200,7 +200,7 @@ audio:
 crowd_control:
   enabled: true                        # Set true to activate crowd prompt injection
   base_url: "http://10.20.30.22:8808/visuals"  # Must match the actual crowd server port (default server port: 8808)
-  pop_token: "Setyup34Setyup34Setyup34Setyup34"    # Bearer token for /api/next endpoint
+  pop_token: "${VF_CROWD_TOKEN}"    # Bearer token for /api/next endpoint
   timeout_seconds: 1.0                  # HTTP timeout for generator→server calls
   inject_label: "Audience mutation request"  # Label injected into the prompt
   inject_mode: "replace"                 # append = add to story | replace = override story

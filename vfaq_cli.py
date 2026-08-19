@@ -14,7 +14,7 @@ Usage:
     python vfaq_cli.py status                   # Check pipeline status
     python vfaq_cli.py backends                 # List available backends
 
-Part of Visual FaQtory v0.9.3-beta
+Part of Visual FaQtory v0.9.4-beta
 """
 import os
 import sys
@@ -70,11 +70,11 @@ Examples:
   python vfaq_cli.py --mode image               # Use image mode
   python vfaq_cli.py --mode video               # Use video mode
   python vfaq_cli.py --dry-run                  # Validate without generation
-  python vfaq_cli.py -n test -b mock            # Mock backend test
+  python vfaq_cli.py -n test -b local          # Local MLX backend test
   python vfaq_cli.py status                     # Check status
   python vfaq_cli.py backends                   # List backends
   python vfaq_cli.py crowd --token MY_SECRET    # Start Crowd Control server
-  python vfaq_cli.py crowd --token MY_SECRET --public-url http://192.168.1.50:8808/visuals
+  python vfaq_cli.py crowd --token MY_SECRET --public-url http://192.168.1.50:8000/visuals
         """
     )
     parser.add_argument('-V', '--version', action='version',
@@ -93,7 +93,7 @@ Examples:
 
     crowd_parser = subparsers.add_parser('crowd', parents=[common_parent], help='Start Crowd Control server')
     crowd_parser.add_argument('--host', default='0.0.0.0', help='Bind host (default: 0.0.0.0)')
-    crowd_parser.add_argument('--port', type=int, default=8808, help='Bind port (default: 8808)')
+    crowd_parser.add_argument('--port', type=int, default=8000, help='Bind port (default: 8000)')
     crowd_parser.add_argument('--prefix', default='/visuals', help='URL prefix (default: /visuals)')
     crowd_parser.add_argument('--public-url', default='https://wonq.tv/visuals', help='Public URL for QR code (default: https://wonq.tv/visuals)')
     crowd_parser.add_argument('--db-path', default='worqspace/crowdcontrol.sqlite3', help='SQLite database path')
@@ -116,7 +116,7 @@ BANNER = f"""
 
   Visual FaQtory {APP_VERSION}
   ═══════════════════════════════════════
-  Reinject Default ON | Hybrid split routing | ComfyUI + Venice + Veo
+  Reinject Default ON | Hybrid split routing | ComfyUI + Venice + Veo + Local MLX
 """
 
 
@@ -222,7 +222,7 @@ def cmd_status(args):
 
 def cmd_backends(args):
     """List available backends."""
-    from vfaq.backends import list_available_backends, create_backend, extract_backend_config, get_backend_type_for_capability
+    from vfaq.backends import list_available_backends
 
     print(f"\n=== Available Backends ({APP_VERSION}) ===\n")
     results = list_available_backends()
@@ -230,28 +230,7 @@ def cmd_backends(args):
         status = "✓" if available else "✗"
         print(f"  [{status}] {name:12} - {message}")
 
-    # ── Config-aware LTX check ───────────────────────────────────────────────
-    # If the active config has backend.type: ltx_video, run a real readiness
-    # check against the configured settings and show the result.
-    worqspace = Path(args.worqspace).resolve()
-    config_path = worqspace / "config.yaml"
-    if config_path.exists():
-        try:
-            import yaml
-            config = yaml.safe_load(config_path.read_text()) or {}
-            bc = extract_backend_config(config)
-            if get_backend_type_for_capability(bc, "video") == "ltx_video":
-                try:
-                    ltx_backend = create_backend(bc)
-                    avail, msg = ltx_backend.check_availability()
-                    status = "✓" if avail else "✗"
-                    print(f"\n  === Active LTX Config Check ===")
-                    print(f"  [{status}] {msg}")
-                except Exception as e:
-                    print(f"\n  [✗] Active LTX config error: {e}")
-        except Exception:
-            pass  # Config parse failure is not fatal for backends listing
-    print("    # and set comfyui_workflow_t2v / comfyui_workflow_i2v")
+
 
 
 def cmd_crowd(args):
@@ -349,17 +328,17 @@ def _add_run_args(parser):
     reinject_group = parser.add_mutually_exclusive_group()
     reinject_group.add_argument('--reinject', dest='reinject', action='store_true', default=None,
                                 help='Force-enable reinject mode (overrides config)')
-    reinject_group.add_argument('--no-reinject', '-R', dest='reinject', action='store_false',
+    reinject_group.add_argument('--no-reinject', dest='reinject', action='store_false',
                                 help='Disable reinject mode (hard override)')
 
     parser.add_argument('--mode', choices=['text', 'image', 'video'],
                         help='Override input mode')
     parser.add_argument('-b', '--backend',
-                        help='Override root backend.type for single-backend runs (mock/comfyui/animatediff/venice/veo/ltx_video/qwen_image_python/qwen_python). Split image/video/morph routing stays config-driven.')
+                        help='Override root backend.type for single-backend runs (comfyui/animatediff/venice/veo/local). Split image/video/morph routing stays config-driven.')
     parser.add_argument('-s', '--seed', type=int,
                         help='Override base seed')
     parser.add_argument('--config', type=str,
-                        help='Config file to use (e.g. worqspace/config-ltx.yaml). Copies to worqspace/config.yaml before run.')
+                        help='Config file to use (e.g. worqspace/config-local.yaml). Copies to worqspace/config.yaml before run.')
     parser.add_argument('--dry-run', action='store_true',
                         help='Validate config and inputs without generation')
 

@@ -12,7 +12,7 @@ Pipeline flow:
   4. Audio mux (if base audio present)
   5. Save run to worqspace/saved-runs/<project-name>
 
-Part of Visual FaQtory v0.9.3-beta
+Part of Visual FaQtory v0.9.4-beta
 """
 import json
 import logging
@@ -160,7 +160,7 @@ def _mux_audio(video_path: Path, audio_path: Path, output_path: Path) -> bool:
 
 class VisualFaQtory:
     """
-    Main orchestrator for the Visual FaQtory v0.9.3-beta pipeline.
+    Main orchestrator for the Visual FaQtory v0.9.4-beta pipeline.
 
     Wires config loading, input detection, sliding story engine,
     finalizer, audio mux, and project saving.
@@ -302,6 +302,7 @@ class VisualFaQtory:
         comfyui_section = bc.get("comfyui", {})
         veo_section = bc.get("veo", {})
         venice_section = bc.get("venice", {})
+        local_section = bc.get("local", {})
 
         def _parse_seconds(raw_value: Any) -> Optional[float]:
             if raw_value is None:
@@ -382,6 +383,8 @@ class VisualFaQtory:
             crowd_control_config=self.config.get("crowd_control", {}),
             veo_config=veo_section,
             venice_config=venice_section,
+            local_config=local_section,
+            image_metrics_config=self.config.get("image_metrics", {}),
             continuity_guard_enabled=ps.get("continuity_guard_enabled", True),
             continuity_similarity_threshold=ps.get("continuity_similarity_threshold", 0.42),
             continuity_morph_similarity_threshold=ps.get("continuity_morph_similarity_threshold", 0.86),
@@ -400,7 +403,11 @@ class VisualFaQtory:
         )
 
     def _compute_cycle_count(self, config: SlidingStoryConfig) -> Optional[int]:
-        """If audio sync enabled and audio exists, compute cycles from duration."""
+        """If audio sync enabled and audio exists, compute cycles from duration.
+
+        Cycle length can be supplied directly (``cycle_seconds``) or derived
+        from ``bpm`` + ``beats_per_cycle`` (``cycle_seconds = 60/bpm * beats``).
+        """
         audio_cfg = self.config.get("audio", {})
         if not audio_cfg.get("sync_video_audio", False):
             return None
@@ -412,80 +419,75 @@ class VisualFaQtory:
             logger.warning("[AudioSync] Could not determine audio duration")
             return None
 
-        cycle_sec = audio_cfg.get("cycle_seconds", config.img2vid_duration_sec)
+        cycle_sec = self._resolve_audio_cycle_seconds(audio_cfg, config)
+        if cycle_sec is None or cycle_sec <= 0:
+            logger.warning("[AudioSync] Could not resolve cycle seconds; skipping sync")
+            return None
+
         import math
         cycles = math.ceil(duration / cycle_sec)
+        source = (
+            f"{audio_cfg.get('bpm')} BPM x {audio_cfg.get('beats_per_cycle', 4)} beats"
+            if audio_cfg.get("bpm")
+            else f"configured cycle_seconds"
+        )
         logger.info(
-            f"[AudioSync] Audio: {duration:.1f}s / {cycle_sec}s per cycle = {cycles} cycles"
+            f"[AudioSync] Audio: {duration:.1f}s / {cycle_sec:.2f}s per cycle "
+            f"({source}) = {cycles} cycles"
         )
         return cycles
 
-    def _run_finalizer(self) -> Dict[str, Optional[str]]:
-        """Run the full finalizer pipeline: stitch → interpolate → upscale → audio mux."""
-        fc = self.config.get("finalizer", {})
-        result = {
-            "final_video": None,
-            "final_video_60fps": None,
-            "final_video_60fps_1080p": None,
-            "final_video_60fps_1080p_audio": None,
-        }
+    def _resolve_audio_cycle_seconds(self, audio_cfg: Dict[str, Any], config: SlidingStoryConfig) -> Optional[float]:
+        """Resolve one visual cycle's length for audio sync.
 
-        # Discover cycle videos (excludes loop clips)
-        videos_dir = self.run_dir / "videos"
-        videos = _list_cycle_videos(videos_dir)
-        if not videos:
-            logger.warning("[Finalizer] No cycle videos found to stitch")
-            return result
+        Priority: explicit ``cycle_seconds`` → BPM-derived → engine duration
+        default. Returns None when nothing usable is configured.
+        """
+        if audio_cfg.get("cycle_seconds") is not None:
+            try:
+                return float(audio_cfg.get("cycle_seconds"))
+            except (TypeError, ValueError):
+                pass
 
-        # Step 1: Stitch
-        finalizer = Finalizer(
-            project_dir=self.run_dir,
-            preferred_codec=fc.get("encoder_preference", ["h264_nvenc", "libx264"])[0]
-                if isinstance(fc.get("encoder_preference"), list) else "h264_nvenc",
-            output_quality=fc.get("quality", {}).get("crf", 16)
-                if isinstance(fc.get("quality"), dict) else 16,
-            finalizer_config=fc,
+        bpm = audio_cfg.get("bpm")
+        if bpm is not None:
+            try:
+                beats = float(audio_cfg.get("beats_per_cycle", 4))
+                return (60.0 / float(bpm)) * beats
+            except (TypeError, ValueError, ZeroDivisionError):
+                logger.warning("[AudioSync] Invalid bpm/beats_per_cycle; ignoring BPM sync")
+
+        if config.img2vid_duration_sec is not None:
+            return float(config.img2vid_duration_sec)
+        return None
+
+    def _explain_audio_reactivity(self, cycles: Optional[int]) -> None:
+        """Log a clear explanation of audio handling before generation starts."""
+        audio_cfg = self.config.get("audio", {})
+        enabled = bool(audio_cfg.get("enabled", False)) and self.base_audio is not None
+        sync = bool(audio_cfg.get("sync_video_audio", False)) and self.base_audio is not None
+        bpm = audio_cfg.get("bpm")
+
+        logger.info("=" * 64)
+        logger.info("[Audio] How audio reactivity works in Visual FaQtory")
+        logger.info("  • Audio is muxed into the FINAL deliverable (not streamed live).")
+        logger.info("  • 'audio.enabled' muxes your base_audio track onto the final video.")
+        logger.info("  • 'audio.sync_video_audio' sizes the number of visual cycles from")
+        logger.info("    the audio track's total duration, so the video length matches")
+        logger.info("    the music instead of the story's natural length.")
+        if bpm:
+            logger.info(
+                f"  • BPM sync is ON: {bpm} BPM x "
+                f"{audio_cfg.get('beats_per_cycle', 4)} beats = "
+                f"{self._resolve_audio_cycle_seconds(audio_cfg, SlidingStoryConfig(img2vid_duration_sec=5.0)) or 0:.2f}s per cycle"
+            )
+        else:
+            logger.info("  • BPM sync is OFF. Set 'audio.bpm' to derive cycle length from tempo.")
+        logger.info(
+            "  • There is NO live beat-reactive animation; visuals are generated "
+            "as fixed-length clips and then stitched."
         )
-
-        try:
-            stitch_path = finalizer.finalize(cycle_video_paths=videos)
-            # Rename to spec naming
-            final_video = self.run_dir / "final_video.mp4"
-            if stitch_path != final_video:
-                shutil.move(str(stitch_path), str(final_video))
-            result["final_video"] = str(final_video)
-            logger.info(f"[Finalizer] Stitched → {final_video}")
-        except FinalizerError as e:
-            logger.error(f"[Finalizer] Stitch failed: {e}")
-            return result
-
-        # Step 2+3: Interpolate + Upscale (via post-stitch finalizer)
-        if fc.get("enabled", True):
-            # Temporarily set correct paths for the finalizer
-            finalizer.final_output_path = final_video
-            finalizer.final_deliverable_path = self.run_dir / "final_video_60fps_1080p.mp4"
-            finalizer._interpolated_temp_path = self.run_dir / "_temp_60fps.mp4"
-            finalizer.finalizer_enabled = True
-
-            deliverable = finalizer.run_post_stitch_finalizer()
-            if deliverable:
-                # Copy 60fps intermediate before it gets cleaned
-                temp_60fps = self.run_dir / "_temp_60fps.mp4"
-                final_60fps = self.run_dir / "final_video_60fps.mp4"
-                if temp_60fps.exists():
-                    shutil.copy2(str(temp_60fps), str(final_60fps))
-                    result["final_video_60fps"] = str(final_60fps)
-                result["final_video_60fps_1080p"] = str(deliverable)
-
-                # Keep the 60fps intermediate (don't clean up)
-                # Step 4: Audio mux
-                if self.base_audio and self.config.get("audio", {}).get("enabled", True):
-                    audio_output = self.run_dir / "final_video_60fps_1080p_audio.mp4"
-                    if _mux_audio(deliverable, self.base_audio, audio_output):
-                        result["final_video_60fps_1080p_audio"] = str(audio_output)
-
-        return result
-
+        logger.info("=" * 64)
 
     def _collect_story_outputs(self) -> Dict[str, Optional[str]]:
         """Collect outputs produced by run_sliding_story() + Finalizer inside the story engine.
@@ -634,6 +636,7 @@ class VisualFaQtory:
 
         # Compute cycle count from audio if applicable
         audio_cycles = self._compute_cycle_count(story_config)
+        self._explain_audio_reactivity(audio_cycles)
 
         # Resolve story file — on resume, prefer the meta snapshot
         if self.resume:

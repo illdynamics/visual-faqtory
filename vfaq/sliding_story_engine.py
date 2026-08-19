@@ -20,7 +20,8 @@ Key characteristics:
   • Backend operations:
     - ComfyUI: text2img → img2img → img2vid (traditional pipeline)
     - Veo: text_to_video / image_to_video / first_last_frame (direct)
-    - LTX-Video: t2v / i2v / conditioned_transition (self-hosted, direct)
+    - Venice: text_to_video / image_to_video (direct)
+    - Local: text2img → img2img → img2vid via lightning-mlx / mflux / custom command
 
   • The runtime directories are flat: qodeyard/story.txt, qodeyard/keyframes,
     qodeyard/lastframes, qodeyard/videos. No subdirectories per run.
@@ -34,7 +35,6 @@ Key characteristics:
     - Cycle 1: t2v (or i2v if base image exists)
     - Cycle n>1: i2v from previous last frame (reinject semantics)
     - If require_morph: conditioned transition (two-keyframe conditioning)
-    - Optional loop closure: same as Veo via generate_morph_video
 
   • The windowing schedule has three phases for P total paragraphs and
     maximum window size M (max_paragraphs):
@@ -54,19 +54,20 @@ To run the engine, construct a SlidingStoryConfig (see below) and call
 run_sliding_story(). For convenience, a CLI entry point is provided
 via vfaq_cli (see vfaq_cli.py).
 
-Part of Visual FaQtory v0.7.0-beta
+Part of Visual FaQtory v0.9.4-beta
 """
 from __future__ import annotations
 
 import logging
 import os
+import traceback
 import random
 import shutil
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from vfaq.timing import TimingResolver
 from vfaq.finalizer import Finalizer # Import Finalizer
 
@@ -82,7 +83,7 @@ from .backends import (
     GenerationResult,
     InputMode,
 )
-from .image_metrics import calculate_frame_similarity
+from .image_metrics import calculate_blur, calculate_entropy, calculate_frame_similarity
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,29 @@ def _write_briq_json(briqs_dir: Path, cycle_idx: int, data: dict) -> None:
     path = briqs_dir / f"cycle_{cycle_idx:03d}.json"
     import json
     path.write_text(json.dumps(data, indent=2, default=str))
+
+
+def _log_image_metrics(image_path: Path, config: "SlidingStoryConfig", label: str) -> None:
+    """Optionally log blur/entropy for an extracted frame.
+
+    Enabled via ``image_metrics.enabled: true`` in config.yaml. Non-fatal and
+    purely diagnostic — a failure here never affects the generation cycle.
+    """
+    cfg = getattr(config, "image_metrics_config", None) or {}
+    if not cfg.get("enabled", False):
+        return
+    try:
+        blur = calculate_blur(str(image_path))
+        entropy = calculate_entropy(str(image_path))
+        logger.info(
+            "[SlidingStory/ImageMetrics] %s blur=%.3f entropy=%.3f → %s",
+            label,
+            blur,
+            entropy,
+            image_path.name,
+        )
+    except Exception as exc:  # pragma: no cover - diagnostic only
+        logger.debug("[SlidingStory/ImageMetrics] skipped for %s: %s", image_path, exc)
 
 
 @dataclass
@@ -113,8 +137,9 @@ class SlidingStoryConfig:
         backend_config:      Backend configuration dictionary used to
                              instantiate the generator backend.
         veo_config:          Optional dict with Veo-specific settings.
-        ltx_video_config:    Optional dict with LTX-Video-specific settings (v0.6.7-beta).
-        venice_config:       Optional dict with Venice-specific settings (v0.7.1-beta).
+        venice_config:       Optional dict with Venice-specific settings.
+        local_config:        Optional dict with Local MLX backend settings.
+        image_metrics_config: Optional dict with image-metrics toggles.
         enable_loop_closure: When true, generate a final loop-closure clip
                              that transitions from the last frame back to the
                              cycle-1 anchor frame.
@@ -131,12 +156,14 @@ class SlidingStoryConfig:
     video_fps: Optional[float] = None
     video_frames: Optional[int] = None
     timing_authority: Optional[str] = None
-    backend_config: Dict[str, any] | None = None
-    finalizer_config: Dict[str, any] | None = None # Add finalizer_config
+    backend_config: Dict[str, Any] | None = None
+    finalizer_config: Dict[str, Any] | None = None  # Finalizer config
     reinject: bool = True  # When True (default), every cycle runs img2img keyframe
-    crowd_control_config: Dict[str, any] | None = None  # Crowd Control settings
-    veo_config: Dict[str, any] | None = None  # Veo-specific config (v0.6.0-beta)
-    venice_config: Dict[str, any] | None = None  # Venice config (v0.7.1-beta)
+    crowd_control_config: Dict[str, Any] | None = None  # Crowd Control settings
+    veo_config: Dict[str, Any] | None = None  # Veo-specific config (v0.6.0-beta)
+    venice_config: Dict[str, Any] | None = None  # Venice config
+    local_config: Dict[str, Any] | None = None  # Local MLX backend config
+    image_metrics_config: Dict[str, Any] | None = None  # Optional image metrics toggles
     enable_loop_closure: bool = False  # Generate final loop-closure clip (v0.6.0-beta)
     smart_reinject_enabled: bool = False
     smart_reinject_every_n_cycles: int = 1
@@ -934,7 +961,7 @@ def run_sliding_story(
     initial_anchor_frame_path: Optional[Path] = None,
     initial_final_video_paths: Optional[List[Path]] = None,
     initial_completed_cycles: Optional[set] = None,
-    checkpoint_callback: Optional[callable] = None,
+    checkpoint_callback: Optional[Callable] = None,
 ) -> Path:
     """Execute the sliding window story engine.
 
@@ -1027,7 +1054,6 @@ def run_sliding_story(
     is_venice = video_backend_type == 'venice'
 
     morph_is_veo = morph_backend_type == 'veo'
-    morph_is_ltx = morph_backend_type == 'ltx_video'
     morph_is_venice = morph_backend_type == 'venice'
     resolved_backend_cfgs = resolve_capability_backend_configs(backend_cfg)
     smart_reinject_requested = bool(getattr(config, "smart_reinject_enabled", False))
@@ -1829,6 +1855,7 @@ def run_sliding_story(
                 _requeue_crowd_claim_if_needed("veo_lastframe_extraction_failed")
                 raise
             last_frame_path = lastframe_path
+            _log_image_metrics(lastframe_path, config, "Veo lastframe")
             final_video_paths.append(current_cycle_video_path)
 
             # Save anchor frame from cycle 1 for loop closure + identity refs
@@ -1868,7 +1895,7 @@ def run_sliding_story(
         # VENICE BACKEND CYCLE PATH (v0.7.1-beta)
         # ═══════════════════════════════════════════════════════════════════
         # Venice can do text2vid and img2vid natively. We therefore route it
-        # like Veo/LTX instead of forcing the classic keyframe-first SVD path.
+        # like Veo/Venice/Local instead of forcing the classic keyframe-first SVD path.
         if is_venice:
             venice_mode_str = "text_to_video"
             image_for_venice = None
@@ -2421,6 +2448,7 @@ def run_sliding_story(
                 _resize_frame_to_target(lastframe_path, *_venice_frame_target)
 
             last_frame_path = lastframe_path
+            _log_image_metrics(lastframe_path, config, "Venice lastframe")
             final_video_paths.append(current_cycle_video_path)
 
             if cycle_idx == 1:
@@ -2452,7 +2480,7 @@ def run_sliding_story(
             continue  # Skip ComfyUI cycle logic below
 
         # ═══════════════════════════════════════════════════════════════════
-        # COMFYUI / MOCK BACKEND CYCLE PATH (original v0.5.x logic)
+        # GENERIC BACKEND CYCLE PATH (ComfyUI / AnimateDiff / Mock / Local)
         # ═══════════════════════════════════════════════════════════════════
         # === Step 1: Keyframe generation ===
         if cycle_idx == 1:
@@ -2624,6 +2652,7 @@ def run_sliding_story(
                 _requeue_crowd_claim_if_needed("comfy_cycle1_lastframe_extraction_failed")
                 raise
             last_frame_path = lastframe_path
+            _log_image_metrics(lastframe_path, config, "generic cycle-1 lastframe")
             if cycle_idx == 1 and not anchor_frame_path and keyframe_path.exists():
                 anchor_frame_path = keyframes_dir / "anchor_frame_001.png"
                 shutil.copyfile(keyframe_path, anchor_frame_path)
@@ -2876,6 +2905,7 @@ def run_sliding_story(
             _requeue_crowd_claim_if_needed("comfy_lastframe_extraction_failed")
             raise
         last_frame_path = lastframe_path
+        _log_image_metrics(lastframe_path, config, "generic lastframe")
         final_video_paths.append(current_cycle_video_path)
         briq_data["paths"]["video"] = str(current_cycle_video_path)
         briq_data["paths"]["last_frame"] = str(lastframe_path)
@@ -2893,7 +2923,7 @@ def run_sliding_story(
     _shutdown_smart_reinject_state(smart_reinject_state)
 
     # ═══════════════════════════════════════════════════════════════════════
-    # LOOP CLOSURE (v0.6.0-beta: Veo, v0.6.7-beta: +LTX-Video)
+    # LOOP CLOSURE (Veo / Venice / generic morph backends)
     # ═══════════════════════════════════════════════════════════════════════
     # If enabled, generate a final clip that transitions from the last frame
     # back to the cycle-1 anchor frame, creating a seamless loop.
@@ -2908,7 +2938,6 @@ def run_sliding_story(
         loop_cycle_idx = total_cycles + 1
         loop_backend_label = (
             "Veo" if morph_is_veo else
-            "LTX" if morph_is_ltx else
             "Venice" if morph_is_venice else
             morph_backend_type
         )
@@ -2916,9 +2945,6 @@ def run_sliding_story(
         if morph_is_veo:
             veo_orch_lc = config.veo_config or backend_cfg.get('veo', {})
             lc_strength = float(veo_orch_lc.get('loop_closure_strength', 0.90))
-        elif morph_is_ltx:
-            ltx_lc_cfg = config.ltx_video_config or backend_cfg.get('ltx_video', {})
-            lc_strength = float(ltx_lc_cfg.get('loop_closure_strength', 0.90))
         elif morph_is_venice:
             venice_lc_cfg = config.venice_config or backend_cfg.get('venice', {})
             lc_strength = float(venice_lc_cfg.get('loop_closure_strength', 0.90))
@@ -2975,7 +3001,6 @@ def run_sliding_story(
                     "type": "loop_closure",
                     "backend": morph_backend_type,
                     "mode": (
-                        "conditioned_transition" if morph_is_ltx else
                         "first_last_frame" if morph_is_veo else
                         "morph"
                     ),

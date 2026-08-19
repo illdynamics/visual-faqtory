@@ -21,7 +21,7 @@ class VisualFaQtoryConfigTests(unittest.TestCase):
     def test_build_story_config_supports_split_root_sections(self):
         config = {
             'backend': {'type': 'hybrid', 'width': 768, 'height': 432},
-            'image_backend': {'type': 'qwen_image_comfyui', 'workflow_image': './worqspace/workflows/qwen_t2i.json'},
+            'image_backend': {'type': 'animatediff', 'workflow_video': './worqspace/workflows/animatediff.json'},
             'video_backend': {'type': 'mock'},
             'morph_backend': {'type': 'comfyui', 'workflow_morph': './worqspace/workflows/morph.json'},
             'paragraph_story': {'enable_loop_closure': True, 'img2vid_duration_sec': 2.0, 'video_fps': 8, 'timing_authority': 'duration'},
@@ -39,7 +39,7 @@ class VisualFaQtoryConfigTests(unittest.TestCase):
         story_config = vf._build_story_config()
 
         self.assertEqual(story_config.backend_config['type'], 'hybrid')
-        self.assertEqual(story_config.backend_config['image_backend']['type'], 'qwen_image_comfyui')
+        self.assertEqual(story_config.backend_config['image_backend']['type'], 'animatediff')
         self.assertEqual(story_config.backend_config['video_backend']['type'], 'mock')
         self.assertEqual(story_config.backend_config['morph_backend']['type'], 'comfyui')
         self.assertTrue(story_config.enable_loop_closure)

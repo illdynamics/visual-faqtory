@@ -26,7 +26,7 @@ LEGACY IMMEDIATE BEHAVIOUR (--immediate or OBS_SWAP_MODE=immediate):
 Environment / CLI overrides:
   OBS_HOST                  WebSocket host             (default: 127.0.0.1)
   OBS_PORT                  WebSocket port             (default: 4455)
-  OBS_PASSWORD              WebSocket password         (default: Setyup34!)
+  OBS_PASSWORD              WebSocket password         (REQUIRED, no default)
   OBS_SCENE                 Scene name
   OBS_PREWARM_SEC           Target-PLAYING wait (s)    (default: 0.8)
   OBS_MAX_WAIT_CURRENT_SEC  Max wait for current end   (default: 180)
@@ -41,7 +41,7 @@ Assumption: the OBS media-source loop setting key is "looping" (canonical
 name in obs-studio's ffmpeg_source plugin). If your OBS build uses a
 different key, adjust LOOPING_KEY below.
 
-Part of Visual FaQtory v0.9.3-beta
+Part of Visual FaQtory v0.9.4-beta
 """
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ logging.basicConfig(
 # ── Configuration (overridable via environment) ───────────────────────────
 HOST     = os.environ.get("OBS_HOST",     "127.0.0.1")
 PORT     = int(os.environ.get("OBS_PORT", "4455"))
-PASSWORD = os.environ.get("OBS_PASSWORD", "Setyup34!")
+PASSWORD = os.environ.get("OBS_PASSWORD")
 SCENE    = os.environ.get("OBS_SCENE",    "Ill Dynamics - Live on SkankOut")
 
 # Source names — keep consistent with your OBS setup

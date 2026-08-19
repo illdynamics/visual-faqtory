@@ -14,7 +14,7 @@ The backend is intentionally native HTTP rather than a ComfyUI shim because
 Venice already exposes first-class image and video endpoints with distinct
 async semantics for video jobs.
 
-Part of Visual FaQtory v0.9.3-beta
+Part of Visual FaQtory v0.9.4-beta
 """
 from __future__ import annotations
 
@@ -286,7 +286,7 @@ def _aspect_ratio_from_dims(width: int, height: int) -> str:
     Compute the closest Venice-valid aspect-ratio enum value for the given
     pixel dimensions.
 
-    NOTE (v0.9.3-beta fix): prior versions returned the GCD-reduced ratio
+    NOTE (v0.9.4-beta fix): prior versions returned the GCD-reduced ratio
     (e.g. 856×480 → '107:60'), which Venice rejects with HTTP 400
     invalid_enum_value. We now snap to the nearest enum value via
     _snap_aspect_ratio() using log-distance so 856×480 → '16:9' as expected.
@@ -398,7 +398,7 @@ class VeniceConfig:
             data.setdefault("hide_watermark", image.get("hide_watermark"))
             data.setdefault("safe_mode", image.get("safe_mode"))
             data.setdefault("image_lora_strength", image.get("lora_strength"))
-            # v0.9.3-beta: aspect_ratio for /image/edit and resolution for parity.
+            # v0.9.4-beta: aspect_ratio for /image/edit and resolution for parity.
             # Stringify aspect_ratio so unquoted YAML "16:9" → int 969 doesn't break.
             _img_ar = image.get("aspect_ratio")
             if _img_ar is not None:
@@ -822,7 +822,9 @@ class VeniceBackend(GeneratorBackend):
                         pv = float(raw_prog)
                         progress_0_to_1 = pv if pv <= 1.0 else pv / 100.0
                     except (TypeError, ValueError):
-                        pass
+                        logger.debug(
+                            "Could not parse Venice progress value: %r", raw_prog
+                        )
 
                 if status_name != last_status_name:
                     logger.debug(
@@ -1479,7 +1481,7 @@ class VeniceBackend(GeneratorBackend):
         # Track whether we already snapped the resolution to avoid infinite loops.
         resolution_snapped: bool = False
         # Track whether we already snapped the aspect_ratio to avoid infinite loops.
-        # (v0.9.3-beta) Defence-in-depth — the request-builder already snaps
+        # (v0.9.4-beta) Defence-in-depth — the request-builder already snaps
         # aspect_ratio to a Venice-valid enum value, but if a future model
         # narrows the accepted set further this lets us recover gracefully
         # instead of bubbling up an HTTP 400.
@@ -1566,7 +1568,7 @@ class VeniceBackend(GeneratorBackend):
                             continue
 
                 # ── Aspect ratio snap-to-nearest ──────────────────────────────
-                # (v0.9.3-beta) Same logic as duration / resolution: when
+                # (v0.9.4-beta) Same logic as duration / resolution: when
                 # Venice rejects aspect_ratio with invalid_enum_value and
                 # provides the accepted options, snap to the nearest valid
                 # value (by log-ratio distance) and retry once.
@@ -1778,7 +1780,10 @@ class VeniceBackend(GeneratorBackend):
                     if delta > 0:
                         return min(float(self.venice_cfg.retry_backoff_max), delta)
                 except ValueError:
-                    pass
+                    logger.debug(
+                        "Could not parse Venice x-ratelimit-reset-requests header: %r",
+                        reset_at,
+                    )
         base = max(0.25, float(self.venice_cfg.retry_backoff_base or 1.5))
         return min(float(self.venice_cfg.retry_backoff_max), base * (2 ** max(0, attempt - 1)))
 

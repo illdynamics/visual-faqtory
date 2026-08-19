@@ -13,7 +13,7 @@ First-class Veo backend for Visual FaQtory, supporting:
 
 Uses the official Google Gen AI SDK (google-genai).
 
-Part of Visual FaQtory v0.6.0-beta
+Part of Visual FaQtory v0.9.4-beta
 """
 import base64
 import json
@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from .backends import GeneratorBackend
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +187,7 @@ def _resolve_auth(provider: VeoProvider) -> Dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-class VeoBackend:
+class VeoBackend(GeneratorBackend):
     """
     Google Veo video generation backend for Visual FaQtory.
 
@@ -208,7 +210,7 @@ class VeoBackend:
                 - veo: dict with VeoConfig fields
                 - width/height: resolution hints (mapped to Veo aspect_ratio/resolution)
         """
-        self.config = config
+        super().__init__(config)
         self.name = "veo"
 
         # Parse Veo-specific config

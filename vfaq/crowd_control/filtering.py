@@ -9,7 +9,7 @@ Handles:
   - Empty rejection
   - Bad word / phrase filtering with extendable file
 
-Part of Visual FaQtory v0.9.3-beta
+Part of Visual FaQtory v0.9.4-beta
 """
 from __future__ import annotations
 

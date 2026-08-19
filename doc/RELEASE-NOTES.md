@@ -1,5 +1,24 @@
 # Release Notes
 
+## v0.9.4-beta
+
+### Local MLX backend + hard cleanup
+
+- Added a `local` backend for Apple Silicon via pluggable runners:
+  - `lightning-mlx` (default), `mflux`, and fully-custom `command` templates
+  - Models: FLUX.1-dev, FLUX.1 Kontext, Wan 2.2, Z-Image-Turbo
+- Removed the legacy agent trio (`instruqtor`, `construqtor`, `inspeqtor`) plus
+  `prompt_bundle`, `prompt_synth`, `base_folders`, `visual_briq`, `diagnostics`,
+  and `video_validator` dead code.
+- Removed LTX-Video and Qwen image backend code and references everywhere.
+- Removed hardcoded OBS WebSocket password and crowd-control pop token defaults;
+  they are now env-only (`OBS_PASSWORD`, `VF_CROWD_TOKEN`).
+- Fixed `traceback` import, `Finalizer.quality.encoder_preference`, unique concat
+  temp files, and Veo backend inheritance.
+- Added configurable image metrics (blur/entropy) and BPM-derived audio sync.
+- Crowd-control default port changed to `8000` to match `config.yaml`.
+- Version bumped everywhere to v0.9.4-beta.
+
 ## v0.9.3-beta
 
 ### Crowd Control: robust baked mutation flow for QR prompts
@@ -251,15 +270,10 @@ the value set in YAML the code fell through to the broken GCD path.
 - Updated startup log: 3 lines merged to 1 compact line
 - Version bump: v0.8.10-beta → v0.9.0-beta
 
-**Backend removal (Qwen, AnimateDiff, LTX-Video)**
-- Removed `qwen_image_python_backend.py` and `ltx_video_backend.py` entirely
-- Removed `QwenImageComfyUIBackend`, `QwenImageBackend`, `AnimateDiffBackend` from `backends.py`
-- Removed all qwen/animatediff/ltx routing from `sliding_story_engine.py` and `visual_faqtory.py`
-- Removed dead workflow files: `animatediff_i2v.json`, `animatediff_morph_i2v.json`, `qwen_image_*.json`
-- Removed config examples: `config-animatediff.example.yaml`, `config-qwen-svd.example.yaml`, `config-ltx.yaml`
-- Removed backend test files for deleted backends
-- Cleaned `requirements.txt` — removed Qwen/LTX deps; kept: pyyaml, requests, websocket-client, google-genai, pillow, numpy, fastapi, uvicorn, qrcode, obsws_python
-- Removed morph from `describe_backend_config()` output (cleaner log line)
+**Backend cleanup (completed in v0.9.4-beta)**
+- Removed the retired LTX-Video and Qwen image backend code and references.
+- AnimateDiff remains available as a ComfyUI-backed video backend.
+- Cleaned `requirements.txt` — kept: pyyaml, requests, websocket-client, google-genai, pillow, numpy, fastapi, uvicorn, qrcode, obsws_python
 
 **Log consolidation (at source, not filtered)**
 - `[FaQtory]` startup: 3 lines → 1 (`Starting run — mode: X | reinject: Y | id: Z`)

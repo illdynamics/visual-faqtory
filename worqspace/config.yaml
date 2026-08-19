@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Visual FaQtory v0.9.3-beta — config.yaml
+# Visual FaQtory v0.9.4-beta — config.yaml
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # Active config preserves every previously-set value exactly. Only changes vs
@@ -36,6 +36,36 @@ video_backend:
 
 morph_backend:
   type: venice
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LOCAL MLX BACKEND (Apple Silicon via lightning-mlx / mflux / custom command)
+# ─────────────────────────────────────────────────────────────────────────────
+# Set backend.type: local (and image_backend/video_backend/morph_backend to
+# local when using split routing) to run FLUX.1-dev, FLUX.1 Kontext, Wan 2.2
+# and Z-Image-Turbo locally. Fill in model_paths with the actual on-disk
+# locations, then see worqspace/config-local.example.yaml for full options.
+local:
+  runner: lightning-mlx          # lightning-mlx | mflux | command
+  timeout: 3600
+  width: 1024
+  height: 576
+  steps: 30
+  fps: 8
+  models:
+    image: z-image-turbo         # z-image-turbo | flux-1-dev
+    video: wan-2.2
+    edit: flux-1-kontext
+  model_paths:
+    flux-1-dev: /path/to/flux-1-dev
+    flux-1-kontext: /path/to/flux-1-kontext
+    wan-2.2: /path/to/wan-2.2
+    z-image-turbo: /path/to/z-image-turbo
+  lightning_mlx:
+    executable: lightning-mlx
+    # Optional overrides for the default CLI templates:
+    # image_template: "..."
+    # video_template: "..."
+    # morph_template: "..."
 
 input:
   mode: text                     # text | image | video
@@ -180,6 +210,14 @@ audio:
   sync_video_audio: false      # Compute cycle count from audio duration
   cycle_seconds: 5             # Seconds per cycle when sync_video_audio: true
 #                                # (defaults to paragraph_story.img2vid_duration_sec)
+#  bpm: 128                     # Optional: derive cycle_seconds from tempo
+#  beats_per_cycle: 4           # Optional: beats per visual cycle (with bpm)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IMAGE METRICS (optional diagnostics; off by default, non-fatal)
+# ─────────────────────────────────────────────────────────────────────────────
+image_metrics:
+  enabled: false                # Log blur/entropy for extracted frames each cycle
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CROWD CONTROL (Live Audience Prompt Injection)
@@ -200,7 +238,7 @@ audio:
 crowd_control:
   enabled: true                        # Set true to activate crowd prompt injection
   base_url: "http://127.0.0.1:8000/visuals"  # Must match the actual crowd server port (currently running on port 8000)
-  pop_token: "Setyup34Setyup34Setyup34Setyup34"    # Bearer token for /api/next endpoint
+  pop_token: "${VF_CROWD_TOKEN}"    # Bearer token for /api/next endpoint
   timeout_seconds: 1.0                  # HTTP timeout for generator→server calls
   inject_label: "Audience mutation request"  # Label injected into the prompt
   inject_mode: "replace"                 # append = add to story | replace = override story

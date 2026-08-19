@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-Visual FaQtory v0.9.3-beta
+Visual FaQtory v0.9.4-beta
 ═══════════════════════════════════════════════════════════════════════════════
 
 An automated, long-form AI visual generation pipeline for music, DJ sets,
 and experimental audiovisual projects.
 
-Pipeline: paragraph_story (sliding window) + Hybrid-capable backends (ComfyUI, Venice, Veo, Mock) + Finalizer
+Pipeline: paragraph_story (sliding window) + Hybrid-capable backends (ComfyUI, Venice, Veo, Local MLX) + Finalizer
 
-v0.9.3-beta — Native Python Qwen image backend
+v0.9.4-beta — Local MLX backend
+  - NEW: local backend for FLUX.1-dev, FLUX.1 Kontext, Wan 2.2, Z-Image-Turbo
+  - NEW: pluggable runners (lightning-mlx / mflux / custom command)
   - KEPT: split-capability backend routing
-  - KEPT: Qwen image stage via ComfyUI workflows
-  - NEW: image-only qwen_image_python / qwen_python local inference backend
-  - KEPT: AnimateDiff video backend and Venice native backend
+  - KEPT: ComfyUI, AnimateDiff, Venice and Veo backends
 
 License: AGPL-3.0
 """
@@ -21,19 +21,6 @@ from .version import __version__
 __author__ = "Ill Dynamics / WoNQ"
 __license__ = "AGPL-3.0"
 
-from .visual_briq import (
-    VisualBriq, GenerationSpec, InputMode, BriqStatus,
-    CycleState, generate_briq_id
-)
-from .prompt_bundle import PromptBundle, load_prompt_bundle
-from .prompt_synth import (
-    synthesize_prompt, synthesize_video_prompt,
-    load_evolution_lines, select_evolution_mutations, map_motion_to_bucket_id,
-)
-from .base_folders import select_base_files
-from .instruqtor import InstruQtor
-from .construqtor import ConstruQtor
-from .inspeqtor import InspeQtor
 from .finalizer import Finalizer
 from .backends import (
     BackendType, GenerationRequest, GenerationResult,
@@ -44,18 +31,13 @@ from .backends import (
 )
 from .sliding_story_engine import SlidingStoryConfig, run_sliding_story
 from .venice_backend import VeniceBackend
+from .local_backend import LocalBackend
 
 __all__ = [
     "__version__", "__author__", "__license__",
-    "VisualBriq", "GenerationSpec", "InputMode", "BriqStatus",
-    "CycleState", "generate_briq_id",
-    "PromptBundle", "load_prompt_bundle",
-    "synthesize_prompt", "synthesize_video_prompt",
-    "load_evolution_lines", "select_evolution_mutations", "map_motion_to_bucket_id",
-    "select_base_files",
-    "InstruQtor", "ConstruQtor", "InspeQtor", "Finalizer",
+    "Finalizer",
     "BackendType", "GenerationRequest", "GenerationResult",
-    "GeneratorBackend", "MockBackend", "ComfyUIBackend", "DelegatingBackend", "VeniceBackend",
+    "GeneratorBackend", "MockBackend", "ComfyUIBackend", "DelegatingBackend", "VeniceBackend", "LocalBackend",
     "extract_backend_config", "has_split_backend_config", "resolve_capability_backend_configs",
     "get_backend_type_for_capability", "describe_backend_config",
     "create_backend", "list_available_backends",

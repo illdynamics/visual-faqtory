@@ -1,4 +1,4 @@
-# Visual FaQtory v0.9.3-beta — Documentation
+# Visual FaQtory v0.9.4-beta — Documentation
 
 ## Venice native backend (Primary)
 
@@ -81,13 +81,12 @@ story.txt → paragraph sliding window → per-cycle generation
 
 ## 2. Architecture
 
-### Pipeline Agents
+### Pipeline (single-engine)
 
-The core pipeline uses three agents in sequence:
-
-- **InstruQtor** — Reads config and prompt files, prepares VisualBriq instruction packets per cycle.
-- **ConstruQtor** — Validates inputs, calls the backend for image and video generation.
-- **InspeQtor** — Runs quality checks on generated content.
+Visual FaQtory runs a single paragraph-driven sliding-window engine. The
+legacy InstruQtor / ConstruQtor / InspeQtor agent split has been removed;
+prompt synthesis and quality gating now live directly in
+`sliding_story_engine.py` and `finalizer.py`.
 
 ### Orchestration
 
@@ -248,22 +247,27 @@ The ComfyUI backend supports:
 - `generate_video()` — ComfyUI img2vid workflows (SVD by default)
 - `generate_morph_video()` — Morph between two images (requires workflow)
 
-### Qwen-Image (Split image/video mode)
+### Local MLX backend (Apple Silicon)
 
-Visual FaQtory supports two image-only Qwen backends for hybrid setups:
+Run FLUX.1-dev, FLUX.1 Kontext, Wan 2.2 and Z-Image-Turbo locally via a
+pluggable runner (`lightning-mlx` by default, plus `mflux` or a custom
+`command`). See `worqspace/config-local.example.yaml` and
+`macbook-finish-vfaq-steps.md`.
 
-- `qwen_image_comfyui` for ComfyUI-driven Qwen text2img/img2img
-- `qwen_image_python` / `qwen_python` for native local Python Qwen text2img/img2img via diffusers
-
-Supported hybrid config:
 ```yaml
 backend:
-  type: hybrid
-image_backend:
-  type: qwen_image_comfyui
-  workflow_image: ./worqspace/workflows/qwen_image_t2i.json
-video_backend:
-  type: venice
+  type: local
+local:
+  runner: lightning-mlx
+  models:
+    image: z-image-turbo
+    video: wan-2.2
+    edit: flux-1-kontext
+  model_paths:
+    flux-1-dev: /path/to/flux-1-dev
+    flux-1-kontext: /path/to/flux-1-kontext
+    wan-2.2: /path/to/wan-2.2
+    z-image-turbo: /path/to/z-image-turbo
 ```
 
 ### AnimateDiff Backend
@@ -388,4 +392,4 @@ veo:
 
 ---
 
-*Visual FaQtory v0.9.3-beta — Built by Ill Dynamics / WoNQ*
+*Visual FaQtory v0.9.4-beta — Built by Ill Dynamics / WoNQ*

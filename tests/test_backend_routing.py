@@ -3,11 +3,11 @@ import unittest
 from pathlib import Path
 
 from vfaq.backends import (
+    AnimateDiffBackend,
     DelegatingBackend,
     GenerationRequest,
     GenerationResult,
     MockBackend,
-    QwenImageComfyUIBackend,
     create_backend,
     describe_backend_config,
     extract_backend_config,
@@ -30,18 +30,18 @@ class BackendRoutingTests(unittest.TestCase):
     def test_extract_backend_config_supports_top_level_split_sections(self):
         root = {
             'backend': {'type': 'hybrid', 'width': 1024},
-            'image_backend': {'type': 'qwen_image_comfyui', 'workflow_image': './qwen_t2i.json'},
+            'image_backend': {'type': 'animatediff', 'workflow_video': './animatediff.json'},
             'video_backend': {'type': 'comfyui', 'workflow_video': './svd.json'},
             'morph_backend': {'type': 'comfyui', 'workflow_morph': './morph.json'},
         }
         backend_cfg = extract_backend_config(root)
         resolved = resolve_capability_backend_configs(root)
         self.assertEqual(backend_cfg['type'], 'hybrid')
-        self.assertEqual(resolved['image']['type'], 'qwen_image_comfyui')
+        self.assertEqual(resolved['image']['type'], 'animatediff')
         self.assertEqual(resolved['video']['type'], 'comfyui')
         self.assertEqual(resolved['morph']['type'], 'comfyui')
-        self.assertEqual(get_backend_type_for_capability(root, 'image'), 'qwen_image_comfyui')
-        self.assertEqual(describe_backend_config(root), 'split(image=qwen_image_comfyui, video=comfyui, morph=comfyui)')
+        self.assertEqual(get_backend_type_for_capability(root, 'image'), 'animatediff')
+        self.assertEqual(describe_backend_config(root), 'split(image=animatediff, video=comfyui, morph=comfyui)')
 
     def test_create_backend_keeps_single_backend_compatibility(self):
         backend = create_backend({'type': 'mock', 'mock_delay': 0.0})
@@ -68,11 +68,11 @@ class BackendRoutingTests(unittest.TestCase):
         self.assertEqual(result.video_path, src)
         self.assertTrue(result.metadata['extended'])
 
-    def test_qwen_backend_requires_workflow_image_for_availability(self):
-        backend = QwenImageComfyUIBackend({'api_url': 'http://localhost:8188'})
+    def test_animatediff_requires_workflow_video_for_availability(self):
+        backend = AnimateDiffBackend({'api_url': 'http://localhost:8188'})
         available, message = backend.check_availability()
         self.assertFalse(available)
-        self.assertIn('workflow_image', message)
+        self.assertIn('workflow_video', message)
 
     def test_extract_backend_config_keeps_venice_section(self):
         root = {

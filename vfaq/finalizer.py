@@ -31,7 +31,7 @@ NON-NEGOTIABLE RULES:
 
 Supports NVENC-based encoding (h264_nvenc preferred, libx264 fallback).
 
-Part of Visual FaQtory v0.5.6-beta
+Part of Visual FaQtory v0.9.4-beta
 """
 import logging
 import subprocess
@@ -152,7 +152,22 @@ class Finalizer:
             self.per_cycle_quality = 18
             self.finalizer_crf = 16
 
-        self.encoder_preference = cfg.get('encoder_preference', ['h264_nvenc', 'libx264'])
+        # Resolve encoder preference, honouring finalizer.quality.encoder_preference
+        # when present (it is the documented location). "auto" means: try NVENC
+        # first, then fall back to libx264.
+        raw_encoder_pref = cfg.get('encoder_preference')
+        quality_cfg = cfg.get('quality')
+        if isinstance(quality_cfg, dict) and quality_cfg.get('encoder_preference') is not None:
+            raw_encoder_pref = quality_cfg.get('encoder_preference')
+        if raw_encoder_pref is None:
+            raw_encoder_pref = ['h264_nvenc', 'libx264']
+        if isinstance(raw_encoder_pref, str):
+            raw_encoder_pref = [raw_encoder_pref]
+        else:
+            raw_encoder_pref = list(raw_encoder_pref)
+        if 'auto' in raw_encoder_pref:
+            raw_encoder_pref = ['h264_nvenc', 'libx264']
+        self.encoder_preference = raw_encoder_pref
 
         # Deliverable paths
         self.final_deliverable_path = self.project_dir / "final_60fps_1080p.mp4"
@@ -869,9 +884,14 @@ class Finalizer:
             videos = sorted(self.project_dir.glob("cycle*_video.mp4"))
         return videos
 
+    def _make_unique_concat_file(self) -> Path:
+        """Return a unique, per-call concat list path to avoid shared temp files."""
+        import uuid
+        return self.project_dir / f"_concat_list_{uuid.uuid4().hex}.txt"
+
     def _concat_stream_copy(self, videos: List[Path]) -> bool:
         """Concatenate using stream copy (no re-encoding). Fastest method."""
-        concat_file = self.project_dir / "_concat_list.txt"
+        concat_file = self._make_unique_concat_file()
 
         try:
             with open(concat_file, 'w') as f:
@@ -902,7 +922,7 @@ class Finalizer:
 
     def _concat_reencode(self, videos: List[Path]) -> bool:
         """Concatenate with re-encoding. Slower but handles mixed formats."""
-        concat_file = self.project_dir / "_concat_list.txt"
+        concat_file = self._make_unique_concat_file()
 
         try:
             with open(concat_file, 'w') as f:

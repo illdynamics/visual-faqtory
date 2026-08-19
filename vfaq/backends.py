@@ -4,16 +4,15 @@ backends.py - AI Generation Backend Abstraction
 ═══════════════════════════════════════════════════════════════════════════════
 
 Pluggable backends for image and video generation:
-  - MockBackend: Testing without GPU (fully functional)
+  - MockBackend: Testing without GPU (kept as an internal test fixture, not a user-facing backend)
   - ComfyUIBackend: ComfyUI API (production backend)
-  - QwenImageComfyUIBackend: Qwen still-image generation via ComfyUI workflows
-  - QwenImagePythonBackend: Native local Python inference for Qwen still images
   - VeoBackend: Google Veo via Gen AI SDK (see veo_backend.py)
-  - LTXVideoBackend: LTX-Video self-hosted local inference (see ltx_video_backend.py)
+  - VeniceBackend: Venice API backend (see venice_backend.py)
+  - LocalBackend: Local MLX models via lightning-mlx / mflux / custom command (see local_backend.py)
 
 Each backend implements the GeneratorBackend interface.
 
-Part of Visual FaQtory v0.9.3-beta
+Part of Visual FaQtory v0.9.4-beta
 """
 import os
 import io
@@ -41,6 +40,7 @@ class BackendType(Enum):
     COMFYUI = "comfyui"
     VEO = "veo"
     VENICE = "venice"
+    LOCAL = "local"
     DELEGATING = "delegating"
 
 
@@ -132,7 +132,7 @@ CAPABILITY_CONFIG_MAP = {
     "morph": "morph_backend",
 }
 
-SHARED_BACKEND_SECTION_KEYS = ("lora", "comfyui", "veo", "venice")
+SHARED_BACKEND_SECTION_KEYS = ("lora", "comfyui", "veo", "venice", "local")
 FACADE_BACKEND_TYPES = {"hybrid", "delegating"}
 
 
@@ -1566,31 +1566,6 @@ class AnimateDiffBackend(ComfyUIBackend):
         return super().check_availability()
 
 
-class QwenImageComfyUIBackend(ComfyUIBackend):
-    """ComfyUI-backed Qwen image backend."""
-
-    def __init__(self, config: Dict[str, Any]):
-        super().__init__(config)
-        self.name = "qwen_image_comfyui"
-
-    def check_availability(self) -> tuple:
-        if not self.workflow_image_path:
-            return False, "Qwen image backend requires workflow_image in config"
-        return super().check_availability()
-
-
-class QwenImageBackend(QwenImageComfyUIBackend):
-    """
-    Legacy alias for Qwen image backend.
-
-    Keeps compatibility with older configs/tests that reference `qwen_image`.
-    """
-
-    def __init__(self, config: Dict[str, Any]):
-        super().__init__(config)
-        self.name = "qwen_image"
-
-
 class DelegatingBackend(GeneratorBackend):
     """Facade backend that routes image/video/morph calls by capability."""
 
@@ -1661,15 +1636,7 @@ def _create_single_backend(config: Dict[str, Any]) -> GeneratorBackend:
     """Instantiate one concrete backend from a normalized config."""
     backend_type = str(config.get('type', 'mock') or 'mock').lower()
 
-    backends = {
-        'mock': MockBackend,
-        'comfyui': ComfyUIBackend,
-        'animatediff': AnimateDiffBackend,
-        'qwen_image_comfyui': QwenImageComfyUIBackend,
-        'qwen_image': QwenImageBackend,
-        'venice': None,
-        }
-
+    # Lazily imported / heavy backends.
     if backend_type == 'venice':
         try:
             from .venice_backend import VeniceBackend
@@ -1690,7 +1657,21 @@ def _create_single_backend(config: Dict[str, Any]) -> GeneratorBackend:
                 f"Import error: {e}"
             )
 
-    backends.pop('venice', None)
+    if backend_type == 'local':
+        try:
+            from .local_backend import LocalBackend
+            return LocalBackend(config)
+        except ImportError as e:
+            raise RuntimeError(
+                f"Local backend import failed: {e}\n"
+                f"Ensure local_backend.py is present."
+            )
+
+    backends = {
+        'mock': MockBackend,
+        'comfyui': ComfyUIBackend,
+        'animatediff': AnimateDiffBackend,
+    }
 
     if backend_type not in backends:
         logger.warning(f"Unknown backend '{backend_type}', using mock")
@@ -1715,9 +1696,14 @@ def create_backend(config: Dict[str, Any]) -> GeneratorBackend:
 
 
 def list_available_backends() -> Dict[str, tuple]:
-    """Check all backend availability."""
-    results = {}
-    for name, cls in [('mock', MockBackend), ('comfyui', ComfyUIBackend), ('animatediff', AnimateDiffBackend), ('qwen_image_comfyui', QwenImageComfyUIBackend), ('qwen_image', QwenImageBackend)]:
+    """Check all user-facing backend availability.
+
+    ``mock`` is intentionally omitted: it is an internal test fixture, not a
+    selectable production backend.
+    """
+    results: Dict[str, tuple] = {}
+
+    for name, cls in [('comfyui', ComfyUIBackend), ('animatediff', AnimateDiffBackend)]:
         try:
             backend = cls({})
             results[name] = backend.check_availability()
@@ -1727,7 +1713,6 @@ def list_available_backends() -> Dict[str, tuple]:
     # Check Venice availability
     try:
         from .venice_backend import VeniceBackend  # noqa: F401
-        import os
         api_key = os.environ.get('VENICE_API_KEY') or os.environ.get('VENICE_API_TOKEN')
         if api_key:
             results['venice'] = (True, 'Venice backend importable, credentials detected')
@@ -1743,8 +1728,6 @@ def list_available_backends() -> Dict[str, tuple]:
         from .veo_backend import VeoBackend  # noqa: F401
         import importlib
         importlib.import_module("google.genai")
-        # SDK importable — check if any auth env vars are set
-        import os
         has_auth = any(os.environ.get(k) for k in [
             "GOOGLE_API_KEY", "GEMINI_API_KEY",
             "GOOGLE_API_TOKEN", "GEMINI_API_TOKEN",
@@ -1759,7 +1742,13 @@ def list_available_backends() -> Dict[str, tuple]:
     except Exception as e:
         results['veo'] = (False, f"Veo: {e}")
 
-    # Check LTX-Video availability
+    # Check local MLX backend (importable + runner/model paths).
+    try:
+        from .local_backend import LocalBackend
+        backend = LocalBackend({'runner': 'lightning-mlx'})
+        results['local'] = backend.check_availability()
+    except Exception as e:
+        results['local'] = (False, f"local: {e}")
 
     return results
 
@@ -1770,7 +1759,6 @@ __all__ = [
     'extract_backend_config', 'has_split_backend_config', 'resolve_capability_backend_configs',
     'get_backend_type_for_capability', 'describe_backend_config',
     'GeneratorBackend', 'MockBackend', 'ComfyUIBackend', 'AnimateDiffBackend',
-    'QwenImageComfyUIBackend', 'QwenImageBackend', 'DelegatingBackend',
+    'DelegatingBackend',
     'create_backend', 'list_available_backends',
-    # LTXVideoBackend is lazily imported via create_backend() — not in __all__
 ]

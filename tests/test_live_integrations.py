@@ -7,7 +7,6 @@ from vfaq.backends import (
     ComfyUIBackend,
     GenerationRequest,
     InputMode,
-    QwenImageComfyUIBackend,
 )
 from vfaq.venice_backend import VeniceBackend
 
@@ -30,71 +29,6 @@ def _smoke_prompt(prefix: str) -> str:
 
 
 class TestLiveComfyIntegrations:
-    def test_live_qwen_text2img(self, tmp_path: Path):
-        skip_unless_flag("VF_RUN_LIVE_COMFY_TESTS", "live ComfyUI tests")
-        workflow_image = require_existing_file_env("VF_COMFY_QWEN_WORKFLOW_IMAGE", "Qwen text2img live test")
-
-        backend = QwenImageComfyUIBackend({
-            "api_url": comfy_api_url(),
-            "timeout": comfy_timeout(),
-            "workflow_image": str(workflow_image),
-        })
-        ok, message = backend.check_availability()
-        assert ok, message
-
-        output_dir = tmp_path / "qwen_text2img"
-        result = backend.generate_image(
-            GenerationRequest(
-                prompt=_smoke_prompt("Qwen live text2img"),
-                mode=InputMode.TEXT,
-                width=512,
-                height=512,
-                steps=8,
-                cfg_scale=4.0,
-                output_dir=output_dir,
-                atom_id="live_qwen_t2i",
-            )
-        )
-
-        assert result.success, result.error
-        media_type = assert_valid_image(result.image_path)
-        assert media_type in {"image/png", "image/jpeg", "image/webp", "image/gif"}
-
-    def test_live_qwen_img2img(self, tmp_path: Path):
-        skip_unless_flag("VF_RUN_LIVE_COMFY_TESTS", "live ComfyUI tests")
-        workflow_image = require_existing_file_env("VF_COMFY_QWEN_WORKFLOW_IMAGE", "Qwen text2img live test")
-        workflow_img2img = require_existing_file_env("VF_COMFY_QWEN_WORKFLOW_IMG2IMG", "Qwen img2img live test")
-        source_image = create_placeholder_png(tmp_path / "qwen_input.png")
-
-        backend = QwenImageComfyUIBackend({
-            "api_url": comfy_api_url(),
-            "timeout": comfy_timeout(),
-            "workflow_image": str(workflow_image),
-            "workflow_img2img": str(workflow_img2img),
-        })
-        ok, message = backend.check_availability()
-        assert ok, message
-
-        output_dir = tmp_path / "qwen_img2img"
-        result = backend.generate_image(
-            GenerationRequest(
-                prompt=_smoke_prompt("Qwen live img2img"),
-                mode=InputMode.IMAGE,
-                init_image_path=source_image,
-                denoise_strength=0.35,
-                width=512,
-                height=512,
-                steps=8,
-                cfg_scale=4.0,
-                output_dir=output_dir,
-                atom_id="live_qwen_i2i",
-            )
-        )
-
-        assert result.success, result.error
-        media_type = assert_valid_image(result.image_path)
-        assert media_type in {"image/png", "image/jpeg", "image/webp", "image/gif"}
-
     def test_live_comfy_svd_img2vid(self, tmp_path: Path):
         skip_unless_flag("VF_RUN_LIVE_COMFY_TESTS", "live ComfyUI tests")
         workflow_video = require_existing_file_env("VF_COMFY_SVD_WORKFLOW_VIDEO", "ComfyUI SVD img2vid live test")

@@ -10,7 +10,7 @@ sn't match a supported version!
   ╚████╔╝ ██║███████║╚██████╔╝██║  ██║███████╗    ██║     ██║  ██║╚██████╔╝   ██║   ╚██████╔╝██║  ██║   ██║
    ╚═══╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝    ╚═╝     ╚═╝  ╚═╝ ╚══▀▀═╝    ╚═╝    ╚═════╝ ╚═╝  ╚═╝   ╚═╝
 
-  Visual FaQtory v0.9.3-beta
+  Visual FaQtory v0.9.4-beta
   ═══════════════════════════════════════
   Reinject Default ON | Hybrid split routing | ComfyUI + Venice + Veo
 

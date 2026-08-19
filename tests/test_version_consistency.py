@@ -14,7 +14,7 @@ FILES_TO_CHECK = [
     ROOT / "ops/systemd/vf-srt-watcher.service.example",
     ROOT / "ops/systemd/vf-crowd-control.service.example",
 ]
-STALE_CURRENT_VERSION_LITERALS = {"v0.7.7-beta", "v0.7.8-beta", "v0.5.9-beta"}
+STALE_CURRENT_VERSION_LITERALS = {"v0.9.3-beta", "v0.8.4-beta", "v0.7.7-beta", "v0.7.8-beta", "v0.5.9-beta"}
 
 
 def test_version_file_matches_shared_version():
