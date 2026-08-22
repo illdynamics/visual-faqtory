@@ -48,7 +48,6 @@ local:
   width: 1024
   height: 576
   steps: 8                        # Z-Image-Turbo uses 8; FLUX dev/Kontext use ~25
-  fps: 8
   quantize: 4                     # mflux quantization (4=4bit, 8=8bit, auto/empty = model default)
 
   # Capability → model mapping.
@@ -100,6 +99,10 @@ local:
 
   wan:
     executable: mlx-gen-wan       # SceneWorks native Wan 2.2 worker
+    # denoising_step_list: [1000, 750, 500, 250]  # optional Self-Forcing grid
+    steps: 4                      # video step count (independent of image `local.steps`)
+    flow_shift: 3.0
+    fps: 8                        # video fps (images have no fps)
 
   # Fully custom command runner example (unused unless runner/command chosen):
   # command:

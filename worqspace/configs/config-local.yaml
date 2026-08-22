@@ -54,7 +54,6 @@ local:
   height: 576
   steps: 30
   # FLUX.1-dev / FLUX.1 Kontext use ~25-30 steps; Z-Image-Turbo would use 8.
-  fps: 24
   quantize: 4
 
   models:
@@ -86,7 +85,10 @@ local:
 
   wan:
     executable: mlx-gen
-    denoising_step_list: [1000, 750, 500, 250]
+    # denoising_step_list: [1000, 750, 500, 250]  # disabled — use steps + flow-shift instead
+    steps: 4
+    flow_shift: 3.0
+    fps: 24
     guidance: 1
     solver: unipc
     low_ram: true

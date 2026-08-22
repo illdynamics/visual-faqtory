@@ -358,7 +358,12 @@ class WanRunner(LocalRunner):
     def _common(self, model_spec, request, output_path, source_image, values):
         exe = self.executable()
         duration = float(request.duration_seconds or 5.0)
-        fps = float(request.video_fps or self.local_cfg.get("fps", 12))
+        fps = float(
+            request.video_fps
+            or self.config.get("fps")
+            or self.local_cfg.get("fps")
+            or 12
+        )
         if request.video_frames:
             frames = int(request.video_frames)
         else:
@@ -368,8 +373,11 @@ class WanRunner(LocalRunner):
         max_frames = int(self.config.get("max_frames") or self.local_cfg.get("max_frames") or 65)
         frames = min(frames, max_frames)
 
-        # Self-Forcing Wan Turbo uses an explicit denoising-step grid instead
-        # of a step count (the two are mutually exclusive in the Wan CLI).
+        # Wan supports two mutually-exclusive sampling modes:
+        #   * denoising_step_list — explicit Self-Forcing denoise grid
+        #   * steps (+ optional flow_shift) — standard step count
+        # Prefer the denoise grid when present; otherwise fall back to
+        # `local.wan.steps` + `local.wan.flow_shift`.
         denoising_step_list = self.config.get("denoising_step_list") or self.config.get("denoising-step-list")
         if denoising_step_list is not None:
             if isinstance(denoising_step_list, (str, int, float)):
@@ -398,8 +406,20 @@ class WanRunner(LocalRunner):
         if denoising_step_list:
             cmd += ["--denoising-step-list", *[str(step) for step in denoising_step_list]]
         else:
-            steps = int(self.config.get("steps") or request.steps or self.local_cfg.get("steps", 30))
+            # Video step count is independent of the image `local.steps`
+            # (which drives Z-Image-Turbo). Prefer `local.wan.steps`, then an
+            # explicit request override, then the legacy shared `local.steps`.
+            steps = int(
+                self.config.get("steps")
+                or request.steps
+                or self.local_cfg.get("steps", 30)
+            )
             cmd += ["--steps", str(steps)]
+        flow_shift = self.config.get("flow_shift")
+        if flow_shift is None:
+            flow_shift = self.config.get("flow-shift")
+        if flow_shift not in (None, ""):
+            cmd += ["--flow-shift", str(flow_shift)]
         cmd += [
             "--seed", str(request.seed if request.seed is not None else 0),
             "--progress",

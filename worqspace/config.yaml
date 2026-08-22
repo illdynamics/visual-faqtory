@@ -53,7 +53,6 @@ local:
   height: 576
   steps: 8
   # Z-Image-Turbo uses ~8 steps (distilled few-step sampler).
-  fps: 12
   quantize: 4
 
   models:
@@ -79,7 +78,10 @@ local:
 
   wan:
     executable: mlxgen-generate-wan
-    denoising_step_list: [1000, 750, 500, 250]
+    # denoising_step_list: [1000, 750, 500, 250]  # disabled — use steps + flow-shift instead
+    steps: 4
+    flow_shift: 3.0
+    fps: 12
     guidance: 1
     solver: euler
     low_ram: false
