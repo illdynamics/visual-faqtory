@@ -96,3 +96,55 @@ def test_keep_text_encoder_omitted_by_default():
 def test_keep_text_encoder_invalid_value_raises():
     with pytest.raises(ValueError, match="keep_text_encoder"):
         _build({"keep_text_encoder": "banana"})
+
+
+
+def test_compile_transformer_true_emits_flag():
+    cmd = _build({"compile_transformer": True})
+    assert "--compile-transformer" in cmd
+
+
+def test_compile_transformer_false_omits_flag():
+    cmd = _build({"compile-transformer": False})
+    assert "--compile-transformer" not in cmd
+
+
+def test_compile_transformer_string_true_is_normalized():
+    cmd = _build({"compile_transformer": "true"})
+    assert "--compile-transformer" in cmd
+
+
+def test_compile_transformer_string_false_is_normalized():
+    cmd = _build({"compile_transformer": "no"})
+    assert "--compile-transformer" not in cmd
+
+
+def test_compile_transformer_omitted_by_default():
+    cmd = _build({})
+    assert "--compile-transformer" not in cmd
+
+
+def test_compile_transformer_invalid_value_raises():
+    with pytest.raises(ValueError, match="compile_transformer"):
+        _build({"compile_transformer": "banana"})
+
+
+def test_daemon_mode_enabled_when_keep_text_encoder_true():
+    runner = WanRunner({"keep_text_encoder": True}, local_cfg={})
+    assert runner._use_daemon is True
+
+
+def test_daemon_mode_disabled_by_default():
+    runner = WanRunner({}, local_cfg={})
+    assert runner._use_daemon is False
+
+
+def test_daemon_mode_disabled_when_keep_text_encoder_false():
+    runner = WanRunner({"keep-text-encoder": False}, local_cfg={})
+    assert runner._use_daemon is False
+
+
+def test_daemon_shutdown_is_idempotent():
+    runner = WanRunner({"keep_text_encoder": True}, local_cfg={})
+    runner.shutdown_daemon()  # should not raise even if daemon never started
+    runner.shutdown_daemon()  # second call also safe

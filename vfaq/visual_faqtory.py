@@ -12,7 +12,7 @@ Pipeline flow:
   4. Audio mux (if base audio present)
   5. Save run to worqspace/saved-runs/<project-name>
 
-Part of Visual FaQtory v0.9.8-beta
+Part of Visual FaQtory v0.9.9-beta
 """
 import json
 import logging
@@ -160,7 +160,7 @@ def _mux_audio(video_path: Path, audio_path: Path, output_path: Path) -> bool:
 
 class VisualFaQtory:
     """
-    Main orchestrator for the Visual FaQtory v0.9.8-beta pipeline.
+    Main orchestrator for the Visual FaQtory v0.9.9-beta pipeline.
 
     Wires config loading, input detection, sliding story engine,
     finalizer, audio mux, and project saving.

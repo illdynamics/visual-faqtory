@@ -17,10 +17,11 @@ The engine talks to this backend through the standard ``GeneratorBackend``
 interface (text2img / img2img / img2vid / morph), so ``local`` behaves exactly
 like the ComfyUI / Venice / Veo paths.
 
-Part of Visual FaQtory v0.9.8-beta
+Part of Visual FaQtory v0.9.9-beta
 """
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import select
@@ -29,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -363,6 +365,140 @@ class FluxSwiftRunner(LocalRunner):
         raise RuntimeError("flux.swift is image-only; it cannot generate morph video.")
 
 
+class WanDaemon:
+    """Persistent in-process Wan pipeline via the mlx-gen (mflux) Python API.
+
+    ``mlxgen-generate-wan`` is a one-shot CLI: every subprocess invocation
+    reloads the UMT5 text encoder (~1-2 GB) even though ``--keep-text-encoder``
+    exists.  This class instead instantiates ``Wan2_2_TI2V`` once and reuses the
+    pipeline object for the lifetime of the ``vfaq_cli.py`` session, so the text
+    encoder (and transformer) stays resident between cycles when
+    ``keep_text_encoder`` is enabled.
+
+    It is deliberately fail-open: if the mflux Python API is unavailable or the
+    pipeline fails to initialise, ``generate`` returns ``(False, error)`` and the
+    caller transparently falls back to the subprocess path.
+    """
+
+    def __init__(self, model_spec: str, base_flags: Optional[Dict[str, Any]] = None):
+        self._model_spec = str(model_spec)
+        self._base_flags = base_flags or {}
+        self._model = None
+        self._lock = threading.RLock()
+        self._available: Optional[bool] = None
+        self._import_error: Optional[Exception] = None
+        self._logger = logging.getLogger(__name__ + ".WanDaemon")
+
+    def available(self) -> bool:
+        return bool(self._available)
+
+    def _progress(self, event: Any) -> None:
+        phase = getattr(event, "phase", None)
+        step = getattr(event, "step", None)
+        total = getattr(event, "total_steps", None)
+        frames = getattr(event, "total_frames", None)
+        if phase in ("save", "complete", "failed"):
+            self._logger.info(
+                f"[WanDaemon] {phase} — step {step}/{total}, frames {frames}"
+            )
+            return
+        if step is not None and total and (step == total or int(step) % 10 == 0):
+            self._logger.info(f"[WanDaemon] denoise step {step}/{total}")
+
+    def _ensure_loaded(self) -> bool:
+        if self._model is not None:
+            return True
+        if self._available is False:
+            return False
+        with self._lock:
+            if self._model is not None:
+                return True
+            if self._available is False:
+                return False
+            try:
+                from mflux.models.wan.variants import Wan2_2_TI2V  # noqa: F401
+                from mflux.models.common.config import ModelConfig
+
+                model_config = ModelConfig.from_name(self._model_spec)
+                self._model = Wan2_2_TI2V(
+                    model_config=model_config,
+                    quantize=self._base_flags.get("quantize"),
+                    model_path=self._model_spec,
+                    keep_text_encoder_resident=bool(
+                        self._base_flags.get("keep_text_encoder_resident", False)
+                    ),
+                    prompt_embed_disk_cache=bool(
+                        self._base_flags.get("prompt_embed_disk_cache", True)
+                    ),
+                )
+                atexit.register(self.shutdown)
+                self._available = True
+                self._import_error = None
+                self._logger.info(
+                    "[WanDaemon] mlx-gen Wan pipeline loaded in-process "
+                    f"(model={self._model_spec}); T5 text encoder stays resident."
+                )
+                return True
+            except Exception as exc:  # noqa: BLE001 — fallback is mandatory
+                self._available = False
+                self._import_error = exc
+                self._model = None
+                self._logger.warning(
+                    f"[WanDaemon] Pipeline import/init failed ({exc}). "
+                    "Falling back to subprocess mode."
+                )
+                return False
+
+    def generate(self, params: Dict[str, Any]) -> Tuple[bool, str]:
+        """Run one generation cycle in-process. Returns ``(success, path-or-error)``."""
+        with self._lock:
+            if not self._ensure_loaded():
+                return False, f"WanDaemon unavailable: {self._import_error}"
+            try:
+                output_path = Path(params["output_path"])
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                video = self._model.generate_video(
+                    seed=params["seed"],
+                    prompt=params["prompt"],
+                    num_inference_steps=params.get("num_inference_steps"),
+                    height=params["height"],
+                    width=params["width"],
+                    num_frames=params["frames"],
+                    fps=params["fps"],
+                    guidance=params.get("guidance"),
+                    flow_shift=params.get("flow_shift"),
+                    solver=params.get("solver"),
+                    denoising_step_list=params.get("denoising_step_list"),
+                    negative_prompt=params.get("negative_prompt"),
+                    image_path=params.get("image_path"),
+                    canvas_policy=params.get("canvas_policy"),
+                    max_sequence_length=params.get("max_sequence_length", 512),
+                    progress_callback=self._progress,
+                    compile_transformer=bool(params.get("compile_transformer", False)),
+                    release_denoisers_before_decode=False,
+                    clear_cache_each_step=False,
+                    clear_cache_each_transformer_block=False,
+                    tensor_health_check_interval=None,
+                )
+                saved = video.save(
+                    path=output_path,
+                    export_json_metadata=False,
+                    overwrite=True,
+                    validate_health=False,
+                )
+                return True, str(saved or output_path)
+            except Exception as exc:  # noqa: BLE001 — caller falls back
+                self._logger.warning(f"[WanDaemon] generate failed: {exc}")
+                return False, str(exc)
+
+    def shutdown(self) -> None:
+        """Release the pipeline. Safe to call multiple times."""
+        with self._lock:
+            self._model = None
+            self._available = None
+            self._logger.info("[WanDaemon] Shut down.")
+
+
 class WanRunner(LocalRunner):
     """MLX-Gen (``mlxgen-generate-wan``) runner for Wan 2.2 video.
 
@@ -372,14 +508,66 @@ class WanRunner(LocalRunner):
     First/last-frame morph is only available on the Wan A14B checkpoints, so
     for the default ``wan2.2-ti2v-5b`` model morph falls back to an ffmpeg
     crossfade in the backend.
+
+    When ``local.wan.keep-text-encoder`` (or ``keep_text_encoder``) is set to
+    ``true``, ``try_generate`` routes the cycle through :class:`WanDaemon`
+    (in-process, persistent pipeline) instead of spawning a fresh subprocess.
     """
 
     name = "wan"
 
+    def __init__(self, config: Dict[str, Any], local_cfg: Optional[Dict[str, Any]] = None):
+        super().__init__(config, local_cfg)
+        self._daemon: Optional[WanDaemon] = None
+        self._use_daemon = self._keep_text_encoder_value() == "true"
+
     def executable(self) -> str:
         return str(self.config.get("executable") or "mlxgen-generate-wan")
 
-    def _common(self, model_spec, request, output_path, source_image, values):
+    def _coerce_bool(self, value: Any, name: str, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in ("1", "yes", "on", "true"):
+            return True
+        if text in ("0", "no", "off", "false"):
+            return False
+        raise ValueError(f"local.wan {name} must be true or false, got {value!r}")
+
+    def _keep_text_encoder_value(self) -> Optional[str]:
+        raw = self.config.get("keep_text_encoder")
+        if raw is None:
+            raw = self.config.get("keep-text-encoder")
+        if raw is None:
+            return None
+        if isinstance(raw, bool):
+            return "true" if raw else "false"
+        value = str(raw).strip().lower()
+        if value in ("1", "yes", "on", "true"):
+            return "true"
+        if value in ("0", "no", "off", "false"):
+            return "false"
+        raise ValueError(
+            f"local.wan keep_text_encoder must be true or false, got {value!r}"
+        )
+
+    def _compile_transformer_value(self) -> bool:
+        raw = self.config.get("compile_transformer")
+        if raw is None:
+            raw = self.config.get("compile-transformer")
+        return self._coerce_bool(raw, "compile_transformer", default=False)
+
+    def _resolve_params(
+        self,
+        model_spec: str,
+        request: GenerationRequest,
+        output_path: Path,
+        source_image: Optional[Path],
+        values: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Resolve every Wan generation argument once, for CLI and daemon alike."""
         exe = self.executable()
         duration = float(request.duration_seconds or 5.0)
         fps = float(
@@ -388,14 +576,10 @@ class WanRunner(LocalRunner):
             or self.local_cfg.get("fps")
             or 12
         )
-        # --frames resolution (precedence):
-        #   1. request.video_frames — explicit per-shot override
-        #   2. local.wan.frames     — direct config (formerly `max_frames`)
-        #   3. duration * fps       — derived, capped at a sane 65-frame default
+
         frames_cfg = self.config.get("frames")
         if frames_cfg is None:
             frames_cfg = self.local_cfg.get("frames")
-        # `max_frames` is kept as a backward-compatible alias for `frames`.
         if frames_cfg is None:
             frames_cfg = self.config.get("max_frames")
         if frames_cfg is None:
@@ -408,21 +592,13 @@ class WanRunner(LocalRunner):
         else:
             frames = min(max(1, int(round(duration * fps))), 65)
 
-        # Wan supports two mutually-exclusive sampling modes:
-        #   * denoising_step_list — explicit Self-Forcing denoise grid
-        #   * steps (+ optional flow_shift) — standard step count
-        # Any of the three can be set to "off" (off/none/false/disabled/0/[]),
-        # so you can switch modes without deleting keys:
-        #   * grid mode  -> denoising_step_list: [...] + steps: off + flow_shift: off
-        #   * step mode  -> denoising_step_list: off + steps: N (+ flow_shift: X)
-        #   * all off    -> let mlxgen-generate-wan use its own defaults
-        denoising_step_list = None
         if "denoising_step_list" in self.config:
             grid_raw = self.config["denoising_step_list"]
         elif "denoising-step-list" in self.config:
             grid_raw = self.config["denoising-step-list"]
         else:
             grid_raw = None
+        denoising_step_list = None
         if not _is_off(grid_raw):
             if isinstance(grid_raw, (str, int, float)):
                 grid_raw = str(grid_raw).split()
@@ -453,8 +629,6 @@ class WanRunner(LocalRunner):
                 "denoising_step_list."
             )
 
-        # Resolve --canvas-policy (i2v only). Defaults to the legacy
-        # `exact-resize` so existing i2v configs keep working unchanged.
         canvas_policy = self.config.get("canvas_policy") or self.config.get("canvas-policy")
         if canvas_policy is None:
             canvas_policy = self.local_cfg.get("canvas_policy") or self.local_cfg.get("canvas-policy")
@@ -468,73 +642,103 @@ class WanRunner(LocalRunner):
         else:
             canvas_policy = "exact-resize"
 
-        # Optional --keep-text-encoder flag. Leave unset to inherit the
-        # runner's own default; set true/false to pass it explicitly. Accepts
-        # both snake_case and hyphenated spellings, plus boolean/string values.
-        keep_text_encoder = self.config.get("keep_text_encoder")
-        if keep_text_encoder is None:
-            keep_text_encoder = self.config.get("keep-text-encoder")
-        keep_value = None
-        if keep_text_encoder is not None:
-            if isinstance(keep_text_encoder, bool):
-                keep_value = "true" if keep_text_encoder else "false"
-            else:
-                keep_value = str(keep_text_encoder).strip().lower()
-                if keep_value in ("1", "yes", "on", "true"):
-                    keep_value = "true"
-                elif keep_value in ("0", "no", "off", "false"):
-                    keep_value = "false"
-                else:
-                    raise ValueError(
-                        f"local.wan keep_text_encoder must be true or false, "
-                        f"got {keep_value!r}"
-                    )
+        keep_value = self._keep_text_encoder_value()
+        keep_bool = keep_value == "true"
+        compile_transformer = self._compile_transformer_value()
 
-        # Mirrors the user's ~/bin/wanturbo-{i2v,t2v}.sh scripts exactly.
-        cmd = [exe, "--model", str(model_spec)]
-        cmd += ["--prompt", request.prompt or ""]
-        if source_image is not None:
-            cmd += ["--image-path", str(source_image)]
-            cmd += ["--canvas-policy", canvas_policy]
-        cmd += [
-            "--output", str(output_path),
-            "--width", str(request.width or self.local_cfg.get("width", 640)),
-            "--height", str(request.height or self.local_cfg.get("height", 352)),
-            "--frames", str(frames),
-            "--fps", str(int(fps)),
-        ]
+        width = int(request.width or self.local_cfg.get("width", 640))
+        height = int(request.height or self.local_cfg.get("height", 352))
         guidance = self.config.get("guidance")
-        if guidance is not None:
-            cmd += ["--guidance", str(guidance)]
         solver = self.config.get("solver")
-        if solver:
-            cmd += ["--solver", str(solver)]
+
         if grid_on:
-            cmd += ["--denoising-step-list", *[str(step) for step in denoising_step_list]]
+            num_inference_steps = None
+        elif steps_on:
+            num_inference_steps = steps
+        elif not steps_explicit:
+            fallback_steps = request.steps or self.local_cfg.get("steps", 30)
+            num_inference_steps = None if _is_off(fallback_steps) else int(fallback_steps)
         else:
-            if steps_on:
-                cmd += ["--steps", str(steps)]
-            elif not steps_explicit:
-                # No explicit local.wan.steps configured: keep the legacy
-                # fallback so existing configs continue to emit `--steps`.
-                fallback_steps = request.steps or self.local_cfg.get("steps", 30)
-                if not _is_off(fallback_steps):
-                    cmd += ["--steps", str(int(fallback_steps))]
-            if flow_on:
-                cmd += ["--flow-shift", str(flow_shift)]
+            num_inference_steps = None
+
+        mlx_cache_limit_gb = self.config.get("mlx_cache_limit_gb")
+
+        return {
+            "exe": exe,
+            "model_spec": str(model_spec),
+            "prompt": request.prompt or "",
+            "image_path": str(source_image) if source_image is not None else None,
+            "canvas_policy": canvas_policy,
+            "output_path": str(output_path),
+            "width": width,
+            "height": height,
+            "frames": frames,
+            "fps": int(fps),
+            "guidance": guidance,
+            "solver": solver,
+            "grid_on": grid_on,
+            "denoising_step_list": denoising_step_list,
+            "steps_on": steps_on,
+            "steps_explicit": steps_explicit,
+            "num_inference_steps": num_inference_steps,
+            "flow_on": flow_on,
+            "flow_shift": flow_shift,
+            "seed": int(request.seed if request.seed is not None else 0),
+            "keep_text_encoder": keep_value,
+            "keep_text_encoder_resident": keep_bool,
+            "compile_transformer": compile_transformer,
+            "mlx_cache_limit_gb": mlx_cache_limit_gb,
+            "quantize": self.config.get("quantize"),
+            "max_sequence_length": 512,
+            "negative_prompt": request.negative_prompt or None,
+        }
+
+    def _params_to_cmd(self, params: Dict[str, Any]) -> List[str]:
+        cmd = [params["exe"], "--model", params["model_spec"]]
+        cmd += ["--prompt", params["prompt"]]
+        if params["image_path"] is not None:
+            cmd += ["--image-path", params["image_path"]]
+            cmd += ["--canvas-policy", params["canvas_policy"]]
         cmd += [
-            "--seed", str(request.seed if request.seed is not None else 0),
+            "--output", params["output_path"],
+            "--width", str(params["width"]),
+            "--height", str(params["height"]),
+            "--frames", str(params["frames"]),
+            "--fps", str(params["fps"]),
+        ]
+        if params["guidance"] is not None:
+            cmd += ["--guidance", str(params["guidance"])]
+        if params["solver"]:
+            cmd += ["--solver", str(params["solver"])]
+        if params["grid_on"]:
+            cmd += ["--denoising-step-list", *[str(step) for step in params["denoising_step_list"]]]
+        else:
+            if params["steps_on"]:
+                cmd += ["--steps", str(params["num_inference_steps"])]
+            elif not params["steps_explicit"]:
+                if params["num_inference_steps"] is not None:
+                    cmd += ["--steps", str(params["num_inference_steps"])]
+            if params["flow_on"]:
+                cmd += ["--flow-shift", str(params["flow_shift"])]
+        cmd += [
+            "--seed", str(params["seed"]),
             "--progress",
             "--replace",
             "--no-validate-health",
-            "--compile-transformer",
         ]
-        if keep_value is not None:
-            cmd += ["--keep-text-encoder", keep_value]
-        cache_limit_gb = self.config.get("mlx_cache_limit_gb")
+        if params["compile_transformer"]:
+            cmd += ["--compile-transformer"]
+        if params["keep_text_encoder"] is not None:
+            cmd += ["--keep-text-encoder", params["keep_text_encoder"]]
+        cache_limit_gb = params["mlx_cache_limit_gb"]
         if cache_limit_gb not in (None, "", 0, "0", "auto"):
             cmd += ["--mlx-cache-limit-gb", str(cache_limit_gb)]
         return cmd
+
+    def _common(self, model_spec, request, output_path, source_image, values):
+        return self._params_to_cmd(
+            self._resolve_params(model_spec, request, output_path, source_image, values)
+        )
 
     def build_image_command(self, model_id, model_spec, request, output_path, operation, values):
         raise RuntimeError("The wan runner is video-only; use an image runner for stills.")
@@ -547,6 +751,38 @@ class WanRunner(LocalRunner):
             "MLX-Gen Wan 2.2 TI2V-5B does not support first/last-frame morph. "
             "The local backend will fall back to an ffmpeg crossfade morph."
         )
+
+    def _get_or_create_daemon(self, params: Dict[str, Any]) -> WanDaemon:
+        if self._daemon is None:
+            base_flags = {
+                "quantize": params.get("quantize"),
+                "keep_text_encoder_resident": params.get("keep_text_encoder_resident", False),
+                "prompt_embed_disk_cache": True,
+            }
+            self._daemon = WanDaemon(params["model_spec"], base_flags)
+        return self._daemon
+
+    def try_generate(
+        self,
+        model_spec: str,
+        request: GenerationRequest,
+        output_path: Path,
+        source_image: Optional[Path],
+        values: Dict[str, Any],
+    ) -> Optional[Tuple[bool, str]]:
+        """Attempt in-process daemon generation. Returns ``None`` to fall back."""
+        if not self._use_daemon:
+            return None
+        params = self._resolve_params(model_spec, request, output_path, source_image, values)
+        if not params["keep_text_encoder_resident"]:
+            return None
+        daemon = self._get_or_create_daemon(params)
+        return daemon.generate(params)
+
+    def shutdown_daemon(self) -> None:
+        if self._daemon is not None:
+            self._daemon.shutdown()
+            self._daemon = None
 
 
 class GenericCommandRunner(LocalRunner):
@@ -642,6 +878,9 @@ class LocalBackend(GeneratorBackend):
         self.default_steps = int(self.local_cfg.get("steps", 8))
         self.default_fps = float(self.local_cfg.get("fps", 8.0))
         self._runner_cache: Dict[str, LocalRunner] = {}
+        # Session teardown: release any persistent runner resources (the Wan
+        # in-process daemon keeps the T5 encoder resident) at interpreter exit.
+        atexit.register(self.shutdown)
 
     @staticmethod
     def _extract_local_cfg(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -695,6 +934,21 @@ class LocalBackend(GeneratorBackend):
         runner = _resolve_runner(runner_name, self.local_cfg, self.local_cfg)
         self._runner_cache[model_id] = runner
         return runner
+
+    def shutdown(self) -> None:
+        """Release persistent runner resources (e.g. the Wan in-process daemon).
+
+        Called at session teardown so a persistent Wan pipeline releases its
+        resident text encoder / transformer instead of lingering until process
+        exit.  Safe to call more than once.
+        """
+        for runner in self._runner_cache.values():
+            if hasattr(runner, "shutdown_daemon"):
+                try:
+                    runner.shutdown_daemon()
+                except Exception as exc:  # noqa: BLE001 — teardown is best-effort
+                    logger.warning(f"[Local] Runner shutdown warning: {exc}")
+        self._runner_cache.clear()
 
     def _model_spec(self, model_id: str) -> Optional[str]:
         """Return the model spec (path or repo/builtin name) for a model."""
@@ -951,6 +1205,29 @@ class LocalBackend(GeneratorBackend):
         })
 
         try:
+            if hasattr(runner, "try_generate"):
+                daemon_result = runner.try_generate(
+                    model_spec, request, output_path, source_image, values
+                )
+                if daemon_result is not None:
+                    ok, actual = daemon_result
+                    if ok:
+                        return GenerationResult(
+                            success=True,
+                            video_path=Path(actual) if actual != str(output_path) else output_path,
+                            generation_time=time.time() - start,
+                            metadata={
+                                "backend": "local",
+                                "runner": runner.name,
+                                "model": model_id,
+                                "daemon": True,
+                            },
+                        )
+                    logger.warning(
+                        f"[Local] Wan daemon failed for this cycle ({actual}); "
+                        "falling back to subprocess mode."
+                    )
+
             cmd = runner.build_video_command(model_id, model_spec, request, output_path, source_image, values)
             ok, actual = self._run_command(cmd, output_path)
         except Exception as exc:

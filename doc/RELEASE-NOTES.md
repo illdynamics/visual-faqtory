@@ -1,5 +1,27 @@
 # Release Notes
 
+## v0.9.9-beta
+
+### Persistent Wan daemon + configurable compile-transformer
+
+- `WanRunner` now supports an in-process, persistent Wan pipeline via `WanDaemon`
+  when `local.wan.keep-text-encoder` (or `keep_text_encoder`) is set to `true`.
+- The mlx-gen `Wan2_2_TI2V` pipeline (including the UMT5 T5 text encoder) loads
+  once per `vfaq_cli.py` session and is reused across every cycle, avoiding the
+  ~1-2 GB text-encoder reload that a fresh `mlxgen-generate-wan` subprocess pays.
+- `local.wan.compile-transformer` (also `compile_transformer`) is now a
+  configurable `true`/`false` flag. When `true` the Wan denoiser runs as a
+  compiled MLX graph (`--compile-transformer` in subprocess mode, or the
+  equivalent Python API argument in daemon mode). Defaults to `false` (omitted).
+- Daemon mode fails open: if the mlx-gen Python API is unavailable or pipeline
+  initialisation fails, the runner logs a warning and transparently falls back
+  to the existing subprocess path for that cycle.
+- Added `LocalBackend.shutdown()` for clean daemon teardown, with an `atexit`
+  guard in `WanDaemon` so resident model memory is released at session end.
+- Added daemon-lifecycle and compile-transformer tests in
+  `tests/test_wan_runner_config.py`.
+- Bumped the project version everywhere to v0.9.9-beta.
+
 ## v0.9.8-beta
 
 ### Wan keep-text-encoder toggle + version bump

@@ -109,7 +109,8 @@ local:
     fps: 8                        # video fps (images have no fps)
     frames: 65                    # --frames value (was `max_frames`)
     canvas_policy: exact-resize   # exact-resize | source-aspect (i2v canvas handling)
-    keep-text-encoder: false   # true | false (optional; omit for runner default)
+    keep-text-encoder: true    # true => persistent in-process Wan daemon (T5 stays resident)
+    compile-transformer: true  # true => pass --compile-transformer / use compiled MLX graphs
 
   # Fully custom command runner example (unused unless runner/command chosen):
   # command:

@@ -1,4 +1,4 @@
-# Visual FaQtory v0.9.8-beta — Documentation
+# Visual FaQtory v0.9.9-beta — Documentation
 
 ## Venice native backend (Primary)
 
@@ -313,18 +313,31 @@ clear config error instead of passing conflicting flags to the CLI.
 canvas. It accepts exactly `exact-resize` or `source-aspect` and defaults to
 `exact-resize` (the previous hard-coded behaviour).
 
-`keep-text-encoder` (also `keep_text_encoder`) optionally passes the runner's
+`keep-text-encoder` (also `keep_text_encoder`) passes the runner's
 `--keep-text-encoder` flag. Set it to `true` or `false` to keep (or release)
 the text encoder between Wan generations; leave it unset to inherit the
 runner's own default. Boolean values and `true`/`false`/`yes`/`no`/`1`/`0` are
 accepted.
+
+When `keep-text-encoder` is `true`, the runner also enables **persistent daemon
+mode**: instead of spawning a fresh `mlxgen-generate-wan` subprocess for every
+cycle, it loads the mlx-gen `Wan2_2_TI2V` pipeline once in-process and reuses it
+for the whole `vfaq_cli.py` session, so the UMT5 text encoder (and transformer)
+stay resident. If the mlx-gen Python API is unavailable, the runner logs a
+warning and transparently falls back to the subprocess path.
+
+`compile-transformer` (also `compile_transformer`) is a `true`/`false` flag that
+controls whether the Wan denoiser runs as a compiled MLX graph
+(`--compile-transformer`, or the equivalent Python API argument in daemon mode).
+It defaults to `false` (flag omitted).
 
 ```yaml
 local:
   wan:
     frames: 65                    # --frames value
     canvas_policy: exact-resize   # exact-resize | source-aspect
-    keep-text-encoder: false      # true | false (optional; omit for runner default)
+    keep-text-encoder: true       # true => persistent in-process daemon
+    compile-transformer: true     # true => compiled MLX transformer graphs
 ```
 
 ### AnimateDiff Backend
@@ -449,4 +462,4 @@ veo:
 
 ---
 
-*Visual FaQtory v0.9.8-beta — Built by Ill Dynamics / WoNQ*
+*Visual FaQtory v0.9.9-beta — Built by Ill Dynamics / WoNQ*
