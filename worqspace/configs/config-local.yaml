@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Visual FaQtory v0.9.6-beta — LOCAL config (mflux images + MLX-Gen Wan 2.2 TI2V-5B-Turbo)
+# Visual FaQtory v0.9.7-beta — LOCAL config (mflux images + MLX-Gen Wan 2.2 TI2V-5B-Turbo)
 # ═══════════════════════════════════════════════════════════════════════════════
 # Image : FLUX.1-dev via mflux (local, Apple Silicon MLX)
 # Edit  : FLUX.1 Kontext via mflux (local, Apple Silicon MLX)
@@ -96,7 +96,8 @@ local:
     guidance: 1
     solver: unipc
     low_ram: true
-    max_frames: 121
+    frames: 121                   # --frames value (was `max_frames`)
+    canvas_policy: exact-resize   # exact-resize | source-aspect (i2v canvas handling)
     mlx_cache_limit_gb: 27
 
 # ─────────────────────────────────────────────────────────────────────────────

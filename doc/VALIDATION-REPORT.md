@@ -1,4 +1,4 @@
-# Visual FaQtory v0.9.6-beta — SRT endpoint validation report
+# Visual FaQtory v0.9.7-beta — SRT endpoint validation report
 
 This pass validates and hardens the two-endpoint SRT playout watcher after the earlier implementation patch.
 

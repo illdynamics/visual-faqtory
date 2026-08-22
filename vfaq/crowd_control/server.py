@@ -17,7 +17,7 @@ Routes (under configurable prefix, default /visuals):
   GET  {prefix}/overlay       → OBS browser source overlay
   GET  {prefix}/qr.png        → QR code pointing to public URL
 
-Part of Visual FaQtory v0.9.6-beta
+Part of Visual FaQtory v0.9.7-beta
 """
 from __future__ import annotations
 

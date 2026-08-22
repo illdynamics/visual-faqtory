@@ -120,6 +120,11 @@ visuals by scanning a QR code.
 > or step mode (`steps` + optional `flow_shift`); set the unused keys to `off`
 > (also `0` or `[]`). See `doc/DOCUMENTATION.md` → "Wan 2.2 sampling modes".
 
+> Wan 2.2 `--canvas-policy` (`exact-resize` | `source-aspect`) and `--frames`
+> are configured via `local.wan.canvas_policy` and `local.wan.frames`
+> (formerly `max_frames`). Wan `--progress` output streams live to the FaQtory
+> log. See `doc/DOCUMENTATION.md` → "Wan 2.2 frame count & canvas policy".
+
 ---
 
 ## Other modes / notes

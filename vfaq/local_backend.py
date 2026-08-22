@@ -17,12 +17,13 @@ The engine talks to this backend through the standard ``GeneratorBackend``
 interface (text2img / img2img / img2vid / morph), so ``local`` behaves exactly
 like the ComfyUI / Venice / Veo paths.
 
-Part of Visual FaQtory v0.9.6-beta
+Part of Visual FaQtory v0.9.7-beta
 """
 from __future__ import annotations
 
 import logging
 import os
+import select
 import shlex
 import shutil
 import subprocess
@@ -387,14 +388,25 @@ class WanRunner(LocalRunner):
             or self.local_cfg.get("fps")
             or 12
         )
+        # --frames resolution (precedence):
+        #   1. request.video_frames — explicit per-shot override
+        #   2. local.wan.frames     — direct config (formerly `max_frames`)
+        #   3. duration * fps       — derived, capped at a sane 65-frame default
+        frames_cfg = self.config.get("frames")
+        if frames_cfg is None:
+            frames_cfg = self.local_cfg.get("frames")
+        # `max_frames` is kept as a backward-compatible alias for `frames`.
+        if frames_cfg is None:
+            frames_cfg = self.config.get("max_frames")
+        if frames_cfg is None:
+            frames_cfg = self.local_cfg.get("max_frames")
+
         if request.video_frames:
             frames = int(request.video_frames)
+        elif frames_cfg is not None and not _is_off(frames_cfg):
+            frames = int(frames_cfg)
         else:
-            frames = max(1, int(round(duration * fps)))
-        # The user's working Wan Turbo recipe generates 65 frames; cap to the
-        # configured envelope (configurable via local.wan.max_frames).
-        max_frames = int(self.config.get("max_frames") or self.local_cfg.get("max_frames") or 65)
-        frames = min(frames, max_frames)
+            frames = min(max(1, int(round(duration * fps))), 65)
 
         # Wan supports two mutually-exclusive sampling modes:
         #   * denoising_step_list — explicit Self-Forcing denoise grid
@@ -441,12 +453,27 @@ class WanRunner(LocalRunner):
                 "denoising_step_list."
             )
 
+        # Resolve --canvas-policy (i2v only). Defaults to the legacy
+        # `exact-resize` so existing i2v configs keep working unchanged.
+        canvas_policy = self.config.get("canvas_policy") or self.config.get("canvas-policy")
+        if canvas_policy is None:
+            canvas_policy = self.local_cfg.get("canvas_policy") or self.local_cfg.get("canvas-policy")
+        if canvas_policy is not None and not _is_off(canvas_policy):
+            canvas_policy = str(canvas_policy)
+            if canvas_policy not in ("exact-resize", "source-aspect"):
+                raise ValueError(
+                    f"local.wan canvas_policy must be 'exact-resize' or "
+                    f"'source-aspect', got {canvas_policy!r}"
+                )
+        else:
+            canvas_policy = "exact-resize"
+
         # Mirrors the user's ~/bin/wanturbo-{i2v,t2v}.sh scripts exactly.
         cmd = [exe, "--model", str(model_spec)]
         cmd += ["--prompt", request.prompt or ""]
         if source_image is not None:
             cmd += ["--image-path", str(source_image)]
-            cmd += ["--canvas-policy", "exact-resize"]
+            cmd += ["--canvas-policy", canvas_policy]
         cmd += [
             "--output", str(output_path),
             "--width", str(request.width or self.local_cfg.get("width", 640)),
@@ -715,9 +742,7 @@ class LocalBackend(GeneratorBackend):
             "quantize": self.local_cfg.get("quantize", ""),
         }
 
-    def _run_command(self, cmd: List[str], output_path: Path) -> Tuple[bool, str]:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        logger.info(f"[Local] Running: {' '.join(shlex.quote(str(c)) for c in cmd)}")
+    def _resolve_argv(self, cmd: List[str]) -> List[str]:
         argv = [str(c) for c in cmd]
         if argv:
             resolved = _find_executable(argv[0])
@@ -725,6 +750,29 @@ class LocalBackend(GeneratorBackend):
                 argv[0] = resolved
             elif os.path.sep in argv[0] or argv[0].startswith(("./", "../")):
                 pass  # keep explicit path; subprocess will report a clear error
+        return argv
+
+    def _verify_output(self, output_path: Path) -> Tuple[bool, str]:
+        # mflux may append `.png` if the path has no extension; accept both.
+        candidates = [output_path]
+        if output_path.suffix != ".png":
+            candidates.append(output_path.with_suffix(".png"))
+        for cand in candidates:
+            if cand.exists() and cand.stat().st_size > 0:
+                return True, str(cand)
+        return False, f"Command succeeded but no output file found at {output_path}"
+
+    def _run_command(self, cmd: List[str], output_path: Path) -> Tuple[bool, str]:
+        # Wan passes `--progress`, so stream its output live into the FaQtory
+        # log instead of swallowing it until the process exits.
+        if "--progress" in cmd:
+            return self._run_with_live_progress(cmd, output_path)
+        return self._run_captured(cmd, output_path)
+
+    def _run_captured(self, cmd: List[str], output_path: Path) -> Tuple[bool, str]:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(f"[Local] Running: {' '.join(shlex.quote(str(c)) for c in cmd)}")
+        argv = self._resolve_argv(cmd)
         try:
             proc = subprocess.run(
                 argv,
@@ -742,14 +790,65 @@ class LocalBackend(GeneratorBackend):
         if proc.returncode != 0:
             tail = (proc.stderr or proc.stdout or "").strip()[-900:]
             return False, f"Exit code {proc.returncode}: {tail}"
-        # mflux may append `.png` if the path has no extension; accept both.
-        candidates = [output_path]
-        if output_path.suffix != ".png":
-            candidates.append(output_path.with_suffix(".png"))
-        for cand in candidates:
-            if cand.exists() and cand.stat().st_size > 0:
-                return True, str(cand)
-        return False, f"Command succeeded but no output file found at {output_path}"
+        return self._verify_output(output_path)
+
+    def _run_with_live_progress(self, cmd: List[str], output_path: Path) -> Tuple[bool, str]:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(f"[Local] Running (live): {' '.join(shlex.quote(str(c)) for c in cmd)}")
+        argv = self._resolve_argv(cmd)
+        try:
+            proc = subprocess.Popen(
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                bufsize=0,
+            )
+        except FileNotFoundError:
+            return False, f"Executable not found. Command: {cmd[0] if cmd else ''}"
+        except Exception as exc:
+            return False, f"Subprocess error: {exc}"
+
+        captured = bytearray()
+
+        def _emit(data: bytes) -> None:
+            captured.extend(data)
+            stream = getattr(sys.stderr, "buffer", None)
+            if stream is not None:
+                stream.write(data)
+                stream.flush()
+            else:
+                sys.stderr.write(data.decode("utf-8", "replace"))
+                sys.stderr.flush()
+
+        started = time.time()
+        try:
+            while True:
+                if proc.poll() is not None:
+                    rest = proc.stdout.read()
+                    if rest:
+                        _emit(rest)
+                    break
+                if time.time() - started > self.timeout:
+                    proc.kill()
+                    proc.wait()
+                    return False, f"Generation timed out after {self.timeout:.0f}s"
+                readable, _, _ = select.select([proc.stdout], [], [], 0.25)
+                if readable:
+                    chunk = os.read(proc.stdout.fileno(), 4096)
+                    if chunk:
+                        _emit(chunk)
+        except Exception as exc:
+            proc.kill()
+            proc.wait()
+            return False, f"Subprocess streaming error: {exc}"
+        finally:
+            if proc.poll() is None:
+                proc.wait()
+
+        if proc.returncode != 0:
+            tail = captured.decode("utf-8", "replace")[-900:].strip()
+            return False, f"Exit code {proc.returncode}: {tail}"
+        return self._verify_output(output_path)
 
     def _resolve_output(self, output_path: Path, preferred: Path) -> Path:
         # If the runner wrote a `.png`-suffixed file (mflux does when the

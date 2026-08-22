@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════════
 # vfaq_story_setup.sh — Interactive Story & Prompt File Setup
-# Visual FaQtory v0.9.6-beta
+# Visual FaQtory v0.9.7-beta
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # Helps you set up worqspace/story.txt and supporting prompt files.
@@ -16,7 +16,7 @@ WORQSPACE="${1:-./worqspace}"
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
-echo "  Visual FaQtory v0.9.6-beta — Story Setup"
+echo "  Visual FaQtory v0.9.7-beta — Story Setup"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
 echo "  Worqspace: $WORQSPACE"

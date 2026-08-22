@@ -16,7 +16,7 @@ set -o pipefail
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION_FILE="${BASE_DIR}/VERSION"
-SCRIPT_VERSION="$(cat "$VERSION_FILE" 2>/dev/null || echo "v0.9.6-beta")"
+SCRIPT_VERSION="$(cat "$VERSION_FILE" 2>/dev/null || echo "v0.9.7-beta")"
 
 usage() {
   cat <<USAGE

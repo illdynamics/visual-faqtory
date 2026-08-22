@@ -1,5 +1,19 @@
 # Release Notes
 
+## v0.9.7-beta
+
+### Wan canvas policy + frame count config + live progress
+
+- Added `local.wan.canvas_policy` (`exact-resize` | `source-aspect`), which now
+  drives the i2v `--canvas-policy` flag (previously hard-coded to `exact-resize`).
+- Renamed the `local.wan.max_frames` envelope to `local.wan.frames`, which maps
+  directly to the wan runner's `--frames` flag. `max_frames` is kept as a
+  backward-compatible alias.
+- Wan `--progress` output is now streamed live into the FaQtory log instead of
+  being buffered until the process exits, so long video generations are visible.
+- Updated local configs and docs, and added `tests/test_wan_runner_config.py`.
+- Bumped the project version everywhere to v0.9.7-beta.
+
 ## v0.9.6-beta
 
 ### Wan sampling-mode mutual exclusion + version bump

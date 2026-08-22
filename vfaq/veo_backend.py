@@ -13,7 +13,7 @@ First-class Veo backend for Visual FaQtory, supporting:
 
 Uses the official Google Gen AI SDK (google-genai).
 
-Part of Visual FaQtory v0.9.6-beta
+Part of Visual FaQtory v0.9.7-beta
 """
 import base64
 import json

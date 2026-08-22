@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Visual FaQtory v0.9.6-beta — Local MLX backend example config
+# Visual FaQtory v0.9.7-beta — Local MLX backend example config
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # Copy to worqspace/config.yaml (or: python vfaq_cli.py run --config this-file)
@@ -107,6 +107,8 @@ local:
     steps: 4                      # video step count (independent of image `local.steps`)
     flow_shift: 3.0
     fps: 8                        # video fps (images have no fps)
+    frames: 65                    # --frames value (was `max_frames`)
+    canvas_policy: exact-resize   # exact-resize | source-aspect (i2v canvas handling)
 
   # Fully custom command runner example (unused unless runner/command chosen):
   # command:

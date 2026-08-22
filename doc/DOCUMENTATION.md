@@ -1,4 +1,4 @@
-# Visual FaQtory v0.9.6-beta — Documentation
+# Visual FaQtory v0.9.7-beta — Documentation
 
 ## Venice native backend (Primary)
 
@@ -300,6 +300,26 @@ local:
 Setting `denoising_step_list` together with `steps` or `flow_shift` raises a
 clear config error instead of passing conflicting flags to the CLI.
 
+### Wan 2.2 frame count & canvas policy
+
+`local.wan.frames` maps directly to the runner's `--frames` flag. The old
+`max_frames` key is still accepted as a backward-compatible alias. Precedence:
+
+1. `paragraph_story.video_frames` (explicit per-shot override)
+2. `local.wan.frames`
+3. `duration × fps` (capped at 65 frames)
+
+`canvas_policy` controls how an i2v source image is fitted to the output
+canvas. It accepts exactly `exact-resize` or `source-aspect` and defaults to
+`exact-resize` (the previous hard-coded behaviour).
+
+```yaml
+local:
+  wan:
+    frames: 65                    # --frames value
+    canvas_policy: exact-resize   # exact-resize | source-aspect
+```
+
 ### AnimateDiff Backend
 
 ```yaml
@@ -422,4 +442,4 @@ veo:
 
 ---
 
-*Visual FaQtory v0.9.6-beta — Built by Ill Dynamics / WoNQ*
+*Visual FaQtory v0.9.7-beta — Built by Ill Dynamics / WoNQ*

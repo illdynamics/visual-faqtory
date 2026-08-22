@@ -13,7 +13,7 @@ optional image-metrics diagnostics:
 All functions log (rather than print) on failure and return a safe numeric
 fallback so callers never crash on a corrupt/odd frame.
 
-Part of Visual FaQtory v0.9.6-beta
+Part of Visual FaQtory v0.9.7-beta
 """
 from __future__ import annotations
 

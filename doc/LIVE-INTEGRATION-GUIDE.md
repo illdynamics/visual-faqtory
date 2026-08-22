@@ -1,4 +1,4 @@
-# Visual FaQtory v0.9.6-beta — live integration guide
+# Visual FaQtory v0.9.7-beta — live integration guide
 
 This repo now ships an **opt-in** live integration harness for external systems. The default offline suite stays fast and does **not** require ComfyUI, Venice workflows, local model downloads, or paid API calls.
 
