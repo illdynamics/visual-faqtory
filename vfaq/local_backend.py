@@ -17,7 +17,7 @@ The engine talks to this backend through the standard ``GeneratorBackend``
 interface (text2img / img2img / img2vid / morph), so ``local`` behaves exactly
 like the ComfyUI / Venice / Veo paths.
 
-Part of Visual FaQtory v0.9.5-beta
+Part of Visual FaQtory v0.9.6-beta
 """
 from __future__ import annotations
 
@@ -39,6 +39,29 @@ from .backends import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+_OFF_TOKENS = {"", "off", "none", "false", "disabled", "null", "no"}
+
+
+def _is_off(value: Any) -> bool:
+    """Return True for config values that mean "turn this flag off".
+
+    Local runners accept a few spellings for disabling an optional flag so
+    users can explicitly switch between mutually-exclusive modes (for example
+    ``denoising_step_list`` vs ``steps`` + ``flow_shift``).
+    """
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, (list, tuple, set)):
+        return len(value) == 0
+    if isinstance(value, dict):
+        return not value
+    if isinstance(value, (int, float)):
+        return value == 0
+    return str(value).strip().lower() in _OFF_TOKENS
 
 
 def _find_executable(name: str) -> Optional[str]:
@@ -376,13 +399,47 @@ class WanRunner(LocalRunner):
         # Wan supports two mutually-exclusive sampling modes:
         #   * denoising_step_list — explicit Self-Forcing denoise grid
         #   * steps (+ optional flow_shift) — standard step count
-        # Prefer the denoise grid when present; otherwise fall back to
-        # `local.wan.steps` + `local.wan.flow_shift`.
-        denoising_step_list = self.config.get("denoising_step_list") or self.config.get("denoising-step-list")
-        if denoising_step_list is not None:
-            if isinstance(denoising_step_list, (str, int, float)):
-                denoising_step_list = str(denoising_step_list).split()
-            denoising_step_list = [int(step) for step in denoising_step_list]
+        # Any of the three can be set to "off" (off/none/false/disabled/0/[]),
+        # so you can switch modes without deleting keys:
+        #   * grid mode  -> denoising_step_list: [...] + steps: off + flow_shift: off
+        #   * step mode  -> denoising_step_list: off + steps: N (+ flow_shift: X)
+        #   * all off    -> let mlxgen-generate-wan use its own defaults
+        denoising_step_list = None
+        if "denoising_step_list" in self.config:
+            grid_raw = self.config["denoising_step_list"]
+        elif "denoising-step-list" in self.config:
+            grid_raw = self.config["denoising-step-list"]
+        else:
+            grid_raw = None
+        if not _is_off(grid_raw):
+            if isinstance(grid_raw, (str, int, float)):
+                grid_raw = str(grid_raw).split()
+            denoising_step_list = [int(step) for step in grid_raw]
+
+        steps = None
+        steps_explicit = "steps" in self.config
+        if steps_explicit and not _is_off(self.config["steps"]):
+            steps = int(self.config["steps"])
+
+        if "flow_shift" in self.config:
+            flow_raw = self.config["flow_shift"]
+        elif "flow-shift" in self.config:
+            flow_raw = self.config["flow-shift"]
+        else:
+            flow_raw = None
+        flow_shift = None if _is_off(flow_raw) else flow_raw
+
+        grid_on = bool(denoising_step_list)
+        steps_on = steps is not None
+        flow_on = flow_shift is not None
+        if grid_on and (steps_on or flow_on):
+            raise ValueError(
+                "local.wan sampling-mode conflict: denoising_step_list is "
+                "mutually exclusive with steps and flow_shift. Set "
+                "denoising_step_list to 'off' (or []) to use steps+flow_shift, "
+                "or set steps/flow_shift to 'off' (or 0) to use "
+                "denoising_step_list."
+            )
 
         # Mirrors the user's ~/bin/wanturbo-{i2v,t2v}.sh scripts exactly.
         cmd = [exe, "--model", str(model_spec)]
@@ -403,23 +460,19 @@ class WanRunner(LocalRunner):
         solver = self.config.get("solver")
         if solver:
             cmd += ["--solver", str(solver)]
-        if denoising_step_list:
+        if grid_on:
             cmd += ["--denoising-step-list", *[str(step) for step in denoising_step_list]]
         else:
-            # Video step count is independent of the image `local.steps`
-            # (which drives Z-Image-Turbo). Prefer `local.wan.steps`, then an
-            # explicit request override, then the legacy shared `local.steps`.
-            steps = int(
-                self.config.get("steps")
-                or request.steps
-                or self.local_cfg.get("steps", 30)
-            )
-            cmd += ["--steps", str(steps)]
-        flow_shift = self.config.get("flow_shift")
-        if flow_shift is None:
-            flow_shift = self.config.get("flow-shift")
-        if flow_shift not in (None, ""):
-            cmd += ["--flow-shift", str(flow_shift)]
+            if steps_on:
+                cmd += ["--steps", str(steps)]
+            elif not steps_explicit:
+                # No explicit local.wan.steps configured: keep the legacy
+                # fallback so existing configs continue to emit `--steps`.
+                fallback_steps = request.steps or self.local_cfg.get("steps", 30)
+                if not _is_off(fallback_steps):
+                    cmd += ["--steps", str(int(fallback_steps))]
+            if flow_on:
+                cmd += ["--flow-shift", str(flow_shift)]
         cmd += [
             "--seed", str(request.seed if request.seed is not None else 0),
             "--progress",

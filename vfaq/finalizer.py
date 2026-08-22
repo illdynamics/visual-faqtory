@@ -31,7 +31,7 @@ NON-NEGOTIABLE RULES:
 
 Supports NVENC-based encoding (h264_nvenc preferred, libx264 fallback).
 
-Part of Visual FaQtory v0.9.5-beta
+Part of Visual FaQtory v0.9.6-beta
 """
 import logging
 import subprocess

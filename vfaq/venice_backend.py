@@ -14,7 +14,7 @@ The backend is intentionally native HTTP rather than a ComfyUI shim because
 Venice already exposes first-class image and video endpoints with distinct
 async semantics for video jobs.
 
-Part of Visual FaQtory v0.9.5-beta
+Part of Visual FaQtory v0.9.6-beta
 """
 from __future__ import annotations
 

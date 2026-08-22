@@ -19,7 +19,7 @@
 #   - fswatch restart loop: auto-recovers if the watch fails (inotifywait is
 #     Linux-only; fswatch works on macOS + Linux).
 #
-# Part of Visual FaQtory v0.9.5-beta
+# Part of Visual FaQtory v0.9.6-beta
 # ════════════════════════════════════════════════════════════════════════
 
 set -uo pipefail

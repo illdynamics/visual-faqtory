@@ -115,6 +115,11 @@ visuals by scanning a QR code.
 > SceneWorks native worker (`mlx-gen-wan`); until it is installed the backend
 > reports Wan as unavailable and morph falls back to an ffmpeg crossfade.
 
+> Wan 2.2 sampling modes: `denoising_step_list`, `steps`, and `flow_shift` are
+> mutually exclusive. Use either a Self-Forcing grid (`denoising_step_list`)
+> or step mode (`steps` + optional `flow_shift`); set the unused keys to `off`
+> (also `0` or `[]`). See `doc/DOCUMENTATION.md` → "Wan 2.2 sampling modes".
+
 ---
 
 ## Other modes / notes

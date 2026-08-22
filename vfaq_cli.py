@@ -14,7 +14,7 @@ Usage:
     python vfaq_cli.py status                   # Check pipeline status
     python vfaq_cli.py backends                 # List available backends
 
-Part of Visual FaQtory v0.9.5-beta
+Part of Visual FaQtory v0.9.6-beta
 """
 import os
 import sys

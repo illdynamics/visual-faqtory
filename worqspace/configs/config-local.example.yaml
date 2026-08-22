@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Visual FaQtory v0.9.5-beta — Local MLX backend example config
+# Visual FaQtory v0.9.6-beta — Local MLX backend example config
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # Copy to worqspace/config.yaml (or: python vfaq_cli.py run --config this-file)
@@ -99,7 +99,11 @@ local:
 
   wan:
     executable: mlx-gen-wan       # SceneWorks native Wan 2.2 worker
-    # denoising_step_list: [1000, 750, 500, 250]  # optional Self-Forcing grid
+    # Sampling mode (mutually exclusive — exactly one may be active):
+    #   grid mode : denoising_step_list: [1000, 750, 500, 250] + steps: off + flow_shift: off
+    #   step mode : denoising_step_list: off + steps: 4 + flow_shift: 3.0
+    # `off` / `none` / `false` / `disabled` / `0` / `[]` all mean "turn this off".
+    denoising_step_list: off      # set [1000, 750, 500, 250] for grid mode
     steps: 4                      # video step count (independent of image `local.steps`)
     flow_shift: 3.0
     fps: 8                        # video fps (images have no fps)

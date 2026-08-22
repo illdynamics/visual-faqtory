@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Visual FaQtory v0.9.5-beta — LOCAL config (z-image-turbo + Wan 2.2 TI2V-5B-Turbo)
+# Visual FaQtory v0.9.6-beta — LOCAL config (z-image-turbo + Wan 2.2 TI2V-5B-Turbo)
 # ═══════════════════════════════════════════════════════════════════════════════
 # Image : Z-Image-Turbo via mflux (local, Apple Silicon MLX, 4-bit)
 # Edit  : FLUX.1 Kontext via mflux (local, Apple Silicon MLX; UNUSED — no edit/morph)
@@ -78,9 +78,13 @@ local:
 
   wan:
     executable: mlxgen-generate-wan
-    # denoising_step_list: [1000, 750, 500, 250]  # disabled — use steps + flow-shift instead
-    steps: 4
-    flow_shift: 3.0
+    # Sampling mode (mutually exclusive — exactly one may be active):
+    #   grid mode : denoising_step_list: [1000, 750, 500, 250] + steps: off + flow_shift: off
+    #   step mode : denoising_step_list: off + steps: 4 + flow_shift: 3.0
+    # `off` / `none` / `false` / `disabled` / `0` / `[]` all mean "turn this off".
+    denoising_step_list: off          # set [1000, 750, 500, 250] for grid mode
+    steps: 4                          # set off/0 to use denoising_step_list
+    flow_shift: 3.0                   # set off/0 to use denoising_step_list
     fps: 12
     guidance: 1
     solver: euler

@@ -54,7 +54,7 @@ To run the engine, construct a SlidingStoryConfig (see below) and call
 run_sliding_story(). For convenience, a CLI entry point is provided
 via vfaq_cli (see vfaq_cli.py).
 
-Part of Visual FaQtory v0.9.5-beta
+Part of Visual FaQtory v0.9.6-beta
 """
 from __future__ import annotations
 

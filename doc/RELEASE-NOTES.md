@@ -1,5 +1,25 @@
 # Release Notes
 
+## v0.9.6-beta
+
+### Wan sampling-mode mutual exclusion + version bump
+
+- Made `local.wan` support all three Wan sampling controls — `denoising_step_list`,
+  `steps`, and `flow_shift` — with explicit "off" sentinels
+  (`off` / `none` / `false` / `disabled` / `0` / `[]`).
+- `denoising_step_list` and `steps` + `flow_shift` are now mutually exclusive.
+  The runner raises a clear error if both modes are enabled, so a config can
+  never silently pass conflicting flags to `mlxgen-generate-wan`.
+- You can now switch modes without deleting keys:
+  - grid mode: `denoising_step_list: [...]` + `steps: off` + `flow_shift: off`
+  - step mode: `denoising_step_list: off` + `steps: N` (+ `flow_shift: X`)
+  - all off: let `mlxgen-generate-wan` use its own defaults
+- Updated `worqspace/config.yaml`, `config-local.yaml`, and
+  `config-local.example.yaml` to document the three modes.
+- Added `tests/test_wan_runner_sampling.py` covering step mode, grid mode,
+  all-off, hyphen aliases, and conflict detection.
+- Bumped the project version everywhere to v0.9.6-beta.
+
 ## v0.9.5-beta
 
 ### Config/story reorganization + version bump

@@ -9,7 +9,7 @@ ack, and requeue crowd prompts from the Crowd Control server.
 Fail-open by design: all errors return None so the generator can
 continue in story mode.
 
-Part of Visual FaQtory v0.9.5-beta
+Part of Visual FaQtory v0.9.6-beta
 """
 from __future__ import annotations
 

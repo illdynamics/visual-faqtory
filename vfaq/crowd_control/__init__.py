@@ -13,7 +13,7 @@ Components:
   - models.py    : Data models + config
   - client.py    : Generator-side HTTP client (fail-open)
 
-Part of Visual FaQtory v0.9.5-beta
+Part of Visual FaQtory v0.9.6-beta
 """
 
 from .models import CrowdControlConfig, Submission, SubmissionStatus

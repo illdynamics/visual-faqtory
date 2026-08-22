@@ -1,4 +1,4 @@
-# Visual FaQtory v0.9.5-beta — Requirements
+# Visual FaQtory v0.9.6-beta — Requirements
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Core (always needed)

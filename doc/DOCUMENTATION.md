@@ -1,4 +1,4 @@
-# Visual FaQtory v0.9.5-beta — Documentation
+# Visual FaQtory v0.9.6-beta — Documentation
 
 ## Venice native backend (Primary)
 
@@ -277,6 +277,29 @@ local:
   # accordingly to use them directly.
 ```
 
+#### Wan 2.2 sampling modes
+
+The `wan` runner accepts two mutually-exclusive sampling modes. Any of the
+three keys can be disabled with `off` (also `none`, `false`, `disabled`, `0`,
+or `[]`):
+
+```yaml
+local:
+  wan:
+    # grid mode — Self-Forcing denoise grid
+    denoising_step_list: [1000, 750, 500, 250]
+    steps: off
+    flow_shift: off
+
+    # OR step mode
+    # denoising_step_list: off
+    # steps: 4
+    # flow_shift: 3.0
+```
+
+Setting `denoising_step_list` together with `steps` or `flow_shift` raises a
+clear config error instead of passing conflicting flags to the CLI.
+
 ### AnimateDiff Backend
 
 ```yaml
@@ -399,4 +422,4 @@ veo:
 
 ---
 
-*Visual FaQtory v0.9.5-beta — Built by Ill Dynamics / WoNQ*
+*Visual FaQtory v0.9.6-beta — Built by Ill Dynamics / WoNQ*
