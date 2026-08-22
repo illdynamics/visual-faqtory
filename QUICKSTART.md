@@ -26,7 +26,7 @@ This is the most common use case: you have a song, you want visuals to go with i
 3. **Pick a backend in `worqspace/config.yaml`**:
    - **Easiest (cloud):** set `backend.type: venice` and `export VENICE_API_KEY=...`
    - **On your MacBook (local, free, private):** set `backend.type: local`, then
-     fill in `local.model_paths.*` (see `macbook-finish-vfaq-steps.md`).
+     fill in `local.model_paths.*` (see `worqspace/configs/config-local.example.yaml`).
 
 4. **Make the video length match your track** (optional but nice):
    In `worqspace/config.yaml`, under `audio:`, set:
@@ -94,7 +94,7 @@ visuals by scanning a QR code.
    ```
 2. Copy the example config:
    ```bash
-   cp worqspace/config-local.example.yaml worqspace/config.yaml
+   cp worqspace/configs/config-local.example.yaml worqspace/config.yaml
    ```
 3. Edit `worqspace/config.yaml` → `local.model_paths`. For the image models
    (`z-image-turbo`, `flux-1-dev`, `flux-1-kontext`) you can use an

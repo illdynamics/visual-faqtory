@@ -109,3 +109,7 @@ Thumbs.db
 
 .codeseeq
 .codeseeq/**
+
+# Config/story backup artifacts
+**/*.bak
+**/*.bak-*

@@ -17,7 +17,7 @@ The engine talks to this backend through the standard ``GeneratorBackend``
 interface (text2img / img2img / img2vid / morph), so ``local`` behaves exactly
 like the ComfyUI / Venice / Veo paths.
 
-Part of Visual FaQtory v0.9.4-beta
+Part of Visual FaQtory v0.9.5-beta
 """
 from __future__ import annotations
 

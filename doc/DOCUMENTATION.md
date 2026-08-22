@@ -1,4 +1,4 @@
-# Visual FaQtory v0.9.4-beta — Documentation
+# Visual FaQtory v0.9.5-beta — Documentation
 
 ## Venice native backend (Primary)
 
@@ -10,7 +10,7 @@ Venice support is implemented as a native HTTP backend rather than a ComfyUI wor
 - img2vid → `POST /video/queue` with `image_url`
 - morph / loop-closure → `POST /video/queue` with `image_url` + `end_image_url`
 
-Use `worqspace/config-venice.yaml` as the base template. Required secret: `VENICE_API_KEY`.
+Use `worqspace/configs/config-venice.yaml` as the base template. Required secret: `VENICE_API_KEY`.
 
 ```yaml
 backend:
@@ -252,8 +252,7 @@ The ComfyUI backend supports:
 Run FLUX.1-dev, FLUX.1 Kontext, Wan 2.2 and Z-Image-Turbo locally via a
 pluggable runner. Recommended: `mflux` (image models) and `wan` (SceneWorks
 `mlx-gen-wan` for Wan 2.2 video); `flux-swift` and a fully custom `command`
-runner are also supported. See `worqspace/config-local.example.yaml` and
-`macbook-finish-vfaq-steps.md`.
+runner are also supported. See `worqspace/configs/config-local.example.yaml`.
 
 ```yaml
 backend:
@@ -400,4 +399,4 @@ veo:
 
 ---
 
-*Visual FaQtory v0.9.4-beta — Built by Ill Dynamics / WoNQ*
+*Visual FaQtory v0.9.5-beta — Built by Ill Dynamics / WoNQ*

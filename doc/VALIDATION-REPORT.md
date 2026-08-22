@@ -1,4 +1,4 @@
-# Visual FaQtory v0.7.6-beta — SRT endpoint validation report
+# Visual FaQtory v0.9.5-beta — SRT endpoint validation report
 
 This pass validates and hardens the two-endpoint SRT playout watcher after the earlier implementation patch.
 
@@ -40,7 +40,7 @@ Validated by inspection:
 ### 6) Env overrides and watch-dir logic
 Validated by tests:
 - `VF_CONFIG_FILE` overrides config discovery
-- default config discovery prefers `worqspace/config.yaml` and only falls back to `worqspace/config-live.yaml`
+- default config discovery prefers `worqspace/config.yaml` and only falls back to `worqspace/configs/config-live.yaml`
 - `run.output_dir` is honored
 - exact watch-dir logic is now explicit via `WATCH_MODE=`:
   - `WATCH_MODE=videos` → watch `<output_dir>/videos`

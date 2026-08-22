@@ -10,7 +10,7 @@
 #   systemctl daemon-reload
 #   systemctl enable --now vf-crowd-control
 #
-# Part of Visual FaQtory v0.9.4-beta
+# Part of Visual FaQtory v0.9.5-beta
 
 [Unit]
 Description=Visual FaQtory Crowd Control Server

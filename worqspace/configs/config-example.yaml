@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Visual FaQtory v0.9.4-beta — config.example.yaml
+# Visual FaQtory v0.9.5-beta — config.example.yaml
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # FULLY-FILLED reference config. Every available parameter the engine reads is
@@ -15,7 +15,7 @@
 #   720p + 16:9 → 1280×720
 #   480p + 9:16 → 480×856
 #
-# As of v0.9.4-beta, any aspect_ratio value (computed or set) is auto-snapped
+# As of v0.9.5-beta, any aspect_ratio value (computed or set) is auto-snapped
 # to the nearest valid Venice enum value via log-distance — so 856×480 maps to
 # 16:9, never to the broken-but-mathematically-correct 107:60.
 # ═══════════════════════════════════════════════════════════════════════════════

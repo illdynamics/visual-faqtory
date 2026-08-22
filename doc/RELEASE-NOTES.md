@@ -1,5 +1,19 @@
 # Release Notes
 
+## v0.9.5-beta
+
+### Config/story reorganization + version bump
+
+- Moved template configs into `worqspace/configs/` and alternate stories into
+  `worqspace/stories/` so the workspace root stays focused on the active
+  `config.yaml` and `story.txt`.
+- Updated all scripts and docs that referenced the old root-level template
+  paths (watcher config fallback, CLI help, setup guides, validation reports).
+- Removed the obsolete `macbook-finish-vfaq-steps.md` and other stale working
+  notes; local MLX setup now points to `worqspace/configs/config-local.example.yaml`.
+- Bumped the project version everywhere to v0.9.5-beta and refreshed the
+  version-consistency test to catch stale `v0.9.4-beta` literals.
+
 ## v0.9.4-beta
 
 ### Local MLX backend + hard cleanup

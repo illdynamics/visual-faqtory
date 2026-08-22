@@ -62,7 +62,7 @@ class SrtWatcherTests(unittest.TestCase):
 
     def test_status_prefers_config_yaml_and_uses_output_dir(self):
         self._write_yaml('worqspace/config.yaml', {'run': {'output_dir': './custom-run'}, 'finalizer': {'per_cycle_interpolation': False}})
-        self._write_yaml('worqspace/config-live.yaml', {'run': {'output_dir': './live-run'}, 'finalizer': {'per_cycle_interpolation': True}})
+        self._write_yaml('worqspace/configs/config-live.yaml', {'run': {'output_dir': './live-run'}, 'finalizer': {'per_cycle_interpolation': True}})
         proc = self._run_script('--status')
         self.assertEqual(proc.returncode, 0, proc.stderr)
         status = self._parse_key_value_lines(proc.stdout)
@@ -71,7 +71,7 @@ class SrtWatcherTests(unittest.TestCase):
 
     def test_status_honors_vf_config_file_override(self):
         self._write_yaml('worqspace/config.yaml', {'run': {'output_dir': './custom-run'}, 'finalizer': {'per_cycle_interpolation': False}})
-        live_cfg = self._write_yaml('worqspace/config-live.yaml', {'run': {'output_dir': './live-run'}, 'finalizer': {'per_cycle_interpolation': True}})
+        live_cfg = self._write_yaml('worqspace/configs/config-live.yaml', {'run': {'output_dir': './live-run'}, 'finalizer': {'per_cycle_interpolation': True}})
         proc = self._run_script('--status', extra_env={'VF_CONFIG_FILE': live_cfg})
         self.assertEqual(proc.returncode, 0, proc.stderr)
         status = self._parse_key_value_lines(proc.stdout)

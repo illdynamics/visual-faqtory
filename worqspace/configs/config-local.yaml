@@ -1,17 +1,18 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Visual FaQtory v0.9.5-beta — LOCAL config (z-image-turbo + Wan 2.2 TI2V-5B-Turbo)
+# Visual FaQtory v0.9.5-beta — LOCAL config (mflux images + MLX-Gen Wan 2.2 TI2V-5B-Turbo)
 # ═══════════════════════════════════════════════════════════════════════════════
-# Image : Z-Image-Turbo via mflux (local, Apple Silicon MLX, 4-bit)
-# Edit  : FLUX.1 Kontext via mflux (local, Apple Silicon MLX; UNUSED — no edit/morph)
-# Video : Wan 2.2 TI2V-5B-Turbo (self-converted MLX-Gen checkpoint) via
-#         `mlxgen-generate-wan` (mirrors ~/bin/wanturbo-i2v.sh / wanturbo-t2v.sh).
+# Image : FLUX.1-dev via mflux (local, Apple Silicon MLX)
+# Edit  : FLUX.1 Kontext via mflux (local, Apple Silicon MLX)
+# Video : Wan 2.2 TI2V-5B-Turbo (Self-Forcing 4-step distill) via MLX-Gen (`mlx-gen`).
 #
-# Pipeline (no img2img, no morphing):
-#   Cycle 1: z-image-turbo text2img -> wan i2v (image = keyframe)
-#   Cycle n: ffmpeg last-frame of previous clip -> wan i2v (image = last frame)
-#   Crowd (when enabled): crowd text REPLACES story; crowd text + last frame -> wan i2v
+#         Wan 2.2 video does NOT run through mflux's `mflux-generate` (it is
+#         image-only). It runs through the `wan` runner, whose executable is
+#         `mlx-gen` — NOT the `command` runner, NOT SceneWorks/scenemodel.
 #
-# Crowd Control : disabled for this test
+#         This is the Self-Forcing Wan2.2-TI2V-5B-Turbo 4-step distill:
+#         denoising_step_list=[1000,750,500,250], guidance=1, solver=unipc.
+#         No LoRAs, no CFG trick.
+# Crowd Control : disabled
 # ═══════════════════════════════════════════════════════════════════════════════
 
 paths:
@@ -32,13 +33,13 @@ image_backend:
 
 video_backend:
   type: local
-  width: 640
-  height: 352
+  width: 1024
+  height: 576
 
 morph_backend:
   type: local
-  width: 640
-  height: 352
+  width: 1024
+  height: 576
 
 input:
   mode: text
@@ -51,58 +52,63 @@ local:
   timeout: 3600
   width: 1024
   height: 576
-  steps: 8
-  # Z-Image-Turbo uses ~8 steps (distilled few-step sampler).
-  fps: 12
+  steps: 30
+  # FLUX.1-dev / FLUX.1 Kontext use ~25-30 steps; Z-Image-Turbo would use 8.
+  fps: 24
   quantize: 4
 
   models:
-    image: z-image-turbo
+    image: flux-1-dev
     video: wan-2.2
     edit: flux-1-kontext
 
   # Per-model runner overrides.
+  #   - mflux  -> FLUX image models (mflux-generate)
+  #   - wan    -> MLX-Gen (`mlx-gen generate`) for Wan 2.2 video.
+  #               This is NOT `mflux`, NOT `command`, NOT `sceneworks`.
   model_runners:
     flux-1-dev: mflux
     flux-1-kontext: mflux
     z-image-turbo: mflux
-    wan-2.2: wan            # mlxgen-generate-wan — Wan 2.2 video
+    wan-2.2: wan            # mlx-gen (MLX-Gen) — Wan 2.2 video
 
   # mflux-compatible image model specs (HuggingFace repo ids; already cached).
   # Wan 2.2 video points at the locally-converted Self-Forcing 5B Turbo
-  # checkpoint (MLX-Gen layout).
+  # checkpoint (diffusers key layout for MLX-Gen).
   model_paths:
     flux-1-dev: /Users/wicked/models/flux.1-dev-mflux-4bit
     flux-1-kontext: /Users/wicked/models/flux.1-kontext-mflux-4bit
     z-image-turbo: filipstrand/Z-Image-Turbo-mflux-4bit
     wan-2.2: /Users/wicked/models/Wan2.2-TI2V-5B-Turbo-mlxgen
 
+  mflux:
+    executable: mflux-generate
+
   wan:
-    executable: mlxgen-generate-wan
+    executable: mlx-gen
     denoising_step_list: [1000, 750, 500, 250]
     guidance: 1
-    solver: euler
-    low_ram: false
-    max_frames: 65
-    mlx_cache_limit_gb: 20
+    solver: unipc
+    low_ram: true
+    max_frames: 121
+    mlx_cache_limit_gb: 27
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SLIDING WINDOW STORY ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
 paragraph_story:
   max_paragraphs: 2
-  max_cycles: 0          # 0 disables the cap: run every window in the story
-  video_frames: 65       # matches ~/bin/wanturbo-*.sh (65 frames @ 12 fps)
-  video_fps: 12
+  max_cycles: 1          # test cap: only generate 1 cycle (set 0 to disable)
+  img2vid_duration_sec: 5
+  video_fps: 24
   seed_base: 0
   rolling_window: true
   require_morph: false
   enable_loop_closure: false
   img2img_denoise_min: 0.44
   img2img_denoise_max: 0.66
-  reinject: false        # false => use last frame directly as next i2v source (no img2img)
+  reinject: true
   smart_reinject_enabled: false
-  continuity_guard_enabled: false  # keep real Wan i2v clips (avoid endpoint false positives)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FINALIZER
@@ -136,8 +142,7 @@ image_metrics:
   enabled: false
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CROWD CONTROL — DISABLED for this test run.
-# When enabled: crowd text REPLACES story and drives i2v from the last frame.
+# CROWD CONTROL — DISABLED for the local test run
 # ─────────────────────────────────────────────────────────────────────────────
 crowd_control:
   enabled: false
@@ -146,7 +151,7 @@ crowd_control:
   timeout_seconds: 1.0
   inject_label: "Audience mutation request"
   inject_mode: "replace"
-  inject_source_mode: "as_image_source"
+  inject_source_mode: "as_reference"
   bake_mode: "direct_video"
   bake_use_morph: false
   bake_denoise_min: 0.58

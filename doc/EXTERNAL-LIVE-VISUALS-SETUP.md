@@ -30,7 +30,7 @@ ZeroTier (or any routed network).
 - Crowd Control: submission page, QR code, `/api/next` pop, SQLite queue, rate limiting, badword filter, generator client (fail-open)
 - SRT watcher: A/B slot design, ffmpeg restart per slot, fswatch watch, OBS WebSocket toggle
 
-### What was missing / added (v0.9.4-beta)
+### What was missing / added (v0.9.5-beta)
 
 - **Crowd queue overlay** — OBS browser source at `/visuals/overlay` with QR, counters, next prompts
 - **Public status API** — `/visuals/api/status?limit=3` returns queue preview + aggregate counts (no IPs)
@@ -116,7 +116,7 @@ sudo systemctl enable --now vf-srt-watcher
 ```
 
 By default the watcher follows `worqspace/config.yaml`. To point it at another active
-config file, set `VF_CONFIG_FILE=/path/to/worqspace/config-live.yaml` in the env file or
+config file, set `VF_CONFIG_FILE=/path/to/worqspace/configs/config-live.yaml` in the env file or
 systemd unit. `VF_WATCH_DIR` still overrides everything when you want a fixed explicit
 watch directory.
 
@@ -348,7 +348,7 @@ Set `OBS_AUTOSWAP=0`. Expected startup log: `OBS autoswap: DISABLED — SRT endp
 ## Known-good watch-dir logic
 
 - `VF_WATCH_DIR` set: watcher uses that exact path and reports `WATCH_MODE=override`.
-- otherwise it prefers `worqspace/config.yaml` and only falls back to `worqspace/config-live.yaml` when `config.yaml` is absent.
+- otherwise it prefers `worqspace/config.yaml` and only falls back to `worqspace/configs/config-live.yaml` when `config.yaml` is absent.
 - `finalizer.per_cycle_interpolation=false`: watcher uses `<run.output_dir>/videos`.
 - `finalizer.per_cycle_interpolation=true`: watcher uses `<run.output_dir>/videos_interpolated`.
 

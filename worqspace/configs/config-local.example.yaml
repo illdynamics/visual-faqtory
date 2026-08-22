@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Visual FaQtory v0.9.4-beta — Local MLX backend example config
+# Visual FaQtory v0.9.5-beta — Local MLX backend example config
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # Copy to worqspace/config.yaml (or: python vfaq_cli.py run --config this-file)

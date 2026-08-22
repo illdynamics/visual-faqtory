@@ -14,7 +14,7 @@ Usage:
     python vfaq_cli.py status                   # Check pipeline status
     python vfaq_cli.py backends                 # List available backends
 
-Part of Visual FaQtory v0.9.4-beta
+Part of Visual FaQtory v0.9.5-beta
 """
 import os
 import sys
@@ -338,7 +338,7 @@ def _add_run_args(parser):
     parser.add_argument('-s', '--seed', type=int,
                         help='Override base seed')
     parser.add_argument('--config', type=str,
-                        help='Config file to use (e.g. worqspace/config-local.yaml). Copies to worqspace/config.yaml before run.')
+                        help='Config file to use (e.g. worqspace/configs/config-local.yaml). Copies to worqspace/config.yaml before run.')
     parser.add_argument('--dry-run', action='store_true',
                         help='Validate config and inputs without generation')
 

@@ -16,7 +16,7 @@ set -o pipefail
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION_FILE="${BASE_DIR}/VERSION"
-SCRIPT_VERSION="$(cat "$VERSION_FILE" 2>/dev/null || echo "v0.7.9-beta")"
+SCRIPT_VERSION="$(cat "$VERSION_FILE" 2>/dev/null || echo "v0.9.5-beta")"
 
 usage() {
   cat <<USAGE
@@ -164,7 +164,7 @@ resolve_config_file() {
     echo "$VF_CONFIG_FILE"; return 0
   fi
   if [[ -f "${BASE_DIR}/worqspace/config.yaml" ]]; then echo "${BASE_DIR}/worqspace/config.yaml"; return 0; fi
-  if [[ -f "${BASE_DIR}/worqspace/config-live.yaml" ]]; then echo "${BASE_DIR}/worqspace/config-live.yaml"; return 0; fi
+  if [[ -f "${BASE_DIR}/worqspace/configs/config-live.yaml" ]]; then echo "${BASE_DIR}/worqspace/configs/config-live.yaml"; return 0; fi
   return 1
 }
 
