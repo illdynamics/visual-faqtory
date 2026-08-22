@@ -6,7 +6,7 @@ db.py — Crowd Control SQLite Database Layer
 WAL-mode SQLite with atomic claim/ack queue semantics, rate limiting, and audit trail.
 No external dependencies — stdlib sqlite3 only.
 
-Part of Visual FaQtory v0.9.7-beta
+Part of Visual FaQtory v0.9.8-beta
 """
 from __future__ import annotations
 

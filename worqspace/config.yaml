@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Visual FaQtory v0.9.7-beta — LOCAL config (z-image-turbo + Wan 2.2 TI2V-5B-Turbo)
+# Visual FaQtory v0.9.8-beta — LOCAL config (z-image-turbo + Wan 2.2 TI2V-5B-Turbo)
 # ═══════════════════════════════════════════════════════════════════════════════
 # Image : Z-Image-Turbo via mflux (local, Apple Silicon MLX, 4-bit)
 # Edit  : FLUX.1 Kontext via mflux (local, Apple Silicon MLX; UNUSED — no edit/morph)
@@ -91,6 +91,7 @@ local:
     low_ram: false
     frames: 65                    # --frames value (was `max_frames`)
     canvas_policy: exact-resize   # exact-resize | source-aspect (i2v canvas handling)
+    keep-text-encoder: false   # true | false (optional; omit for runner default)
     mlx_cache_limit_gb: 20
 
 # ─────────────────────────────────────────────────────────────────────────────

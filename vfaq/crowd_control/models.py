@@ -6,7 +6,7 @@ models.py — Crowd Control Data Models
 Pydantic-free data containers for the Crowd Control MVP.
 No external dependencies beyond stdlib.
 
-Part of Visual FaQtory v0.9.7-beta
+Part of Visual FaQtory v0.9.8-beta
 """
 from __future__ import annotations
 

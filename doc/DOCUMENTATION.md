@@ -1,4 +1,4 @@
-# Visual FaQtory v0.9.7-beta — Documentation
+# Visual FaQtory v0.9.8-beta — Documentation
 
 ## Venice native backend (Primary)
 
@@ -313,11 +313,18 @@ clear config error instead of passing conflicting flags to the CLI.
 canvas. It accepts exactly `exact-resize` or `source-aspect` and defaults to
 `exact-resize` (the previous hard-coded behaviour).
 
+`keep-text-encoder` (also `keep_text_encoder`) optionally passes the runner's
+`--keep-text-encoder` flag. Set it to `true` or `false` to keep (or release)
+the text encoder between Wan generations; leave it unset to inherit the
+runner's own default. Boolean values and `true`/`false`/`yes`/`no`/`1`/`0` are
+accepted.
+
 ```yaml
 local:
   wan:
     frames: 65                    # --frames value
     canvas_policy: exact-resize   # exact-resize | source-aspect
+    keep-text-encoder: false      # true | false (optional; omit for runner default)
 ```
 
 ### AnimateDiff Backend
@@ -442,4 +449,4 @@ veo:
 
 ---
 
-*Visual FaQtory v0.9.7-beta — Built by Ill Dynamics / WoNQ*
+*Visual FaQtory v0.9.8-beta — Built by Ill Dynamics / WoNQ*

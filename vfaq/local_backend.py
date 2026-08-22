@@ -17,7 +17,7 @@ The engine talks to this backend through the standard ``GeneratorBackend``
 interface (text2img / img2img / img2vid / morph), so ``local`` behaves exactly
 like the ComfyUI / Venice / Veo paths.
 
-Part of Visual FaQtory v0.9.7-beta
+Part of Visual FaQtory v0.9.8-beta
 """
 from __future__ import annotations
 
@@ -468,6 +468,28 @@ class WanRunner(LocalRunner):
         else:
             canvas_policy = "exact-resize"
 
+        # Optional --keep-text-encoder flag. Leave unset to inherit the
+        # runner's own default; set true/false to pass it explicitly. Accepts
+        # both snake_case and hyphenated spellings, plus boolean/string values.
+        keep_text_encoder = self.config.get("keep_text_encoder")
+        if keep_text_encoder is None:
+            keep_text_encoder = self.config.get("keep-text-encoder")
+        keep_value = None
+        if keep_text_encoder is not None:
+            if isinstance(keep_text_encoder, bool):
+                keep_value = "true" if keep_text_encoder else "false"
+            else:
+                keep_value = str(keep_text_encoder).strip().lower()
+                if keep_value in ("1", "yes", "on", "true"):
+                    keep_value = "true"
+                elif keep_value in ("0", "no", "off", "false"):
+                    keep_value = "false"
+                else:
+                    raise ValueError(
+                        f"local.wan keep_text_encoder must be true or false, "
+                        f"got {keep_value!r}"
+                    )
+
         # Mirrors the user's ~/bin/wanturbo-{i2v,t2v}.sh scripts exactly.
         cmd = [exe, "--model", str(model_spec)]
         cmd += ["--prompt", request.prompt or ""]
@@ -507,6 +529,8 @@ class WanRunner(LocalRunner):
             "--no-validate-health",
             "--compile-transformer",
         ]
+        if keep_value is not None:
+            cmd += ["--keep-text-encoder", keep_value]
         cache_limit_gb = self.config.get("mlx_cache_limit_gb")
         if cache_limit_gb not in (None, "", 0, "0", "auto"):
             cmd += ["--mlx-cache-limit-gb", str(cache_limit_gb)]

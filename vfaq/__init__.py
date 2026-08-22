@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Visual FaQtory v0.9.7-beta
+Visual FaQtory v0.9.8-beta
 ═══════════════════════════════════════════════════════════════════════════════
 
 An automated, long-form AI visual generation pipeline for music, DJ sets,
@@ -8,11 +8,11 @@ and experimental audiovisual projects.
 
 Pipeline: paragraph_story (sliding window) + Hybrid-capable backends (ComfyUI, Venice, Veo, Local MLX) + Finalizer
 
-v0.9.7-beta — Local MLX backend
-  - NEW: local backend for FLUX.1-dev, FLUX.1 Kontext, Wan 2.2, Z-Image-Turbo
-  - NEW: pluggable runners (lightning-mlx / mflux / custom command)
-  - KEPT: split-capability backend routing
-  - KEPT: ComfyUI, AnimateDiff, Venice and Veo backends
+v0.9.8-beta — Wan keep-text-encoder toggle
+  - NEW: local.wan.keep-text-encoder (true | false) maps to --keep-text-encoder
+  - KEPT: local MLX backend for FLUX.1-dev, FLUX.1 Kontext, Wan 2.2, Z-Image-Turbo
+  - KEPT: pluggable runners (mflux / flux-swift / wan / command)
+  - KEPT: split-capability backend routing + ComfyUI/AnimateDiff/Venice/Veo backends
 
 License: AGPL-3.0
 """

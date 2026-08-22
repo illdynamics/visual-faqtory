@@ -66,3 +66,33 @@ def test_canvas_policy_invalid_value_raises():
 def test_canvas_policy_omitted_for_t2v():
     cmd = _build({"canvas_policy": "source-aspect"})
     assert "--canvas-policy" not in cmd
+
+
+def test_keep_text_encoder_true_emits_flag():
+    cmd = _build({"keep_text_encoder": True})
+    assert _flag(cmd, "--keep-text-encoder") == "true"
+
+
+def test_keep_text_encoder_false_emits_flag():
+    cmd = _build({"keep-text-encoder": False})
+    assert _flag(cmd, "--keep-text-encoder") == "false"
+
+
+def test_keep_text_encoder_string_true_is_normalized():
+    cmd = _build({"keep_text_encoder": "true"})
+    assert _flag(cmd, "--keep-text-encoder") == "true"
+
+
+def test_keep_text_encoder_string_false_is_normalized():
+    cmd = _build({"keep-text-encoder": "no"})
+    assert _flag(cmd, "--keep-text-encoder") == "false"
+
+
+def test_keep_text_encoder_omitted_by_default():
+    cmd = _build({})
+    assert "--keep-text-encoder" not in cmd
+
+
+def test_keep_text_encoder_invalid_value_raises():
+    with pytest.raises(ValueError, match="keep_text_encoder"):
+        _build({"keep_text_encoder": "banana"})

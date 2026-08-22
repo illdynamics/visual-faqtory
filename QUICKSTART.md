@@ -124,6 +124,11 @@ visuals by scanning a QR code.
 > are configured via `local.wan.canvas_policy` and `local.wan.frames`
 > (formerly `max_frames`). Wan `--progress` output streams live to the FaQtory
 > log. See `doc/DOCUMENTATION.md` → "Wan 2.2 frame count & canvas policy".
+>
+> Wan 2.2 `--keep-text-encoder` (`true` | `false`) is configured via
+> `local.wan.keep-text-encoder` (or `keep_text_encoder`); omit it to inherit
+> the runner's default. See `doc/DOCUMENTATION.md` → "Wan 2.2 frame count &
+> canvas policy".
 
 ---
 

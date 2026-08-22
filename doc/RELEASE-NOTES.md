@@ -1,5 +1,18 @@
 # Release Notes
 
+## v0.9.8-beta
+
+### Wan keep-text-encoder toggle + version bump
+
+- Added `local.wan.keep-text-encoder` (also `keep_text_encoder`) so users can
+  explicitly pass Wan's `--keep-text-encoder` flag as `true` or `false`.
+  Leave the key unset to inherit the runner's own default.
+- Accepts booleans and `true`/`false`/`yes`/`no`/`1`/`0`; invalid values raise
+  a clear config error instead of silently passing garbage to `mlxgen-generate-wan`.
+- Documented the new key in `doc/DOCUMENTATION.md`, `QUICKSTART.md`, and the
+  active local configs; added tests in `tests/test_wan_runner_config.py`.
+- Bumped the project version everywhere to v0.9.8-beta.
+
 ## v0.9.7-beta
 
 ### Wan canvas policy + frame count config + live progress

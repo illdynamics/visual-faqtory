@@ -1,4 +1,4 @@
-# Example capability-split backend config (v0.9.7-beta)
+# Example capability-split backend config (v0.9.8-beta)
 # Keeps the public app interface stable while routing each generation stage
 # to a dedicated backend under the hood.
 
