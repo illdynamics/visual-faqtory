@@ -695,7 +695,7 @@ def _extract_last_frame_ffmpeg(video_path: Path, output_path: Path) -> None:
             'ffmpeg', '-y',
             '-i', str(video_path),
             '-vf', f"select=eq(n\\,{last_index})",
-            '-vsync', '0',
+            '-fps_mode', 'passthrough',
             '-frames:v', '1',
             '-q:v', '2',
         ], 'Extract last frame by exact frame index'))

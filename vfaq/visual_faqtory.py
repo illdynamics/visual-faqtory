@@ -638,6 +638,15 @@ class VisualFaQtory:
         audio_cycles = self._compute_cycle_count(story_config)
         self._explain_audio_reactivity(audio_cycles)
 
+        # Optional explicit cycle cap (paragraph_story.max_cycles) for short
+        # test runs; audio sync remains the default authority when set.
+        _ps = self.config.get("paragraph_story", {}) or {}
+        try:
+            _max_cycles = int(_ps.get("max_cycles")) if _ps.get("max_cycles") is not None else None
+        except (TypeError, ValueError):
+            _max_cycles = None
+        effective_max_cycles = _max_cycles if (_max_cycles and _max_cycles > 0) else audio_cycles
+
         # Resolve story file — on resume, prefer the meta snapshot
         if self.resume:
             meta_story = self.run_dir / "meta" / "story.txt"
@@ -709,7 +718,7 @@ class VisualFaQtory:
         self._write_run_state(
             "running",
             start_time,
-            cycles_planned=audio_cycles or 0,
+            cycles_planned=effective_max_cycles or 0,
             resume_enabled=self.resume,
         )
 
@@ -720,8 +729,8 @@ class VisualFaQtory:
         P = len(paragraphs)
         M = story_config.max_paragraphs
         windows = _determine_windows(P, M)
-        if audio_cycles and audio_cycles < len(windows):
-            total_cycles = audio_cycles
+        if effective_max_cycles and effective_max_cycles < len(windows):
+            total_cycles = effective_max_cycles
         else:
             total_cycles = len(windows)
 
@@ -828,7 +837,7 @@ class VisualFaQtory:
                 story_path=story_path,
                 qodeyard_dir=self.run_dir,
                 config=story_config,
-                max_cycles=audio_cycles,
+                max_cycles=effective_max_cycles,
                 base_image_path=base_image_for_run,
                 base_video_path=base_video_for_run,
                 **engine_kwargs,
@@ -882,7 +891,7 @@ class VisualFaQtory:
         # ── Write completed state ─────────────────────────────────────────
         self._write_run_state(
             "completed", start_time,
-            cycles_planned=audio_cycles or cycles_completed,
+            cycles_planned=effective_max_cycles or cycles_completed,
             cycles_completed=cycles_completed,
             completed_indices=self._completed_indices,
             video_paths=self._video_paths,

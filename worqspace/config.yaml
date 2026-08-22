@@ -1,17 +1,17 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Visual FaQtory v0.9.4-beta — config.yaml
+# Visual FaQtory v0.9.4-beta — LOCAL config (z-image-turbo + Wan 2.2 TI2V-5B-Turbo)
 # ═══════════════════════════════════════════════════════════════════════════════
+# Image : Z-Image-Turbo via mflux (local, Apple Silicon MLX, 4-bit)
+# Edit  : FLUX.1 Kontext via mflux (local, Apple Silicon MLX; UNUSED — no edit/morph)
+# Video : Wan 2.2 TI2V-5B-Turbo (self-converted MLX-Gen checkpoint) via
+#         `mlxgen-generate-wan` (mirrors ~/bin/wanturbo-i2v.sh / wanturbo-t2v.sh).
 #
-# Active config preserves every previously-set value exactly. Only changes vs
-# previous version: the dead `width / height / aspect_ratio / resolution` keys
-# under `backend / image_backend / video_backend / morph_backend` were removed
-# because they are NOT consumed when `type: venice` — Venice reads dimensions
-# only from `venice.image.*` and `venice.video.*`. All Venice-relevant size
-# settings live in those sub-blocks below.
+# Pipeline (no img2img, no morphing):
+#   Cycle 1: z-image-turbo text2img -> wan i2v (image = keyframe)
+#   Cycle n: ffmpeg last-frame of previous clip -> wan i2v (image = last frame)
+#   Crowd (when enabled): crowd text REPLACES story; crowd text + last frame -> wan i2v
 #
-# Every available config parameter is documented inline as a commented-out
-# reference. Nothing commented changes runtime behaviour — uncomment to use.
-# A fully-filled reference lives in `config.example.yaml`.
+# Crowd Control : disabled for this test
 # ═══════════════════════════════════════════════════════════════════════════════
 
 paths:
@@ -19,172 +19,94 @@ paths:
   briqs_dir: ./run/briqs
 
 # ─────────────────────────────────────────────────────────────────────────────
-# backend.type chooses the default backend for all capabilities. The split
-# blocks below (image_backend / video_backend / morph_backend) override per
-# capability when present. For Venice setups all three normally point at
-# `venice` and the actual settings live under the top-level `venice:` block.
+# Backend routing: everything local.
 # ─────────────────────────────────────────────────────────────────────────────
 backend:
-  type: venice
-  timeout: 300
+  type: local
+  timeout: 3600
 
 image_backend:
-  type: venice
+  type: local
+  width: 1024
+  height: 576
 
 video_backend:
-  type: venice
+  type: local
+  width: 640
+  height: 352
 
 morph_backend:
-  type: venice
+  type: local
+  width: 640
+  height: 352
+
+input:
+  mode: text
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LOCAL MLX BACKEND (Apple Silicon via lightning-mlx / mflux / custom command)
+# LOCAL MLX BACKEND
 # ─────────────────────────────────────────────────────────────────────────────
-# Set backend.type: local (and image_backend/video_backend/morph_backend to
-# local when using split routing) to run FLUX.1-dev, FLUX.1 Kontext, Wan 2.2
-# and Z-Image-Turbo locally. Recommended runner is mflux (`pip install mflux`)
-# for the image models; Wan 2.2 video uses the `wan` runner (SceneWorks).
-# See worqspace/config-local.example.yaml for full options and format notes.
 local:
-  runner: mflux                  # mflux | flux-swift | wan | command
+  runner: mflux
   timeout: 3600
   width: 1024
   height: 576
-  steps: 8                       # Z-Image-Turbo uses 8; FLUX dev/Kontext use ~25
-  fps: 8
-  quantize: 4                    # mflux quantization (4bit; auto/empty = model default)
+  steps: 8
+  # Z-Image-Turbo uses ~8 steps (distilled few-step sampler).
+  fps: 12
+  quantize: 4
+
   models:
-    image: z-image-turbo         # z-image-turbo | flux-1-dev
+    image: z-image-turbo
     video: wan-2.2
     edit: flux-1-kontext
-  # For `mflux` these may be a local path, an mflux-compatible HF repo id
-  # ("org/name"), or a built-in mflux model name. For `flux-swift` / `wan`
-  # they must be on-disk checkpoints.
+
+  # Per-model runner overrides.
+  model_runners:
+    flux-1-dev: mflux
+    flux-1-kontext: mflux
+    z-image-turbo: mflux
+    wan-2.2: wan            # mlxgen-generate-wan — Wan 2.2 video
+
+  # mflux-compatible image model specs (HuggingFace repo ids; already cached).
+  # Wan 2.2 video points at the locally-converted Self-Forcing 5B Turbo
+  # checkpoint (MLX-Gen layout).
   model_paths:
-    flux-1-dev: ~/Qoding/ai/flux1.dev.4bit.mlx
-    flux-1-kontext: ~/Qoding/ai/flux1.kontext.4bit.mlx
-    wan-2.2: ~/Qoding/ai/wan2.2-ti2v-5b-mlx
-    z-image-turbo: ~/Qoding/ai/Z-Image-Turbo-MLX-4bit
-  # model_runners:               # optional per-model runner overrides
-  #   flux-1-dev: mflux
-  #   flux-1-kontext: mflux
-  #   z-image-turbo: mflux
-  #   wan-2.2: wan
-  mflux:
-    executable: mflux-generate
-  flux_swift:
-    executable: flux.swift.cli
-    hf_token_env: HF_TOKEN
+    flux-1-dev: /Users/wicked/models/flux.1-dev-mflux-4bit
+    flux-1-kontext: /Users/wicked/models/flux.1-kontext-mflux-4bit
+    z-image-turbo: filipstrand/Z-Image-Turbo-mflux-4bit
+    wan-2.2: /Users/wicked/models/Wan2.2-TI2V-5B-Turbo-mlxgen
+
   wan:
-    executable: mlx-gen-wan
+    executable: mlxgen-generate-wan
+    denoising_step_list: [1000, 750, 500, 250]
+    guidance: 1
+    solver: euler
+    low_ram: false
+    max_frames: 65
+    mlx_cache_limit_gb: 20
 
-input:
-  mode: text                     # text | image | video
-
-venice:
-  api_key: ${VENICE_API_KEY}
-  base_url: https://api.venice.ai/api/v1
-  api_key_env: VENICE_API_KEY
-
-  timeout: 300
-  poll_interval: 6
-  poll_timeout: 300
-  max_retries: 4
-  retry_backoff_base: 4
-  retry_backoff_max: 44
-  cleanup_after_download: true
-  validate_models: false
-  strict_model_validation: false
-
-  models:
-    text2img: z-image-turbo
-    img2img: seedream-v5-pro-edit
-    text2vid: flux-3-text-to-video
-    img2vid: flux-3-image-to-video
-
-  image:
-    aspect_ratio: "16:9"         # Venice valid: 1:1 | 3:2 | 16:9 | 21:9 | 9:16 | 2:3 | 3:4 | 4:5 | auto
-    resolution: 480p
-    cfg_scale: 8
-    steps: 8
-    negative_prompt: ""
-    hide_watermark: true
-    safe_mode: false
-    # ── Optional image params (commented = inherit defaults) ────────────────
-    variants: 1                # Number of images per request
-    seed: 0                    # Per-image seed (0 = use story seed)
-    style_preset: null         # Venice style preset id
-    lora_strength: null        # 0–100 LoRA blend strength
-
-  video:
-    aspect_ratio: "16:9"         # Venice valid: 1:1 | 3:2 | 16:9 | 21:9 | 9:16 | 2:3 | 3:4 | 4:5 | auto
-    resolution: 480p
-    negative_prompt: ""
-    audio: false
-    # ── Optional video params (commented = inherit defaults) ────────────────
-    # duration: "5s"             # Default if no per-op duration set; or:
-    duration_seconds: 5        # numeric variant (becomes "5s" internally)
-    # seed: null                 # Video seed (null = backend default)
-    # reference_image_urls: []   # Optional reference image URLs (model-dependent)
-    poll_interval: 3           # Override venice.poll_interval just for video
-    poll_timeout: 300          # Override venice.poll_timeout just for video
-
-    text2vid:
-      duration_seconds: 5
-      aspect_ratio: "16:9"
-      resolution: 480p
-
-    img2vid:
-      duration_seconds: 5
-      aspect_ratio: "16:9"
-      resolution: 480p
-
-  text_to_video_first_cycle: true
-  enable_end_frame_morph: true
-  enable_loop_closure: false
-
-  # ── Other Venice top-level options (commented = use defaults) ─────────────
-  # image_model: seedream-v4               # alias of models.text2img
-  # image_edit_model: seedream-v4          # alias of models.img2img
-  # video_model_text_to_video: seedance-1-5-pro-text-to-video   # alias of models.text2vid
-  # video_model_image_to_video: seedance-1-5-pro-image-to-video # alias of models.img2vid
-
+# ─────────────────────────────────────────────────────────────────────────────
+# SLIDING WINDOW STORY ENGINE
+# ─────────────────────────────────────────────────────────────────────────────
 paragraph_story:
   max_paragraphs: 2
-  img2vid_duration_sec: 5
-  video_fps: 24
+  max_cycles: 0          # 0 disables the cap: run every window in the story
+  video_frames: 65       # matches ~/bin/wanturbo-*.sh (65 frames @ 12 fps)
+  video_fps: 12
   seed_base: 0
   rolling_window: true
   require_morph: false
   enable_loop_closure: false
   img2img_denoise_min: 0.44
   img2img_denoise_max: 0.66
-  # ── Other paragraph_story options (commented = use defaults) ──────────────
-  # video_frames: null                          # Override frame count (else derived)
-  # timing_authority: null                      # frames | duration | fps
-  reinject: true                          # img2img keyframe every cycle
-  smart_reinject_enabled: true           # Async prefetch keyframe for next cycle
-  smart_reinject_every_n_cycles: 1        # 1 = every eligible cycle
-  smart_reinject_use_morph: false          # true = first/last morph, false = i2v from prefetched frame
-#  smart_reinject_similarity_guard_enabled: true
-#  smart_reinject_similarity_threshold: 0.42
-#  smart_reinject_wait_timeout_sec: 0      # 0 = never wait for late prefetch
-#  smart_reinject_sync_fallback: false     # true = fallback to old sync require_morph path
-#  smart_reinject_denoise_min: 0.25
-#  smart_reinject_denoise_max: 0.45
-#  smart_reinject_prompt_prefix: "Preserve the source image strongly. Make a subtle evolved keyframe for the next visual beat. Keep composition, identity, palette, lighting, and major shapes stable. Avoid large scene changes."
-  # For smart async reinject, lower denoise is safer:
-  # smart_reinject_denoise_min: 0.25
-  # smart_reinject_denoise_max: 0.45
+  reinject: false        # false => use last frame directly as next i2v source (no img2img)
+  smart_reinject_enabled: false
+  continuity_guard_enabled: false  # keep real Wan i2v clips (avoid endpoint false positives)
 
-  # continuity_guard_enabled: true              # Retry overly-drifted videos
-  # continuity_similarity_threshold: 0.42       # 0..1 stricter for conditioned video
-  # continuity_morph_similarity_threshold: 0.86 # Morph endpoints must land closer
-  # continuity_retry_attempts: 2                # Extra retries after first render
-  # continuity_ffmpeg_fallback_enabled: true    # ffmpeg fallback for unrecoverable cases
-  # continuity_ffmpeg_fallback_min_similarity: 0.32
-  # continuity_force_fallback_for_morph: true   # Never propagate weak morph endpoints
-
+# ─────────────────────────────────────────────────────────────────────────────
+# FINALIZER
+# ─────────────────────────────────────────────────────────────────────────────
 finalizer:
   enabled: true
   per_cycle_pingpong: false
@@ -192,83 +114,40 @@ finalizer:
   upscale_resolution: 1280x720
   interpolate_fps: 30
   scale_algo: bicubic
-  post_run_interpolation: true    # minterpolate + upscale (defaults to `enabled`)
+  post_run_interpolation: true
   post_run_pingpong: false
-  # per_cycle_interpolate_fps: 30   # Per-cycle FPS (else uses interpolate_fps)
-  post_interpolate_fps: 60        # Post-stitch FPS (independent of per-cycle)
-  encoder_preference: ["h264_nvenc", "libx264"]   # List form picks first available
-#  quality: 11
-  quality:                        # Or split into two:
-   crf: 11                       #   per-cycle/post-stitch CRF if dict-form
-   encoder_preference: auto
-  # ── Post-run stages (v0.9.1+) — independent of per-cycle ─────────────────
-  # When `enabled: true`:
-  #   • `post_run_interpolation` defaults to true (legacy behaviour). When
-  #     true, runs minterpolate → upscale on the stitched master to produce
-  #     final_60fps_1080p.mp4.
-  #   • `post_run_pingpong` defaults to false. When true, mirrors the entire
-  #     stitched master (forward + reverse-without-seam-frame) into a perfect
-  #     loop. If only pingpong is on, the deliverable is final_pingpong.mp4.
-  #     If both are on, pingpong feeds into interpolation → upscale.
-  # post_run_pingpong: false        # mirror final master into perfect loop
-  # ── Other finalizer options (commented = use defaults) ────────────────────
+  post_interpolate_fps: 60
+  quality:
+    crf: 11
+    encoder_preference: auto
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AUDIO (optional — only used when an audio file is present in worqspace)
+# AUDIO
 # ─────────────────────────────────────────────────────────────────────────────
 audio:
-  enabled: false                # Mux audio into final deliverable
-  sync_video_audio: false      # Compute cycle count from audio duration
-  cycle_seconds: 5             # Seconds per cycle when sync_video_audio: true
-#                                # (defaults to paragraph_story.img2vid_duration_sec)
-#  bpm: 128                     # Optional: derive cycle_seconds from tempo
-#  beats_per_cycle: 4           # Optional: beats per visual cycle (with bpm)
+  enabled: false
+  sync_video_audio: false
+  cycle_seconds: 5
 
 # ─────────────────────────────────────────────────────────────────────────────
-# IMAGE METRICS (optional diagnostics; off by default, non-fatal)
+# IMAGE METRICS
 # ─────────────────────────────────────────────────────────────────────────────
 image_metrics:
-  enabled: false                # Log blur/entropy for extracted frames each cycle
+  enabled: false
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CROWD CONTROL (Live Audience Prompt Injection)
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-# Enables live viewers to submit visual prompts via QR code during streams.
-# The crowd-control FastAPI server runs on the visuals machine and serves:
-#   - A web page where viewers type prompts
-#   - A QR code image for OBS overlay
-#   - A queue API consumed by the generator
-#
-# Disabled by default. Enable + set pop_token + run: python vfaq_cli.py crowd
-#
-# Later, WoNQ.TV infra will reverse proxy:
-#   https://wonq.tv/visuals → http://<visuals-zt-ip>:8808/visuals
-#
-# ═══════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
+# CROWD CONTROL — DISABLED for this test run.
+# When enabled: crowd text REPLACES story and drives i2v from the last frame.
+# ─────────────────────────────────────────────────────────────────────────────
 crowd_control:
-  enabled: true                        # Set true to activate crowd prompt injection
-  base_url: "http://127.0.0.1:8000/visuals"  # Must match the actual crowd server port (currently running on port 8000)
-  pop_token: "${VF_CROWD_TOKEN}"    # Bearer token for /api/next endpoint
-  timeout_seconds: 1.0                  # HTTP timeout for generator→server calls
-  inject_label: "Audience mutation request"  # Label injected into the prompt
-  inject_mode: "replace"                 # append = add to story | replace = override story
-  # inject_source_mode (v0.9.1+) — controls HOW the audience prompt drives
-  # the next cycle (only relevant when crowd_control.enabled: true):
-  #
-  #   "as_image_source"  (default) → IMG2VID with previous lastframe as the
-  #     SOURCE image. Audience prompt drives motion/content; lastframe gives
-  #     hard visual continuity from previous cycle.
-  #
-  #   "as_reference"               → TEXT2VID with previous lastframe as a
-  #     REFERENCE image (when the model supports it; else dropped). Audience
-  #     prompt is the primary visual driver; lastframe acts as soft style /
-  #     identity tether rather than hard frame continuity.
-  #
-  # `inject_mode` is orthogonal: append = paragraph + audience text, replace
-  # = audience text only. Source mode is independent of that.
-  inject_source_mode: "as_reference"
-  bake_mode: "direct_video"         # off | direct_video | reinject_keyframe
+  enabled: false
+  base_url: "http://127.0.0.1:8000/visuals"
+  pop_token: "${VF_CROWD_TOKEN}"
+  timeout_seconds: 1.0
+  inject_label: "Audience mutation request"
+  inject_mode: "replace"
+  inject_source_mode: "as_image_source"
+  bake_mode: "direct_video"
   bake_use_morph: false
   bake_denoise_min: 0.58
   bake_denoise_max: 0.82
@@ -277,10 +156,10 @@ crowd_control:
   claim_timeout_seconds: 900
   ack_after_success: true
   requeue_on_failure: true
-  max_chars: 300                        # Max prompt length from viewers
-  rate_limit_seconds: 60               # 1 submission per IP per this many seconds
-  max_queue: 100                        # Max pending prompts in queue
-  badwords_path: "worqspace/badwords.txt"  # Bad word filter file
-  public_url: "https://wonq.tv/visuals" # URL the QR code points to (override for local dev)
-  prefix: "/visuals"                    # URL prefix (must match reverse proxy path)
-  db_path: "worqspace/crowdcontrol.sqlite3"  # SQLite database path
+  max_chars: 300
+  rate_limit_seconds: 60
+  max_queue: 100
+  badwords_path: "worqspace/badwords.txt"
+  public_url: "https://wonq.tv/visuals"
+  prefix: "/visuals"
+  db_path: "worqspace/crowdcontrol.sqlite3"

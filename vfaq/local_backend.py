@@ -10,7 +10,7 @@ thin adapters over real, independently-installable CLI tools:
     image generation via the ``mflux`` project (`pip install mflux`).
   - ``flux-swift`` — the ``flux.swift`` CLI for the ``mzbac/flux1.*.4bit.mlx``
     (flux.swift-format) FLUX.1-dev / FLUX.1-Kontext checkpoints.
-  - ``wan``        — ``mlx-gen-wan`` (SceneWorks) for Wan 2.2 TI2V video.
+  - ``wan``        — ``mlx-gen`` for Wan 2.2 TI2V video (t2v / i2v / ti2v).
   - ``command``    — a fully custom shell command template (escape hatch).
 
 The engine talks to this backend through the standard ``GeneratorBackend``
@@ -229,6 +229,19 @@ class MfluxRunner(LocalRunner):
             return str(exe or "mflux-generate-kontext")
         return str(exe or "mflux-generate")
 
+    def _image_steps(self, request: GenerationRequest) -> int:
+        # The story engine never sets `steps` on image requests, so
+        # GenerationRequest defaults to 30. That would force even the
+        # 8-step Z-Image-Turbo to run 30 steps. Prefer the configured
+        # local.steps for image models, while still honoring an explicit
+        # non-default request.steps from direct callers/tests.
+        configured = self.local_cfg.get("steps")
+        if request.steps is not None and request.steps != 30:
+            return int(request.steps)
+        if configured not in (None, "", 0, "0"):
+            return int(configured)
+        return int(request.steps or 8)
+
     def _quantize_flag(self) -> List[str]:
         q = self.local_cfg.get("quantize")
         if q in (None, "", 0, "0", "auto"):
@@ -256,7 +269,7 @@ class MfluxRunner(LocalRunner):
             "--width", str(request.width or self.local_cfg.get("width", 1024)),
             "--height", str(request.height or self.local_cfg.get("height", 576)),
             "--seed", str(request.seed if request.seed is not None else 0),
-            "--steps", str(request.steps or self.local_cfg.get("steps", 8)),
+            "--steps", str(self._image_steps(request)),
         ]
         if request.negative_prompt and model_spec not in (MODEL_Z_IMAGE_TURBO,):
             cmd += ["--negative-prompt", request.negative_prompt]
@@ -273,7 +286,7 @@ class MfluxRunner(LocalRunner):
     def build_video_command(self, model_id, model_spec, request, output_path, source_image, values):
         raise RuntimeError(
             "mflux is an image generator and does not support video generation. "
-            "Use the 'wan' runner (SceneWorks mlx-gen-wan) for Wan 2.2 video, or a "
+            "Use the 'wan' runner (mlxgen-generate-wan) for Wan 2.2 video, or a "
             "custom 'command' template."
         )
 
@@ -327,31 +340,76 @@ class FluxSwiftRunner(LocalRunner):
 
 
 class WanRunner(LocalRunner):
-    """SceneWorks ``mlx-gen-wan`` runner for Wan 2.2 TI2V video."""
+    """MLX-Gen (``mlxgen-generate-wan``) runner for Wan 2.2 video.
+
+    MLX-Gen supports Wan 2.2 TI2V in two modes:
+      * text-to-video (t2v)          - no input image
+      * image-to-video (i2v / ti2v)  - first-frame ``--image-path`` + ``--prompt``
+    First/last-frame morph is only available on the Wan A14B checkpoints, so
+    for the default ``wan2.2-ti2v-5b`` model morph falls back to an ffmpeg
+    crossfade in the backend.
+    """
 
     name = "wan"
 
     def executable(self) -> str:
-        return str(self.config.get("executable") or "mlx-gen-wan")
+        return str(self.config.get("executable") or "mlxgen-generate-wan")
 
-    def _common(self, model_spec, request, output_path, source_image, values, end_image=None):
+    def _common(self, model_spec, request, output_path, source_image, values):
         exe = self.executable()
-        duration = request.duration_seconds or 5.0
-        fps = request.video_fps or self.local_cfg.get("fps", 8)
-        cmd = [exe, "--model", model_spec]
+        duration = float(request.duration_seconds or 5.0)
+        fps = float(request.video_fps or self.local_cfg.get("fps", 12))
+        if request.video_frames:
+            frames = int(request.video_frames)
+        else:
+            frames = max(1, int(round(duration * fps)))
+        # The user's working Wan Turbo recipe generates 65 frames; cap to the
+        # configured envelope (configurable via local.wan.max_frames).
+        max_frames = int(self.config.get("max_frames") or self.local_cfg.get("max_frames") or 65)
+        frames = min(frames, max_frames)
+
+        # Self-Forcing Wan Turbo uses an explicit denoising-step grid instead
+        # of a step count (the two are mutually exclusive in the Wan CLI).
+        denoising_step_list = self.config.get("denoising_step_list") or self.config.get("denoising-step-list")
+        if denoising_step_list is not None:
+            if isinstance(denoising_step_list, (str, int, float)):
+                denoising_step_list = str(denoising_step_list).split()
+            denoising_step_list = [int(step) for step in denoising_step_list]
+
+        # Mirrors the user's ~/bin/wanturbo-{i2v,t2v}.sh scripts exactly.
+        cmd = [exe, "--model", str(model_spec)]
+        cmd += ["--prompt", request.prompt or ""]
         if source_image is not None:
-            cmd += ["--image", str(source_image)]
-        if end_image is not None:
-            cmd += ["--end-image", str(end_image)]
+            cmd += ["--image-path", str(source_image)]
+            cmd += ["--canvas-policy", "exact-resize"]
         cmd += [
-            "--prompt", request.prompt or "",
             "--output", str(output_path),
-            "--width", str(request.width or self.local_cfg.get("width", 1024)),
-            "--height", str(request.height or self.local_cfg.get("height", 576)),
-            "--fps", str(fps),
-            "--duration", str(duration),
-            "--seed", str(request.seed if request.seed is not None else 0),
+            "--width", str(request.width or self.local_cfg.get("width", 640)),
+            "--height", str(request.height or self.local_cfg.get("height", 352)),
+            "--frames", str(frames),
+            "--fps", str(int(fps)),
         ]
+        guidance = self.config.get("guidance")
+        if guidance is not None:
+            cmd += ["--guidance", str(guidance)]
+        solver = self.config.get("solver")
+        if solver:
+            cmd += ["--solver", str(solver)]
+        if denoising_step_list:
+            cmd += ["--denoising-step-list", *[str(step) for step in denoising_step_list]]
+        else:
+            steps = int(self.config.get("steps") or request.steps or self.local_cfg.get("steps", 30))
+            cmd += ["--steps", str(steps)]
+        cmd += [
+            "--seed", str(request.seed if request.seed is not None else 0),
+            "--progress",
+            "--replace",
+            "--no-validate-health",
+            "--compile-transformer",
+        ]
+        cache_limit_gb = self.config.get("mlx_cache_limit_gb")
+        if cache_limit_gb not in (None, "", 0, "0", "auto"):
+            cmd += ["--mlx-cache-limit-gb", str(cache_limit_gb)]
         return cmd
 
     def build_image_command(self, model_id, model_spec, request, output_path, operation, values):
@@ -361,7 +419,10 @@ class WanRunner(LocalRunner):
         return self._common(model_spec, request, output_path, source_image, values)
 
     def build_morph_command(self, model_id, model_spec, request, output_path, start_image, end_image, values):
-        return self._common(model_spec, request, output_path, start_image, values, end_image=end_image)
+        raise RuntimeError(
+            "MLX-Gen Wan 2.2 TI2V-5B does not support first/last-frame morph. "
+            "The local backend will fall back to an ffmpeg crossfade morph."
+        )
 
 
 class GenericCommandRunner(LocalRunner):
@@ -405,8 +466,11 @@ RUNNER_REGISTRY = {
     "flux_swift": FluxSwiftRunner,
     "fluxswift": FluxSwiftRunner,
     "wan": WanRunner,
+    "mlx-gen": WanRunner,
+    "mlxgen": WanRunner,
     "sceneworks": WanRunner,
     "mlx-gen-wan": WanRunner,
+    "mlxgen-generate-wan": WanRunner,
     "command": GenericCommandRunner,
     "generic": GenericCommandRunner,
 }

@@ -27,7 +27,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .backends import GeneratorBackend
+from .backends import GenerationResult, GeneratorBackend, InputMode
 
 logger = logging.getLogger(__name__)
 
@@ -774,7 +774,6 @@ class VeoBackend(GeneratorBackend):
             request controls clip duration (more denoise → longer clip → more
             evolution from the source image).
         """
-        from .backends import GenerationResult, InputMode
 
         start_time = time.time()
 
@@ -870,7 +869,6 @@ class VeoBackend(GeneratorBackend):
         Maps to Veo image_to_video or text_to_video depending on image availability.
         source_image can be None for text_to_video mode.
         """
-        from .backends import GenerationResult
 
         start_time = time.time()
 
@@ -920,7 +918,6 @@ class VeoBackend(GeneratorBackend):
         This is the Veo replacement for the ComfyUI morph workflow.
         Uses start_image as the first frame and end_image as the last frame.
         """
-        from .backends import GenerationResult
 
         start_time = time.time()
 
@@ -966,7 +963,6 @@ class VeoBackend(GeneratorBackend):
         Veo-generated clip within the retention window (1–30s duration).
         Extension output is ~7s, controlled by Veo.
         """
-        from .backends import GenerationResult
 
         start_time = time.time()
 
@@ -1034,7 +1030,6 @@ class VeoBackend(GeneratorBackend):
 
     def supports_mode(self, mode) -> bool:
         """Check if a specific input mode is supported."""
-        from .backends import InputMode
         if mode == InputMode.TEXT:
             return True
         if mode == InputMode.IMAGE:
