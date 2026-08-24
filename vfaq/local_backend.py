@@ -457,6 +457,7 @@ class WanDaemon:
             try:
                 output_path = Path(params["output_path"])
                 output_path.parent.mkdir(parents=True, exist_ok=True)
+                no_validate_health = bool(params.get("no_validate_health", True))
                 video = self._model.generate_video(
                     seed=params["seed"],
                     prompt=params["prompt"],
@@ -484,7 +485,7 @@ class WanDaemon:
                     path=output_path,
                     export_json_metadata=False,
                     overwrite=True,
-                    validate_health=False,
+                    validate_health=not no_validate_health,
                 )
                 return True, str(saved or output_path)
             except Exception as exc:  # noqa: BLE001 — caller falls back
@@ -558,6 +559,13 @@ class WanRunner(LocalRunner):
         if raw is None:
             raw = self.config.get("compile-transformer")
         return self._coerce_bool(raw, "compile_transformer", default=False)
+
+    def _no_validate_health_value(self) -> bool:
+        raw = self.config.get("no_validate_health")
+        if raw is None:
+            raw = self.config.get("no-validate-health")
+        # Defaults to True to preserve the historical always-on behaviour.
+        return self._coerce_bool(raw, "no_validate_health", default=True)
 
     def _resolve_params(
         self,
@@ -645,9 +653,10 @@ class WanRunner(LocalRunner):
         keep_value = self._keep_text_encoder_value()
         keep_bool = keep_value == "true"
         compile_transformer = self._compile_transformer_value()
+        no_validate_health = self._no_validate_health_value()
 
-        width = int(request.width or self.local_cfg.get("width", 640))
-        height = int(request.height or self.local_cfg.get("height", 352))
+        width = int(self.config.get("width") or request.width or 640)
+        height = int(self.config.get("height") or request.height or 352)
         guidance = self.config.get("guidance")
         solver = self.config.get("solver")
 
@@ -660,6 +669,21 @@ class WanRunner(LocalRunner):
             num_inference_steps = None if _is_off(fallback_steps) else int(fallback_steps)
         else:
             num_inference_steps = None
+
+        quantize = self.config.get("quantize")
+        if quantize in (None, "", 0, "0", "auto", "off", "none", "disabled"):
+            quantize = None
+        else:
+            try:
+                quantize = int(quantize)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"local.wan quantize must be one of 3, 4, 5, 6, 8, got {quantize!r}"
+                )
+            if quantize not in (3, 4, 5, 6, 8):
+                raise ValueError(
+                    f"local.wan quantize must be one of 3, 4, 5, 6, 8, got {quantize}"
+                )
 
         mlx_cache_limit_gb = self.config.get("mlx_cache_limit_gb")
 
@@ -687,8 +711,9 @@ class WanRunner(LocalRunner):
             "keep_text_encoder": keep_value,
             "keep_text_encoder_resident": keep_bool,
             "compile_transformer": compile_transformer,
+            "no_validate_health": no_validate_health,
             "mlx_cache_limit_gb": mlx_cache_limit_gb,
-            "quantize": self.config.get("quantize"),
+            "quantize": quantize,
             "max_sequence_length": 512,
             "negative_prompt": request.negative_prompt or None,
         }
@@ -710,6 +735,8 @@ class WanRunner(LocalRunner):
             cmd += ["--guidance", str(params["guidance"])]
         if params["solver"]:
             cmd += ["--solver", str(params["solver"])]
+        if params["quantize"] is not None:
+            cmd += ["--quantize", str(params["quantize"])]
         if params["grid_on"]:
             cmd += ["--denoising-step-list", *[str(step) for step in params["denoising_step_list"]]]
         else:
@@ -724,8 +751,9 @@ class WanRunner(LocalRunner):
             "--seed", str(params["seed"]),
             "--progress",
             "--replace",
-            "--no-validate-health",
         ]
+        if params["no_validate_health"]:
+            cmd += ["--no-validate-health"]
         if params["compile_transformer"]:
             cmd += ["--compile-transformer"]
         if params["keep_text_encoder"] is not None:

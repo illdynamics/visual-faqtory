@@ -27,8 +27,8 @@ backend:
 
 image_backend:
   type: local
-  width: 1024
-  height: 576
+  width: 640
+  height: 352
 
 video_backend:
   type: local
@@ -49,8 +49,9 @@ input:
 local:
   runner: mflux
   timeout: 3600
-  width: 1024
-  height: 576
+  # Image resolution (z-image-turbo only; Wan has its own width/height below).
+  width: 640
+  height: 352
   steps: 8
   # Z-Image-Turbo uses ~8 steps (distilled few-step sampler).
   quantize: 4
@@ -78,18 +79,25 @@ local:
 
   wan:
     executable: mlxgen-generate-wan
+    # Output resolution & quantization. These are Wan-specific and independent
+    # of the image `local.width` / `local.height` above (which now drive
+    # z-image-turbo only).
+    width: 640                   # Wan output width
+    height: 352                  # Wan output height
+    quantize: 8                  # Wan quantization (3/4/5/6/8)
+    no_validate_health: true     # pass --no-validate-health (skip save-time health check)
     # Sampling mode (mutually exclusive — exactly one may be active):
     #   grid mode : denoising_step_list: [1000, 750, 500, 250] + steps: off + flow_shift: off
     #   step mode : denoising_step_list: off + steps: 4 + flow_shift: 3.0
     # `off` / `none` / `false` / `disabled` / `0` / `[]` all mean "turn this off".
-    denoising_step_list: off          # set [1000, 750, 500, 250] for grid mode
-    steps: 4                          # set off/0 to use denoising_step_list
-    flow_shift: 3.0                   # set off/0 to use denoising_step_list
-    fps: 12
+    denoising_step_list: [1000, 750, 500, 250]          # set [1000, 750, 500, 250] for grid mode
+    steps: 0                          # set off/0 to use denoising_step_list
+    flow_shift: 0                   # set off/0 to use denoising_step_list
+    fps: 8
     guidance: 1
     solver: euler
     low_ram: false
-    frames: 65                    # --frames value (was `max_frames`)
+    frames: 33                    # --frames value (was `max_frames`)
     canvas_policy: exact-resize   # exact-resize | source-aspect (i2v canvas handling)
     keep-text-encoder: true    # true => persistent in-process Wan daemon (T5 stays resident)
     compile-transformer: true  # true => pass --compile-transformer / use compiled MLX graphs
@@ -119,7 +127,7 @@ paragraph_story:
 finalizer:
   enabled: true
   per_cycle_pingpong: false
-  per_cycle_interpolation: false
+  per_cycle_interpolation: true
   upscale_resolution: 1280x720
   interpolate_fps: 30
   scale_algo: bicubic
@@ -149,7 +157,7 @@ image_metrics:
 # When enabled: crowd text REPLACES story and drives i2v from the last frame.
 # ─────────────────────────────────────────────────────────────────────────────
 crowd_control:
-  enabled: false
+  enabled: true
   base_url: "http://127.0.0.1:8000/visuals"
   pop_token: "${VF_CROWD_TOKEN}"
   timeout_seconds: 1.0

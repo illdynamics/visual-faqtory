@@ -99,6 +99,11 @@ local:
 
   wan:
     executable: mlx-gen-wan       # SceneWorks native Wan 2.2 worker
+    # Wan output resolution (independent of image `local.width` / `local.height`).
+    width: 640                   # Wan output width
+    height: 352                  # Wan output height
+    quantize: 8                  # Wan quantization (3/4/5/6/8)
+    no_validate_health: true     # pass --no-validate-health (skip save-time health check)
     # Sampling mode (mutually exclusive — exactly one may be active):
     #   grid mode : denoising_step_list: [1000, 750, 500, 250] + steps: off + flow_shift: off
     #   step mode : denoising_step_list: off + steps: 4 + flow_shift: 3.0

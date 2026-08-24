@@ -331,9 +331,27 @@ controls whether the Wan denoiser runs as a compiled MLX graph
 (`--compile-transformer`, or the equivalent Python API argument in daemon mode).
 It defaults to `false` (flag omitted).
 
+`width` and `height` set the Wan output resolution independently of the image
+resolution. The top-level `local.width` / `local.height` drive the image models
+(Z-Image-Turbo / FLUX) only; Wan reads `local.wan.width` / `local.wan.height`
+and falls back to `640x352` when unset.
+
+`quantize` passes the mlx-gen `--quantize` flag (and the equivalent in-process
+daemon argument). Accepted values are `3`, `4`, `5`, `6` and `8`; `auto`, `off`,
+or leaving it unset lets mlx-gen choose its own default.
+
+`no-validate-health` (also `no_validate_health`) controls the
+`--no-validate-health` flag (and the equivalent daemon save option), which skips
+the tensor health check when a video is written. It defaults to `true` to
+preserve the historical always-on behaviour.
+
 ```yaml
 local:
   wan:
+    width: 640                   # Wan output width
+    height: 352                  # Wan output height
+    quantize: 8                  # Wan quantization (3/4/5/6/8)
+    no_validate_health: true     # pass --no-validate-health
     frames: 65                    # --frames value
     canvas_policy: exact-resize   # exact-resize | source-aspect
     keep-text-encoder: true       # true => persistent in-process daemon
