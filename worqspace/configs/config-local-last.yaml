@@ -1,0 +1,182 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Visual FaQtory v0.9.8-beta — LOCAL config (z-image-turbo + Wan 2.2 TI2V-5B-Turbo)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Image : Z-Image-Turbo via mflux (local, Apple Silicon MLX, 4-bit)
+# Edit  : FLUX.1 Kontext via mflux (local, Apple Silicon MLX; UNUSED — no edit/morph)
+# Video : Wan 2.2 TI2V-5B-Turbo (self-converted MLX-Gen checkpoint) via
+#         `mlxgen-generate-wan` (mirrors ~/bin/wanturbo-i2v.sh / wanturbo-t2v.sh).
+#
+# Pipeline (no img2img, no morphing):
+#   Cycle 1: z-image-turbo text2img -> wan i2v (image = keyframe)
+#   Cycle n: ffmpeg last-frame of previous clip -> wan i2v (image = last frame)
+#   Crowd (when enabled): crowd text REPLACES story; crowd text + last frame -> wan i2v
+#
+# Crowd Control : disabled for this test
+# ═══════════════════════════════════════════════════════════════════════════════
+
+paths:
+  output_dir: ./run
+  briqs_dir: ./run/briqs
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Backend routing: everything local.
+# ─────────────────────────────────────────────────────────────────────────────
+backend:
+  type: local
+  timeout: 3600
+
+image_backend:
+  type: local
+  width: 640
+  height: 352
+
+video_backend:
+  type: local
+  width: 640
+  height: 352
+
+morph_backend:
+  type: local
+  width: 640
+  height: 352
+
+input:
+  mode: text
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LOCAL MLX BACKEND
+# ─────────────────────────────────────────────────────────────────────────────
+local:
+  runner: mflux
+  timeout: 3600
+  # Image resolution (z-image-turbo only; Wan has its own width/height below).
+  width: 640
+  height: 352
+  steps: 8
+  # Z-Image-Turbo uses ~8 steps (distilled few-step sampler).
+  quantize: 4
+
+  models:
+    image: z-image-turbo
+    video: wan-2.2
+    edit: flux-1-kontext
+
+  # Per-model runner overrides.
+  model_runners:
+    flux-1-dev: mflux
+    flux-1-kontext: mflux
+    z-image-turbo: mflux
+    wan-2.2: wan            # mlxgen-generate-wan — Wan 2.2 video
+
+  # mflux-compatible image model specs (HuggingFace repo ids; already cached).
+  # Wan 2.2 video points at the locally-converted Self-Forcing 5B Turbo
+  # checkpoint (MLX-Gen layout).
+  model_paths:
+    flux-1-dev: /Users/wicked/models/flux.1-dev-mflux-4bit
+    flux-1-kontext: /Users/wicked/models/flux.1-kontext-mflux-4bit
+    z-image-turbo: filipstrand/Z-Image-Turbo-mflux-4bit
+    wan-2.2: /Users/wicked/models/Wan2.2-TI2V-5B-Turbo-mlxgen
+
+  wan:
+    executable: mlxgen-generate-wan
+    # Output resolution & quantization. These are Wan-specific and independent
+    # of the image `local.width` / `local.height` above (which now drive
+    # z-image-turbo only).
+    width: 640                   # Wan output width
+    height: 352                  # Wan output height
+    quantize: 8                  # Wan quantization (3/4/5/6/8)
+    no_validate_health: true     # pass --no-validate-health (skip save-time health check)
+    # Sampling mode (mutually exclusive — exactly one may be active):
+    #   grid mode : denoising_step_list: [1000, 750, 500, 250] + steps: off + flow_shift: off
+    #   step mode : denoising_step_list: off + steps: 4 + flow_shift: 3.0
+    # `off` / `none` / `false` / `disabled` / `0` / `[]` all mean "turn this off".
+    denoising_step_list: [1000, 750, 500, 250]          # set [1000, 750, 500, 250] for grid mode
+    steps: 0                          # set off/0 to use denoising_step_list
+    flow_shift: 0                   # set off/0 to use denoising_step_list
+    fps: 8
+    guidance: 1
+    solver: euler
+    low_ram: false
+    frames: 33                    # --frames value (was `max_frames`)
+    canvas_policy: exact-resize   # exact-resize | source-aspect (i2v canvas handling)
+    keep-text-encoder: true    # true => persistent in-process Wan daemon (T5 stays resident)
+    compile-transformer: true  # true => pass --compile-transformer / use compiled MLX graphs
+    mlx_cache_limit_gb: 20
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SLIDING WINDOW STORY ENGINE
+# ─────────────────────────────────────────────────────────────────────────────
+paragraph_story:
+  max_paragraphs: 2
+  max_cycles: 0          # 0 disables the cap: run every window in the story
+  video_frames: 65       # matches ~/bin/wanturbo-*.sh (65 frames @ 12 fps)
+  video_fps: 12
+  seed_base: 0
+  rolling_window: true
+  require_morph: false
+  enable_loop_closure: false
+  img2img_denoise_min: 0.44
+  img2img_denoise_max: 0.66
+  reinject: false        # false => use last frame directly as next i2v source (no img2img)
+  smart_reinject_enabled: false
+  continuity_guard_enabled: false  # keep real Wan i2v clips (avoid endpoint false positives)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FINALIZER
+# ─────────────────────────────────────────────────────────────────────────────
+finalizer:
+  enabled: true
+  per_cycle_pingpong: false
+  per_cycle_interpolation: true
+  upscale_resolution: 1280x720
+  interpolate_fps: 30
+  scale_algo: bicubic
+  post_run_interpolation: true
+  post_run_pingpong: false
+  post_interpolate_fps: 60
+  quality:
+    crf: 11
+    encoder_preference: auto
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUDIO
+# ─────────────────────────────────────────────────────────────────────────────
+audio:
+  enabled: false
+  sync_video_audio: false
+  cycle_seconds: 5
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IMAGE METRICS
+# ─────────────────────────────────────────────────────────────────────────────
+image_metrics:
+  enabled: false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CROWD CONTROL — DISABLED for this test run.
+# When enabled: crowd text REPLACES story and drives i2v from the last frame.
+# ─────────────────────────────────────────────────────────────────────────────
+crowd_control:
+  enabled: true
+  base_url: "http://127.0.0.1:8000/visuals"
+  pop_token: "${VF_CROWD_TOKEN}"
+  timeout_seconds: 1.0
+  inject_label: "Audience mutation request"
+  inject_mode: "replace"
+  inject_source_mode: "as_image_source"
+  bake_mode: "direct_video"
+  bake_use_morph: false
+  bake_denoise_min: 0.58
+  bake_denoise_max: 0.82
+  bake_prompt_prefix: "AUDIENCE PROMPT IS THE PRIMARY VISUAL MUTATION. Strongly transform the scene to match this request while preserving enough continuity from the source image:"
+  discard_smart_prefetch_on_crowd: true
+  claim_timeout_seconds: 900
+  ack_after_success: true
+  requeue_on_failure: true
+  max_chars: 300
+  rate_limit_seconds: 60
+  max_queue: 100
+  badwords_path: "worqspace/badwords.txt"
+  public_url: "https://wonq.tv/visuals"
+  prefix: "/visuals"
+  db_path: "worqspace/crowdcontrol.sqlite3"

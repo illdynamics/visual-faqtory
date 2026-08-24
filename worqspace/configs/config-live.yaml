@@ -99,7 +99,7 @@ venice:
       resolution: 480p
 
   text_to_video_first_cycle: true
-  enable_end_frame_morph: true
+  enable_end_frame_morph: false
   enable_loop_closure: false
 
   # ── Other Venice top-level options (commented = use defaults) ─────────────
@@ -114,17 +114,17 @@ paragraph_story:
   video_fps: 24
   seed_base: 0
   rolling_window: true
-  require_morph: true
+  require_morph: false
   enable_loop_closure: false
   img2img_denoise_min: 0.44
   img2img_denoise_max: 0.66
   # ── Other paragraph_story options (commented = use defaults) ──────────────
   # video_frames: null                          # Override frame count (else derived)
   # timing_authority: null                      # frames | duration | fps
-  reinject: true                          # img2img keyframe every cycle
-  smart_reinject_enabled: true           # Async prefetch keyframe for next cycle
+  reinject: false                          # img2img keyframe every cycle
+  smart_reinject_enabled: false           # Async prefetch keyframe for next cycle
   smart_reinject_every_n_cycles: 1        # 1 = every eligible cycle
-  smart_reinject_use_morph: true          # true = first/last morph, false = i2v from prefetched frame
+  smart_reinject_use_morph: false          # true = first/last morph, false = i2v from prefetched frame
 #  smart_reinject_similarity_guard_enabled: true
 #  smart_reinject_similarity_threshold: 0.42
 #  smart_reinject_wait_timeout_sec: 0      # 0 = never wait for late prefetch
