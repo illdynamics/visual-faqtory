@@ -34,6 +34,14 @@ KNOWN_GOOD_FILE="$OBS_DIR/.last_known_good_video"
 
 PYTHON_BIN="$BASE_DIR/.venv/bin/python"
 OBS_SWAP_SCRIPT="$BASE_DIR/obs-swap.py"
+# ── OBS WebSocket config (single source of truth) ─────────────────────────
+# These are exported so obs-swap.py and the inline play-confirmation
+# snippets all authenticate with the same credentials.
+export OBS_HOST="${OBS_HOST:-127.0.0.1}"
+export OBS_PORT="${OBS_PORT:-4455}"
+export OBS_PASSWORD="${OBS_PASSWORD:-Setyup34}"
+export OBS_SCENE="${OBS_SCENE:-Ill Dynamics - Live on SkankOut}"
+
 
 export OBS_PREWARM_SEC="${OBS_PREWARM_SEC:-0.8}"
 export OBS_MAX_WAIT_CURRENT_SEC="${OBS_MAX_WAIT_CURRENT_SEC:-180}"

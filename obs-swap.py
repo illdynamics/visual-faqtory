@@ -344,12 +344,11 @@ def force_media_reload(cl, input_name: str, do_stop_first: bool = False) -> None
     OBS WebSocket plugin).
     """
     if do_stop_first:
+        # STOP then RESTART is sufficient to guarantee a from-frame-0 begin:
+        # RESTART re-opens the media from the start, so we deliberately do
+        # NOT call SetMediaInputCursor here (OBS rejects cursor seeks on a
+        # stopped source with error 604).
         trigger_media_action(cl, input_name, ACTION_STOP)
-        try:
-            if hasattr(cl, "set_media_input_cursor"):
-                cl.set_media_input_cursor(input_name, 0)
-        except Exception as e:
-            logger.debug(f"pre-restart cursor reset failed on '{input_name}': {e}")
 
     if trigger_media_action(cl, input_name, ACTION_RESTART):
         logger.info(f"Media RESTART triggered for '{input_name}'")
@@ -392,6 +391,12 @@ def _resolve_slots(slot: str, cl=None):
 
 
 def _connect():
+    if not PASSWORD:
+        logger.error(
+            "OBS_PASSWORD is not set — cannot authenticate to OBS WebSocket. "
+            "Export OBS_PASSWORD (or set it in the watcher script) and retry."
+        )
+        sys.exit(1)
     try:
         from obsws_python import ReqClient
         return ReqClient(host=HOST, port=PORT, password=PASSWORD)
