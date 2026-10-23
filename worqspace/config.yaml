@@ -114,17 +114,17 @@ paragraph_story:
   video_fps: 24
   seed_base: 0
   rolling_window: true
-  require_morph: false
+  require_morph: true
   enable_loop_closure: false
   img2img_denoise_min: 0.44
   img2img_denoise_max: 0.66
   # ── Other paragraph_story options (commented = use defaults) ──────────────
   # video_frames: null                          # Override frame count (else derived)
   # timing_authority: null                      # frames | duration | fps
-  reinject: false                          # img2img keyframe every cycle
-  smart_reinject_enabled: false           # Async prefetch keyframe for next cycle
+  reinject: true                          # img2img keyframe every cycle
+  smart_reinject_enabled: true           # Async prefetch keyframe for next cycle
   smart_reinject_every_n_cycles: 1        # 1 = every eligible cycle
-  smart_reinject_use_morph: false          # true = first/last morph, false = i2v from prefetched frame
+  smart_reinject_use_morph: true          # true = first/last morph, false = i2v from prefetched frame
 #  smart_reinject_similarity_guard_enabled: true
 #  smart_reinject_similarity_threshold: 0.42
 #  smart_reinject_wait_timeout_sec: 0      # 0 = never wait for late prefetch
@@ -198,7 +198,7 @@ audio:
 #
 # ═══════════════════════════════════════════════════════════════════════════════
 crowd_control:
-  enabled: false                        # Set true to activate crowd prompt injection
+  enabled: true                        # Set true to activate crowd prompt injection
   base_url: "http://10.20.30.22:8000/visuals"  # Where the generator reaches the server
   pop_token: "Setyup34Setyup34Setyup34Setyup34"    # Bearer token for /api/next endpoint
   timeout_seconds: 1.0                  # HTTP timeout for generator→server calls
